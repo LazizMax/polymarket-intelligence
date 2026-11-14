@@ -1,6 +1,6 @@
 # Polymarket Intelligence Cloud — Runbook opérationnel (2026-11-14)
 
-**URL fixe du site :** https://bxfvgywfiifnsbjgudzj.supabase.co/functions/v1/pi-dashboard
+**URL fixe du site :** https://lazizmax.github.io/polymarket-intelligence/
 
 **Données :** projet Supabase existant Fit Tracker (`bxfvgywfiifnsbjgudzj`), schéma privé `pi`. L'application Fit Tracker continue d'utiliser `public.user_data` ; aucune autre table du projet n'a été migrée ni effacée.
 
