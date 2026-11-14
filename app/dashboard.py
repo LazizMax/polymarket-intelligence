@@ -124,9 +124,10 @@ def ranking_screen(wallets,sectors,recent):
     b.metric('ROI clôturé documenté',f"{int(overall.roi_closed_pct.notna().sum())}/{len(overall)}")
     c.metric('Au moins 30 événements',int((overall.events>=MIN_EVIDENCE_EVENTS).sum()))
     left,middle,right=st.columns([1.25,1.1,1])
-    modes=['ROI des positions clôturées','ROI indicatif (échantillon)','PnL économique observé','Efficacité PnL / volume','Performance 30 jours']
+    modes=['ROI borne prudente (exploratoire)','ROI des positions clôturées','ROI indicatif (échantillon)','PnL économique observé','Efficacité PnL / volume','Performance 30 jours']
+    screened_count=int(overall.roi_robust_lower_pct.notna().sum())
     verified_count=int(overall.roi_closed_pct.notna().sum())
-    metric=left.selectbox('Classer par',modes,index=0 if verified_count else 2)
+    metric=left.selectbox('Classer par',modes,index=0 if screened_count else 1 if verified_count else 3)
     min_events=middle.select_slider('Événements minimum',[0,5,10,20,30,50,100,200],value=30)
     sector_names=sorted({s['sector'] for s in sectors})
     chosen_sector=right.selectbox('Secteur',['Tous']+sector_names)
@@ -140,17 +141,23 @@ def ranking_screen(wallets,sectors,recent):
     recent_by_wallet={r['wallet']:r.get('variation_economique_usdc') for r in recent}
     if 'recent_30' not in df:df['recent_30']=df.wallet.map(recent_by_wallet)
     if chosen_sector!='Tous':
-        key={'ROI des positions clôturées':'roi_pct','PnL économique observé':'pnl_usdc',
+        key={'ROI borne prudente (exploratoire)':'roi_robust_lower_pct','ROI des positions clôturées':'roi_pct','PnL économique observé':'pnl_usdc',
              'ROI indicatif (échantillon)':'partial_roi_pct',
              'Efficacité PnL / volume':'efficiency_pct','Performance 30 jours':'recent_30'}[metric]
     else:
-        key={'ROI des positions clôturées':'roi_closed_pct','PnL économique observé':'economic_pnl_usdc',
+        key={'ROI borne prudente (exploratoire)':'roi_robust_lower_pct','ROI des positions clôturées':'roi_closed_pct','PnL économique observé':'economic_pnl_usdc',
              'ROI indicatif (échantillon)':'partial_roi_pct',
              'Efficacité PnL / volume':'efficiency_pct','Performance 30 jours':'recent_30'}[metric]
     # Never pretend a partially computed ROI is a validated global return.
+    if metric=='ROI borne prudente (exploratoire)' and chosen_sector!='Tous':
+        st.warning('La borne prudente est calculée sur le portefeuille clôturé entier, pas sur chaque secteur. Choisis « Tous ».')
+        return
     if metric=='ROI indicatif (échantillon)' and chosen_sector!='Tous':
         st.warning('Le ROI indicatif par secteur n’est pas disponible : la couverture du secteur n’est pas suffisante pour ce ratio. Sélectionne « Tous » ou audite les wallets.')
         return
+    if metric=='ROI borne prudente (exploratoire)':
+        st.caption('Borne basse bootstrap à 5 % du ROI clôturé : événements rééchantillonnés. Dépendance inter-événements et sélection des meilleurs wallets non corrigées. Pas une prévision de gains.')
+        df=df[df.roi_robust_lower_pct.notna()]
     if metric=='ROI indicatif (échantillon)':
         st.warning('Indicateur provisoire sur les positions récupérées dont le coût est connu. Classement non validé : biais possible, y compris si toutes les positions restantes sont perdantes.')
         df=df[df[key].notna()]
@@ -166,13 +173,15 @@ def ranking_screen(wallets,sectors,recent):
     if metric=='ROI indicatif (échantillon)':df['ROI indicatif (%)']=df['partial_roi_pct']
     df['PnL (USDC)']=df['pnl_usdc'] if chosen_sector!='Tous' else df['economic_pnl_usdc']
     df['Événements']=df['sector_events'] if chosen_sector!='Tous' else df['events']
-    displayed=['trader','ROI snapshot (%)']
+    displayed=['trader','ROI snapshot (%)','roi_robust_lower_pct','screening_quality']
     if metric=='ROI indicatif (échantillon)':displayed+=['ROI indicatif (%)','cost_events']
     displayed+=['PnL (USDC)','Événements','volume_usdc','data_status']
     displayed=[x for x in displayed if x in df.columns]
-    st.dataframe(df[displayed].rename(columns={'trader':'Trader','volume_usdc':'Volume USDC','data_status':'Qualité','cost_events':'Événements avec coût connu'}),
+    st.dataframe(df[displayed].rename(columns={'trader':'Trader','volume_usdc':'Volume USDC','data_status':'Qualité','cost_events':'Événements avec coût connu',
+                           'roi_robust_lower_pct':'Borne ROI 5 % (%)','screening_quality':'Statut statistique'}),
         use_container_width=True,hide_index=True,column_config={
             'ROI snapshot (%)':st.column_config.NumberColumn('ROI sur coût clôturé',format='%.2f %%'),
+            'Borne ROI 5 % (%)':st.column_config.NumberColumn('Borne bootstrap 5 %',format='%.2f %%'),
             'PnL (USDC)':st.column_config.NumberColumn('PnL (USDC)',format='%.2f'),
             'Volume USDC':st.column_config.NumberColumn('Volume (USDC)',format='%.0f'),
             'ROI indicatif (%)':st.column_config.NumberColumn('ROI provisoire',format='%.2f %%')})
@@ -202,7 +211,7 @@ def profile_screen(wallets,sectors):
         st.info('Indication uniquement : ROI des **positions dont le coût est connu** = '
                 +fmt(r['partial_roi_pct'],' %',2)+f" sur {r['cost_events']}/{r['events']} événements. "
                 'Ce chiffre est biaisable et volontairement exclu des classements.')
-    st.caption('Le ROI affiché est le PnL des positions / coût cumulé des positions, pas le rendement du capital déposé. Un résultat exceptionnel peut provenir d’un échantillon réduit ou de pertes latentes non clôturées.')
+    st.caption('Borne prudente bootstrap 5 % (exploratoire) : '+fmt(r.get('roi_robust_lower_pct'),' %',2)+' · '+str(r.get('screening_quality'))+'. Le ROI affiché est le PnL des positions / coût cumulé des positions, pas le rendement du capital déposé. Un résultat exceptionnel peut provenir d’un échantillon réduit ou de pertes latentes non clôturées.')
     if r['closed_complete'] and r['events']>=MIN_EVIDENCE_EVENTS:
         st.caption(f"Événements clôturés : {r['winning_events']} gagnants, {r['losing_events']} perdants sur {r['events']} observés. Les positions ouvertes n'entrent pas dans ce décompte.")
     else:st.caption('Taux de réussite non affiché : il faut au moins 30 événements et un historique clôturé documenté. Un « 100 % de positions positives » ne constitue pas une mesure fiable.')
@@ -215,6 +224,8 @@ def profile_screen(wallets,sectors):
         a1,a2=st.columns(2)
         a1.metric('PnL positions observées',fmt(audit['observed_position_pnl_usdc'],' USDC',1))
         a2.metric('Écart vs PnL officiel (diagnostic)',fmt(audit['position_pnl_difference_usdc'],' USDC',1))
+        if audit.get('position_integrity_violations'):
+            st.error('Contradictions arithmétiques détectées dans les positions : '+str(audit['position_integrity_violations']))
         if audit['reasons']:
             with st.expander('Données manquantes et limites du calcul',expanded=False):
                 for issue in audit['reasons']:st.write('• '+issue)
@@ -297,7 +308,7 @@ def collect_screen(wallets):
 
 
 st.markdown('### ◈ Polymarket Intelligence')
-st.caption('ROI sur positions closes = indicateur de snapshot, pas ROI global · Version 2.1')
+st.caption('ROI sur positions closes = indicateur de snapshot, pas ROI global · Version 2.2')
 try:
     wallet_rows,sector_rows,recent_rows=load_summary(str(DB))
 except Exception as ex:

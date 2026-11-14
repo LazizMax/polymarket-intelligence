@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from historical_db import wallet_summaries, n
 from historical_intelligence import wallet_roi_report, event_ledger
+from roi_screening import lower_roi_by_event, MIN_EVENTS
 
 MIN_EVIDENCE_EVENTS = 30
 
@@ -35,6 +36,11 @@ def wallet_metrics(db):
         total_basis=sum(e['basis_usdc'] for e in basis_valid)
         weighted_partial=(100*sum(e['pnl_usdc'] for e in basis_valid)/total_basis
                           if total_basis>0 else None)
+        eligible_for_screen=(closed_complete and open_complete and samples>=MIN_EVENTS and
+                             len(basis_valid)==samples and not r.get('couts_manquants_clotures')
+                             and not r.get('incoherences_positions_cloturees')
+                             and not r.get('incoherences_positions_ouvertes'))
+        bound=lower_roi_by_event(es,wallet=w) if eligible_for_screen else None
         top_gain=max((e['pnl_usdc'] for e in es),default=0.)
         wins=sum(e['pnl_usdc'] for e in es if e['pnl_usdc']>0)
         # A 100% win rate is not proof of edge; exclude tiny or incomplete samples.
@@ -53,9 +59,13 @@ def wallet_metrics(db):
             'events':samples,'winning_events':nwin,'losing_events':nloss,'flat_events':nzero,
             'winrate_pct':round(win_rate,2) if win_rate is not None else None,
             'roi_closed_pct':r.get('roi_mises_cloturees_pct'),
+            'roi_robust_lower_pct':bound['roi_event_bootstrap_low_5pct'] if bound else None,
+            'screening_quality':('A examiner hors échantillon' if bound and bound['roi_event_bootstrap_low_5pct']>0
+                                else 'Borne incertaine' if bound else 'Non éligible'),
             'roi_global_pct':r.get('roi_mises_global_pct'),
             'partial_roi_pct':round(weighted_partial,2) if weighted_partial is not None else None,
             'cost_events':len(basis_valid),'closed_complete':closed_complete,
+            'inconsistent_closed_rows':r.get('incoherences_positions_cloturees',0),
             'open_complete':open_complete,'missing_closed_costs':r.get('couts_manquants_clotures',0),
             'pnl_closed_usdc':r.get('pnl_cloture_usdc'),
             'pnl_positions_usdc':r.get('pnl_positions_global_usdc'),
@@ -74,6 +84,7 @@ def roi_missing_reason(r, events=0):
     reasons=[]
     if not r.get('historique_cloture_complet'):reasons.append('Historique des positions clôturées tronqué')
     if r.get('couts_manquants_clotures'):reasons.append(f"{r['couts_manquants_clotures']} position(s) sans coût ou PnL valide")
+    if r.get('incoherences_positions_cloturees'):reasons.append(f"{r['incoherences_positions_cloturees']} position(s) avec contradictions de comptabilité API")
     if events==0:reasons.append('Aucun événement clôturé identifié')
     if not r.get('positions_ouvertes_completes'):reasons.append('Positions ouvertes non vérifiées (ROI global indisponible)')
     return reasons

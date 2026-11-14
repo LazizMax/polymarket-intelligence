@@ -13,6 +13,7 @@ import math
 import random
 import statistics
 from historical_db import classify, n, utc_day
+from position_integrity import check_position
 
 
 def event_ledger(db, wallet: str | None = None):
@@ -35,11 +36,13 @@ def event_ledger(db, wallet: str | None = None):
         basis=n(raw.get('total_cost_usdc'))
         pnl=n(r['realized_pnl'])
         if pnl is None:continue
+        true_event=bool(str(raw.get('event_slug') or raw.get('event_id') or '').strip())
         g=groups.setdefault(key, {'wallet':r['wallet'],'event_key':event,
-            'event_identifier_valid':bool(event),'title':str(r['title'] or event),
+            'event_identifier_valid':true_event,'title':str(r['title'] or event),
             'sector':sector,'sector_source':source,'pnl_usdc':0., 'basis_usdc':0.,
             'basis_covered_positions':0,'positions':0,'first_entry_ts':None,
             'last_event_ts':None,'unpriced_positions':0})
+        g['event_identifier_valid']=g['event_identifier_valid'] and true_event
         g['pnl_usdc']+=pnl;g['positions']+=1
         if basis is not None and basis>0:
             g['basis_usdc']+=basis;g['basis_covered_positions']+=1
@@ -167,7 +170,7 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
     wallets={r['wallet']:dict(r) for r in db.execute(query,params)}
     sums={w:{'closed_positions':0,'open_positions':0,'closed_cost_usdc':0.,
              'open_cost_usdc':0.,'closed_pnl_usdc':0.,'open_pnl_usdc':0.,
-             'missing_closed':0,'missing_open':0,'events':set(),
+             'missing_closed':0,'missing_open':0,'bad_closed':0,'bad_open':0,'events':set(),
              'open_events':set()} for w in wallets}
     for row in db.execute('SELECT wallet,event_key,realized_pnl,raw_json FROM positions' +
                           (' WHERE wallet=?' if wallet else ''),params):
@@ -178,6 +181,7 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
         try:r=json.loads(row['raw_json'])
         except (TypeError,ValueError):r={}
         cost=n(r.get('total_cost_usdc'));pnl=n(row['realized_pnl'])
+        if check_position(r):g['bad_closed']+=1
         if cost is None or cost<=0 or pnl is None:g['missing_closed']+=1
         else:g['closed_cost_usdc']+=cost;g['closed_pnl_usdc']+=pnl
     for row in db.execute('SELECT wallet,event_key,total_pnl,realized_pnl,unrealized_pnl,raw_json FROM open_positions'+
@@ -189,6 +193,7 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
         try:r=json.loads(row['raw_json'])
         except (TypeError,ValueError):r={}
         cost=n(r.get('total_cost_usdc'));pnl=n(row['total_pnl'])
+        if check_position(r,held=True):g['bad_open']+=1
         if pnl is None:
             realized=n(row['realized_pnl']);unrealized=n(row['unrealized_pnl'])
             if realized is not None and unrealized is not None:pnl=realized+unrealized
@@ -199,8 +204,8 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
         g=sums[w]
         cl_complete=bool(meta['closed_exhausted'])
         op_complete=bool(meta['open_exhausted'])
-        cl_ok=cl_complete and g['closed_positions']>0 and g['missing_closed']==0 and g['closed_cost_usdc']>0
-        full_ok=cl_complete and op_complete and g['missing_closed']==0 and g['missing_open']==0 and g['closed_cost_usdc']+g['open_cost_usdc']>0
+        cl_ok=cl_complete and g['closed_positions']>0 and g['missing_closed']==0 and g['bad_closed']==0 and g['closed_cost_usdc']>0
+        full_ok=cl_complete and op_complete and g['missing_closed']==0 and g['missing_open']==0 and g['bad_closed']==0 and g['bad_open']==0 and g['closed_cost_usdc']+g['open_cost_usdc']>0
         realized_roi=100*g['closed_pnl_usdc']/g['closed_cost_usdc'] if cl_ok else None
         all_cost=g['closed_cost_usdc']+g['open_cost_usdc']
         all_pnl=g['closed_pnl_usdc']+g['open_pnl_usdc']
@@ -218,6 +223,8 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
             'evenements_clotures':len(g['events']),'evenements_ouverts':len(g['open_events']),
             'positions_cloturees':g['closed_positions'],'positions_ouvertes':g['open_positions'],
             'couts_manquants_clotures':g['missing_closed'],
+            'incoherences_positions_cloturees':g['bad_closed'],
+            'incoherences_positions_ouvertes':g['bad_open'],
             'couts_manquants_ouvertes':g['missing_open'],
             'historique_cloture_complet':cl_complete,
             'positions_ouvertes_completes':op_complete,

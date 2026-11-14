@@ -9,6 +9,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from historical_db import n
+from position_integrity import check_position
 
 
 def _time(text):
@@ -24,9 +25,11 @@ def wallet_accounting_audit(db, wallet: str) -> dict:
     closed=list(db.execute('SELECT realized_pnl,raw_json FROM positions WHERE wallet=?',(wallet.lower(),)))
     held=list(db.execute('SELECT total_pnl,realized_pnl,unrealized_pnl,raw_json FROM open_positions WHERE wallet=?',(wallet.lower(),)))
     values=[];cost_missing=0;invalid_pnl=0;held_statuses=Counter();fees_seen=0.
+    invariant_violations=Counter()
     for is_held,p in [(False,r) for r in closed]+[(True,r) for r in held]:
         try:r=json.loads(p['raw_json'])
         except (ValueError,TypeError):r={}
+        invariant_violations.update(check_position(r,held=is_held))
         cost=n(r.get('total_cost_usdc'))
         if cost is None or cost<=0:cost_missing+=1
         fee=n(r.get('entry_fees_usdc'))
@@ -60,6 +63,7 @@ def wallet_accounting_audit(db, wallet: str) -> dict:
     if not meta.get('activity_exhausted'):reasons.append('Historique des mouvements de fonds/récompenses incomplet')
     if cost_missing:reasons.append(f'{cost_missing} position(s) sans coût d’entrée exploitable')
     if invalid_pnl:reasons.append(f'{invalid_pnl} position(s) sans PnL exploitable')
+    if invariant_violations:reasons.append(f'{sum(invariant_violations.values())} contradiction(s) dans les données de positions')
     if not latest:reasons.append('Série officielle PnL indisponible')
     if not values:reasons.append('Aucun PnL de position exploitable')
     if timestamp_gap is None:reasons.append('Horodatages de snapshots insuffisants pour rapprocher les séries')
@@ -76,6 +80,7 @@ def wallet_accounting_audit(db, wallet: str) -> dict:
         'activity_complete':bool(meta.get('activity_exhausted')),
         'lifecycle_complete':bool(meta.get('open_states_complete') and meta.get('open_exhausted')),
         'missing_position_costs':cost_missing,'invalid_position_pnls':invalid_pnl,
+        'position_integrity_violations':dict(invariant_violations),
         'observed_position_pnl_usdc':round(observed,4) if observed is not None else None,
         'official_position_pnl_usdc':official_positions,
         'position_pnl_difference_usdc':delta,'official_economic_pnl_usdc':n(official.get('economic_pnl')),

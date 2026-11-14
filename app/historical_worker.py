@@ -43,12 +43,12 @@ def fetch_wallet(wallet:str, first_ts:float|None, is_complete:bool, *, mode:str=
         try:result['datasets'][name]=api.fetch(path,**params)[0]
         except Exception as error:result['failures'][name]=str(error)
     paged=[('closed','/v2/positions',{'user':wallet,'status':'CLOSED'},3 if fast else pages),
-           ('open','/v2/positions',{'user':wallet,'status':'OPEN','include_archived':True},1 if fast else min(pages,30)),
+           ('open','/v2/positions',{'user':wallet,'status':'OPEN','include_archived':True,'filter_type':'TOKENS','filter_amount':0},1 if fast else pages),
            ('trades','/v2/trades',{'user':wallet,'start':start,'taker_only':False},2 if fast else pages)]
     if not fast:
         paged.extend([
-           ('redeemable','/v2/positions',{'user':wallet,'status':'REDEEMABLE'},pages),
-           ('redeemable_lost','/v2/positions',{'user':wallet,'status':'REDEEMABLE_LOST'},pages),
+           ('redeemable','/v2/positions',{'user':wallet,'status':'REDEEMABLE','include_archived':True,'filter_type':'TOKENS','filter_amount':0},pages),
+           ('redeemable_lost','/v2/positions',{'user':wallet,'status':'REDEEMABLE_LOST','include_archived':True,'filter_type':'TOKENS','filter_amount':0},pages),
            ('activity','/v2/activity',{'user':wallet,'exclude_deposits_withdrawals':False},pages)])
     for name,path,params,budget in paged:
         try:result['datasets'][name]=api.pages(path,params,max_pages=budget,size=500,kind='feed' if name=='trades' else 'positions')
