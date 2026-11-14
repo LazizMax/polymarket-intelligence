@@ -2,6 +2,12 @@
 
 Application Windows locale pour analyser les transactions historiques publiques sur Polymarket.
 
+## État actuel — v2.1.0
+
+**Phase P0 : audit des données et du ROI, partiellement implémentée.** L'application collecte les positions ouvertes/fermées, les positions rachetables et l'activité du wallet en mode approfondi. Le rapprochement avec le PnL officiel est diagnostique : aucun ROI global sur capital réel ni avantage de copy trading n'est encore certifié.
+
+Voir [les corrections P0 v2.1.0](docs/P0_2.1.0.md) et [l'audit stratégique du cahier des charges](docs/AUDIT_STRATEGIQUE_2026-11-14.md).
+
 ## Fonctionnement
 
 Trois écrans : **Classements**, **Profils**, et **Collecte / mises à jour**.
