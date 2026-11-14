@@ -26,7 +26,7 @@ Un schéma privé `pi` a été créé **dans le projet Supabase Fit Tracker exis
 - Tous les appels du premier import ont renvoyé HTTP 200.
 - Ces classements sont **sujets au biais de survivance** : aucun avantage de trading n'est prouvé.
 - L'extension HTTP privée `pi.http_get` a été utilisée pour cet import ponctuel directement depuis PostgreSQL, puis **supprimée** après l'import pour réduire la surface d'accès. Les 100 wallets et 46 673 points ont été recontrôlés après suppression.
-- Une Edge Function sécurisée `pi-ingest` est déployée, mais **aucune actualisation automatique** n'est encore programmée. Ne pas confondre déploiement et ingestion planifiée.
+- Depuis le 14/11/2026, la fonction `pi-ingest` dispose d'une route dédiée aux tâches planifiées, protégée par un secret chiffré dans Vault et un hash privé. Une tâche Supabase Cron **active** rafraîchit cinq wallets toutes les quinze minutes, par lots incrémentaux (7 jours récents). Première exécution automatique de cinq wallets réussie à 23 h 30 UTC. Les tâches sont consignées dans `pi.ingestion_jobs`.
 
 ## Données calculées
 
@@ -60,9 +60,14 @@ Cinq sections : notes, métriques de stockage/couverture, 30 candidats selon un 
 ## Prochain jalon technique
 
 1. Authentifier l'accès à un dashboard web spécifique sans exposer l'autre application.
-2. Faire fonctionner le déclenchement serveur programmé avec reprise, backoff 429, suivi des erreurs et contrôle de coût.
+2. Surveiller le déclenchement programmé et les erreurs API dans `pi.ingestion_jobs`. La route de collecte est active, mais ne couvre pas encore trades, positions et cash-flows.
 3. Migrer réellement les transactions, activités, positions et métadonnées de marchés vers `pi`; mesurer la taille avant extension massive.
 4. Reconstituer un ledger par wallet avec frais, cash-flows et valorisation de toutes les positions avant de publier le ROI du capital et le max DD %.
 5. Valider les cohortes prospectivement à prix de copie observables avant tout classement destiné au trading réel.
 
 Cette implantation est un pilote. Les tests CI vérifient le schéma et le moteur d'analyse, mais **n'établissent pas de rentabilité de copy trading**.
+
+
+## Dashboard web privé opérationnel
+
+Ouvrir https://bxfvgywfiifnsbjgudzj.supabase.co/functions/v1/pi-dashboard. Connexion avec le compte Supabase Auth existant, autorisé via `pi.dashboard_access`. Trois vues : Classements filtrés, fiches wallets avec PnL et DD USD, Collecte & qualité. La page de connexion répond HTTP 200 et l'API non authentifiée renvoie HTTP 401. La première connexion utilisateur réelle reste à vérifier depuis un navigateur.
