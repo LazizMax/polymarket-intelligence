@@ -47,7 +47,7 @@ jobs:
         with:
           deno-version: v2.x
       - name: Typecheck protected Supabase ingestion function
-        run: deno check supabase/functions/pi-ingest/index.ts
+        run: deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/page.ts
       - name: Smoke-test Postgres schema and blocked anonymous permissions
         env:
           PGHOST: localhost
