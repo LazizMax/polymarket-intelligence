@@ -77,6 +77,11 @@ jobs:
               with con.cursor() as cur:
                   cur.execute("create role anon nologin; create role authenticated nologin; create role service_role nologin;")
                   cur.execute(Path("sql/001_cloud_private_schema.sql").read_text())
+                  # The dashboard reads fields introduced by subsequent migrations.
+                  for migration in ("002_pi_ingestion_wallet_idx.sql",
+                                    "003_pi_observed_pnl_metrics.sql",
+                                    "004_pi_pnl_concentration_metrics.sql"):
+                      cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
