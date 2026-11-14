@@ -1,0 +1,80 @@
+name: Import initial V2.0 source ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Polymarket_Intelligence_MAJ_V2_0_Simplifiee.zip'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: polymarket-release
+  cancel-in-progress: false
+
+jobs:
+  import-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Safely import application source from the one-time ZIP
+        run: python scripts/import_initial_package.py Polymarket_Intelligence_MAJ_V2_0_Simplifiee.zip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r app/requirements.txt pytest
+
+      - name: Compile and test
+        run: |
+          python -m compileall -q app
+          pytest -q tests
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(python -c 'import json; print(json.load(open("app/version.json"))["version"])')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release is not already present
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists"
+            exit 1
+          fi
+
+      - name: Package code-only release and update manifest
+        run: python scripts/package_release.py
+
+      - name: Commit the extracted source, not the upload archive
+        run: |
+          cp dist/latest.json latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app latest.json
+          git rm -f Polymarket_Intelligence_MAJ_V2_0_Simplifiee.zip
+          git commit -m "feat: import V2.0 application sources and manifest"
+          git push
+
+      - name: Publish updater-compatible GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/polymarket-code.zip \
+            --target "$(git rev-parse HEAD)" \
+            --title "Polymarket Intelligence $TAG" \
+            --notes "Version initiale GitHub. Ce paquet contient uniquement le code de l'application."
