@@ -1,0 +1,71 @@
+name: Verify cloud analytics foundation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/performance_analytics.py'
+      - 'tests/test_performance_analytics.py'
+      - 'sql/**'
+      - '.github/workflows/cloud-analytics-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pi_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r app/requirements.txt pytest psycopg2-binary
+      - name: Test analytics and current application
+        run: |
+          python -m compileall -q app
+          pytest -q tests
+      - name: Smoke-test Postgres schema and blocked anonymous permissions
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGDATABASE: pi_test
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import psycopg2
+
+          con = psycopg2.connect("")
+          with con:
+              with con.cursor() as cur:
+                  cur.execute("create role anon nologin; create role authenticated nologin;")
+                  cur.execute(Path("sql/001_cloud_private_schema.sql").read_text())
+                  cur.execute(
+                      """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
+                      where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
+                  )
+                  secured = cur.fetchone()[0]
+                  assert secured == 12, f"Expected RLS on all 12 tables, got {secured}"
+                  cur.execute("select has_schema_privilege('anon','pi','usage')")
+                  assert cur.fetchone()[0] is False, "anon must not see private schema"
+          con.close()
+          PY
