@@ -1,6 +1,6 @@
 # Cloud analytics V0 — architecture, storage, ROI/drawdown contract
 
-**Status 2026-11-14:** private schema `pi` deployed to the existing Fit Tracker Supabase instance (`bxfvgywfiifnsbjgudzj`) with user approval. Its 12 tables all have RLS enabled, roles `anon` and `authenticated` cannot access the schema, and the unrelated Fit Tracker `public.user_data` table is unchanged. The secured `pi-ingest` Edge Function is deployed (JWT + exact service-role authorization) and is not yet connected to an automatic scheduler. The **100-wallet real-data pilot has been imported directly into the private pi schema**, with 46,673 daily PnL observations and 100 cached analytics rows. A private Supabase notebook provides online consultation; a dedicated web frontend is still not deployed. The local V2.2 application is unchanged. No extra Supabase project was created.
+**Status 2026-11-14 (cloud beta):** A private `pi` schema is deployed inside the existing Fit Tracker Supabase project with 100 Polymarket wallets and 46,673 daily PnL observations. A 3-screen hosted dashboard at https://bxfvgywfiifnsbjgudzj.supabase.co/functions/v1/pi-dashboard requires a valid Supabase Auth session and a separate `pi.dashboard_access` allowlist. A Vault-authenticated pg_cron job refreshes 5 wallets every 15 minutes; the first scheduled 5-wallet run was successful on 2026-11-14 at 23:30 UTC. One initial manual test failed and remains logged. Historical ROI on invested capital and copy-trading edge have NOT been validated. Windows V2.2 remains unchanged.
 
 ## Goal
 
@@ -11,8 +11,8 @@ Replace heavy local reads with a fast web dashboard based on PostgreSQL summarie
 - **Ingestion worker:** runs independently of the website; bounded parallel wallet fetches, cursor checkpoints, incremental UPSERTs, 429 backoff, deterministic fill keys, retryable errors and job telemetry. Initial backfill is separate from recurring refresh.
 - **Supabase PostgreSQL:** normalized wallets, events, markets, trades, position snapshots, economic activities, daily observed PnL and audited portfolio equity. Precomputed wallet summary table refreshed after ingestion.
 - **Object storage (private):** compressed NDJSON/Parquet batches of raw API replies, archive checksum in PostgreSQL. Do not duplicate megabytes of raw JSON per trade.
-- **Web UI:** authenticated Next.js frontend, server-side paginated queries with 3 top-level areas: Explore, Wallet analysis, Data health. No service-role key or database password in browser.
-- **Hosting:** choose deployment service separately; GitHub code changes do not by themselves host a site or run recurring collection. Deploy worker and UI and add monitoring before declaring cloud launch complete.
+- **Web UI:** lightweight self-contained HTML/TypeScript served by a Supabase Edge Function, with server-side pagination and three areas: Rankings, Wallet, and Data quality. JWTs are verified against Supabase Auth and then checked against an explicit private user allowlist; no service-role secret or DB password is sent to the browser.
+- **Hosting:** Supabase Edge Functions host the dashboard and a separate ingestion endpoint. The cron trigger uses pg_cron + pg_net + a secret stored in Supabase Vault. No additional hosting service or subscription was provisioned.
 
 ### Database security
 
@@ -42,7 +42,7 @@ Supabase pricing verified 2026-11-14: Free includes 500 MB database quota, Pro s
 6. **Linearity:** R² of cumulative PnL or indexed equity versus elapsed days; shown together with slope and ROI, never as a standalone badge proving skill. A smooth downward trend also has a high R². Better add fraction of positive weeks and drawdown duration later.
 7. **Selection bias:** neither a smooth curve nor a large ROI constitutes evidence that copying that wallet will work; only a predeclared, out-of-sample copy simulation at observable prices/costs can test that.
 
-The Python foundation \`app/performance_analytics.py\` implements separate PnL and equity diagnostics. Its output is exploratory; the verified equity timeline is not yet available from the current collector.
+The Python foundation `cloud/performance_analytics.py` implements separate PnL and equity diagnostics. Its output is exploratory; the verified equity timeline is not yet available from the current collector.
 
 ## First working cloud milestone
 
@@ -70,9 +70,12 @@ Existing \`%LOCALAPPDATA%\PolymarketIntelligence\` remains source-of-truth until
 - Edge Function: `pi-ingest` is deployed with JWT verification and service-role-only checks. Only a backend admin can call `POST /functions/v1/pi-ingest` with `{"action":"discover","limit":20}` or `{"action":"refresh","wallets":["0x..."]}`. **Do not put a service-role key in a webpage, repo, or mobile app.**
 - The discovery step fetches current leaderboards from Polymarket Data API v2, which are subject to survivorship/leaderboard selection bias.
 - The refresh step currently stores only daily `user-pnl` source points (with `completeness='partial'`) and observed USD drawdown. No equity ROI is calculated. This is a staged, not complete, importer; normalized trades, market metadata, wallet activities, cron, and full accounting reconciliation remain to implement.
-- No scheduled trigger or user authentication layer for the online dashboard has been configured. The deployed function should not be claimed as a running collection service until a successful authenticated invocation and valid source ingestion have been observed.
+- The private online dashboard is deployed and protected by an Auth user allowlist; only public login HTML is anonymous. A 5-wallet/15-minute pg_cron task is active and its first scheduled execution successfully updated 5 wallets. The ingestion endpoint uses application-layer checks: exact service role for administration, or a Vault-token SHA-256 match for the narrow scheduled action (gateway JWT verification is disabled for this endpoint).
 - Post-migration verification: 12 tables, 12 with RLS, no schema USAGE privilege for `anon` or `authenticated`, trusted `service_role` permitted. One preexisting Fit Tracker row remained present.
 - Security advisor "RLS enabled without policies" on private `pi` tables is intentional: deny all browser users. Performance advisor found one missing foreign-key index, fixed in migration 002.
 
 
 **Updated pilot results:** [100-wallet import and tested online notebook](SUPABASE_PILOT_100_WALLETS.md). Temporary SQL `http` extension used for the one-time backfill has been removed after ingestion; ongoing ingestion should use the secured Edge collector, not synchronous HTTP inside PostgreSQL.
+
+
+See [Cloud operations and security runbook](CLOUD_RUNBOOK_V1.md) for current deployment, authentication, monitoring, and pausing the scheduled job.
