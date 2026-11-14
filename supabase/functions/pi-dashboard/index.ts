@@ -1,13 +1,22 @@
 // Authenticated Polymarket Intelligence web API, read-only analytics.
 import postgres from "npm:postgres@3.4.3";
-import { renderPage } from "./page.ts";
 const url = Deno.env.get("SUPABASE_URL") || "";
 const pub = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
 if (!url || !pub || !dbUrl) throw Error("Supabase runtime config unavailable");
 const db = postgres(dbUrl,{ max:2, prepare:false, connect_timeout:10, idle_timeout:5 });
 const walletPattern = /^0x[0-9a-f]{40}$/;
-const jsonHeaders = { "Content-Type":"application/json; charset=utf-8", "Cache-Control":"no-store", "X-Content-Type-Options":"nosniff" };
+const SITE="https://lazizmax.github.io/polymarket-intelligence/";
+const SITE_ORIGIN="https://lazizmax.github.io";
+const jsonHeaders = {
+  "Content-Type":"application/json; charset=utf-8",
+  "Cache-Control":"no-store",
+  "X-Content-Type-Options":"nosniff",
+  "Access-Control-Allow-Origin":SITE_ORIGIN,
+  "Access-Control-Allow-Methods":"GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers":"authorization, content-type",
+  "Vary":"Origin"
+};
 const send = (x: unknown, status=200) => Response.json(x,{status,headers:jsonHeaders});
 function number(x: unknown, defaultVal:number, min:number, max:number):number {
  const n=Number(x); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):defaultVal;
@@ -133,15 +142,18 @@ async function health(){
  return {stats:r[0]??{},jobs};
 }
 Deno.serve(async(req:Request)=>{
- if(req.method==="GET"){
-  return new Response(renderPage(url,pub),{headers:{
-   "Content-Type":"text/html; charset=utf-8",
-   "Cache-Control":"no-store",
-   "X-Content-Type-Options":"nosniff",
-   "X-Frame-Options":"DENY",
-   "Content-Security-Policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' "+url+"; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-  }});
- }
+  const origin=req.headers.get("origin");
+  if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
+  if(req.method==="OPTIONS"){
+    return new Response(null,{status:204,headers:jsonHeaders});
+  }
+  if(req.method==="GET"){
+    // Supabase rewrites HTML responses to text/plain on non-custom domains.
+    // Public configuration contains ONLY project URL and publishable key.
+    if(new URL(req.url).searchParams.get("config")==="1")
+      return send({supabase_url:url,publishable_key:pub});
+    return Response.redirect(SITE,302);
+  }
  if(req.method!=="POST")return send({error:"Method not allowed"},405);
  if(Number(req.headers.get("content-length")||0)>6000)return send({error:"Payload too large"},413);
  try{
