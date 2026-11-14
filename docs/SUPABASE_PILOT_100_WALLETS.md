@@ -70,4 +70,4 @@ Cette implantation est un pilote. Les tests CI vérifient le schéma et le moteu
 
 ## Dashboard web privé opérationnel
 
-Ouvrir https://bxfvgywfiifnsbjgudzj.supabase.co/functions/v1/pi-dashboard. Connexion avec le compte Supabase Auth existant, autorisé via `pi.dashboard_access`. Trois vues : Classements filtrés, fiches wallets avec PnL et DD USD, Collecte & qualité. La page de connexion répond HTTP 200 et l'API non authentifiée renvoie HTTP 401. La première connexion utilisateur réelle reste à vérifier depuis un navigateur.
+Ouvrir https://lazizmax.github.io/polymarket-intelligence/. Connexion avec le compte Supabase Auth existant, autorisé via `pi.dashboard_access`. Trois vues : Classements filtrés, fiches wallets avec PnL et DD USD, Collecte & qualité. La page de connexion répond HTTP 200 et l'API non authentifiée renvoie HTTP 401. La première connexion utilisateur réelle reste à vérifier depuis un navigateur.
