@@ -1,5 +1,5 @@
--- Design draft for a dedicated Polymarket Intelligence Supabase project.
--- NOT APPLIED to LGS Poker or Fit Tracker. Run only after project choice/cost approval.
+-- Applied to Fit Tracker Supabase project with user's approval.
+-- All Polymarket data is isolated in private schema pi; no public.* mutations.
 -- Private schema; no browser-direct REST grants, no secret keys in frontend.
 
 begin;
@@ -207,5 +207,10 @@ alter table pi.raw_archives enable row level security;
 
 revoke all on all tables in schema pi from public, anon, authenticated;
 revoke all on all sequences in schema pi from public, anon, authenticated;
+
+-- Only trusted backend jobs may access the private data; no browser access.
+grant usage on schema pi to service_role;
+grant select, insert, update, delete on all tables in schema pi to service_role;
+grant usage, select on all sequences in schema pi to service_role;
 
 commit;
