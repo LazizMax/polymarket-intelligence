@@ -3,7 +3,7 @@ import pathlib
 import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "cloud"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from performance_analytics import flow_adjusted_equity_stats, pnl_curve_stats
 
 
