@@ -24,7 +24,7 @@ Dans l'application permanente, l'adresse du manifeste de mise à jour est :
 
 `https://raw.githubusercontent.com/LazizMax/polymarket-intelligence/main/latest.json`
 
-**État initial** : le dépôt et la publication GitHub sont configurés, mais la source complète V2.0 doit être importée avant de produire la première release. Tant que `latest.json` et la release n'existent pas, ne pas activer les mises à jour automatiques.
+**État actuel** : le code V2.0 est publié, mais cette application reste un outil exploratoire. **Aucune stratégie rentable à copier n'a encore été validée.** Voir le [cahier d'audit stratégique et critères de validation](docs/AUDIT_STRATEGIQUE_2026-11-14.md).
 
 ## Remarques
 
