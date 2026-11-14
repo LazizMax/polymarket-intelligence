@@ -68,8 +68,8 @@ async function leaderboard(body:any){
   select * from pi.wallet_metrics_daily x where x.wallet=w.wallet order by day desc limit 1
  ) m on true
  where m.observation_days >= $1
- and (not $2::boolean or m.pnl_observed_change_usdc>0)
- and (m.largest_positive_day_share_pct<=$3 or m.largest_positive_day_share_pct is null)
+ and (not $2::boolean or (m.pnl_observed_change_usdc>0 and m.pnl_slope_usdc_per_day>0))
+ and ($3>=100 or (m.largest_positive_day_share_pct is not null and m.largest_positive_day_share_pct<=$3))
  and ($4='' or lower(coalesce(w.display_name,'')) like '%'||$4||'%' or w.wallet like '%'||$4||'%')
  order by `+sort+`,w.wallet limit $5 offset $6`;
  const rows=await db.unsafe(sql,[days,positive,maxDay,query,per,(page-1)*per]);
