@@ -116,8 +116,8 @@ async function wallet(body:any){
   select day,pnl,realized,max(pnl) over(order by day rows unbounded preceding) peak
   from selected
  )
- select day::text day,pnl::double precision pnl,realized::double precision realized,
-  (peak-pnl)::double precision dd
+ select day::text AS day, pnl::double precision AS pnl, realized::double precision AS realized,
+  (peak-pnl)::double precision AS dd
  from lines order by day
  `,[address,days]);
  return {info:info[0],series,warning:"Drawdown in USDC is the peak-to-trough of observed PnL within the selected window, not portfolio drawdown."};
