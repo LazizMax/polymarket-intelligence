@@ -142,7 +142,7 @@ async function refresh(wallet: string) {
 }
 async function scheduled(limit: number) {
   const walletRows = await db.unsafe(
-    "select w.wallet from pi.wallets w left join pi.ingestion_cursors c on c.wallet=w.wallet and c.stream='user_pnl' where coalesce(c.consecutive_failures,0)<5 order by c.last_attempt_at asc nulls first,w.wallet limit $1",
+    "select w.wallet from pi.wallets w left join pi.ingestion_cursors c on c.wallet=w.wallet and c.stream='user_pnl' where coalesce(c.consecutive_failures,0)<5 or c.last_attempt_at < now()-interval '24 hours' order by c.last_attempt_at asc nulls first,w.wallet limit $1",
     [limit]);
   const report: {wallet:string; status:string; rows?:number; error?:string}[] = [];
   for (const row of walletRows) {
