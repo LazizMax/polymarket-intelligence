@@ -1,5 +1,5 @@
-// Service-only, bounded Polymarket ingest. Requires Authorization: Bearer <service_role JWT>.
-// Backend uses private pi PostgreSQL schema, never exposes DB credentials to browsers.
+// Bounded Polymarket ingestion. Admin API needs service role; scheduled route requires a private Vault-backed token.
+// Backend writes private pi schema, with no credentials exposed in the browser.
 import postgres from "npm:postgres@3.4.3";
 
 const connectionString = Deno.env.get("SUPABASE_DB_URL");
@@ -111,13 +111,20 @@ async function discover(limit: number) {
 async function refresh(wallet: string) {
   const data = await get("/v2/user-pnl", { user: wallet, interval: "all", fidelity: "1d" });
   const points = normalizePoints(data);
+  if (points.length === 0) throw new Error("No daily PnL data for this wallet");
   const summary = pnlStats(points);
+  const previous = await db.unsafe("select exists(select 1 from pi.wallet_pnl_daily where wallet=$1) as has_data", [wallet]);
+  const alreadyStored = previous[0]?.has_data === true;
+  // Reimport a 7-day revision window; full backfill only on first collection.
+  // The full returned series is still used to recalculate summary metrics.
+  const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const batch = alreadyStored ? points.filter((p) => p.day >= cutoff) : points;
   await db.begin(async (tx) => {
     await tx.unsafe("insert into pi.wallets(wallet,last_seen_at) values ($1,now()) on conflict(wallet) do update set last_seen_at=now()", [wallet]);
-    for (const p of points) {
+    if (batch.length > 0) {
       await tx.unsafe(
-        "insert into pi.wallet_pnl_daily(wallet,day,source,economic_pnl_usdc,realized_pnl_usdc,position_pnl_usdc,completeness,collected_at) values ($1,$2,'polymarket_v2_user_pnl',$3,$4,$5,'partial',now()) on conflict(wallet,day,source) do update set economic_pnl_usdc=excluded.economic_pnl_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,position_pnl_usdc=excluded.position_pnl_usdc,collected_at=now()",
-        [wallet, p.day, p.economic, p.realized, p.positions]);
+        "insert into pi.wallet_pnl_daily(wallet,day,source,economic_pnl_usdc,realized_pnl_usdc,position_pnl_usdc,completeness,collected_at) select $1,x.day::date,'polymarket_v2_user_pnl',x.economic,x.realized,x.positions,'partial',now() from jsonb_to_recordset($2::jsonb) as x(day text,economic numeric,realized numeric,positions numeric) on conflict(wallet,day,source) do update set economic_pnl_usdc=excluded.economic_pnl_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,position_pnl_usdc=excluded.position_pnl_usdc,collected_at=now()",
+        [wallet, JSON.stringify(batch)]);
     }
     if (summary) {
       await tx.unsafe(
@@ -126,21 +133,71 @@ async function refresh(wallet: string) {
           summary.change_usdc, summary.recovery_factor, summary.slope_usdc_per_day,
           summary.missing_days, summary.first_day, summary.day, summary.pnl_linearity_r2,
           summary.active_days, summary.positive_active_pct, summary.concentration_pct,
-          "Observed PnL (not equity); missing days: " + summary.missing_days]);
+          "Observed PnL only (not capital return); missing days: " + summary.missing_days]);
     }
   });
-  return { wallet, daily_observations: points.length, missing_days: summary?.missing_days ?? null,
+  return { wallet, daily_observations: points.length, rows_upserted: batch.length,
+    last_day: summary?.day ?? null, missing_days: summary?.missing_days ?? null,
     dd_usdc: summary?.dd_usdc ?? null, capital_roi: null };
 }
-Deno.serve(async (req: Request) => {
-  // verify_jwt=true at the gateway; reject all non-service tokens and browser users.
-  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!key || req.headers.get("authorization") !== "Bearer " + key) {
-    return json({ error: "Forbidden" }, 403);
+async function scheduled(limit: number) {
+  const walletRows = await db.unsafe(
+    "select w.wallet from pi.wallets w left join pi.ingestion_cursors c on c.wallet=w.wallet and c.stream='user_pnl' where coalesce(c.consecutive_failures,0)<5 order by c.last_attempt_at asc nulls first,w.wallet limit $1",
+    [limit]);
+  const report: {wallet:string; status:string; rows?:number; error?:string}[] = [];
+  for (const row of walletRows) {
+    const wallet = String(row.wallet);
+    await db.unsafe(
+      "insert into pi.ingestion_cursors(wallet,stream,last_attempt_at) values ($1,'user_pnl',now()) on conflict(wallet,stream) do update set last_attempt_at=now()",
+      [wallet]);
+    const job = await db.unsafe(
+      "insert into pi.ingestion_jobs(wallet,stream,status,started_at) values ($1,'user_pnl','running',now()) returning id",
+      [wallet]);
+    try {
+      const result = await refresh(wallet);
+      await db.unsafe(
+        "update pi.ingestion_cursors set last_success_at=now(),last_seen_at=now(),consecutive_failures=0,last_error=null where wallet=$1 and stream='user_pnl'",
+        [wallet]);
+      await db.unsafe(
+        "update pi.ingestion_jobs set status='done',finished_at=now(),updated_at=now(),rows_fetched=$2 where id=$1",
+        [job[0].id, result.rows_upserted]);
+      report.push({wallet,status:"done",rows:result.rows_upserted});
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 180) : "unknown failure";
+      await db.unsafe(
+        "update pi.ingestion_cursors set consecutive_failures=consecutive_failures+1,last_error=$2 where wallet=$1 and stream='user_pnl'",
+        [wallet,message]);
+      await db.unsafe(
+        "update pi.ingestion_jobs set status='failed',finished_at=now(),updated_at=now(),error_message=$2 where id=$1",
+        [job[0].id,message]);
+      report.push({wallet,status:"failed",error:message});
+    }
   }
+  return {attempted:report.length,ok:report.filter((r)=>r.status==="done").length,errors:report.filter((r)=>r.status==="failed").length,report};
+}
+async function schedulerAllowed(req: Request): Promise<boolean> {
+  const token = req.headers.get("x-pi-scheduler-token") ?? "";
+  if (!/^[0-9a-f]{64}$/.test(token)) return false;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
+  const hashed = [...digest].map((x) => x.toString(16).padStart(2,"0")).join("");
+  const r = await db.unsafe("select 1 from pi.scheduler_auth where single_row_id=1 and token_sha256=$1", [hashed]);
+  return r.length===1;
+}
+Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (Number(req.headers.get("content-length") ?? 0)>5000) return json({error:"Payload too large"},413);
   try {
     const body = await req.json();
+    if (body?.action === "scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      const requested = Number(body.limit ?? 5);
+      if (!Number.isInteger(requested) || requested<1 || requested>5) return json({error:"Invalid batch size"},400);
+      return json(await scheduled(requested));
+    }
+    // Non-scheduler administration remains restricted to the service-role secret.
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!key || req.headers.get("authorization") !== "Bearer " + key)
+      return json({ error: "Forbidden" }, 403);
     if (body.action === "discover") {
       const limit = Number(body.limit ?? 20);
       if (!Number.isInteger(limit) || limit < 1 || limit > 50) return json({ error: "limit 1..50" }, 400);
