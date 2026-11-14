@@ -55,7 +55,7 @@ const $=(id)=>document.getElementById(id);
 const fmt=(n,d=0)=>Number.isFinite(Number(n))?new Intl.NumberFormat("fr-FR",{maximumFractionDigits:d,minimumFractionDigits:d}).format(Number(n)):"—";
 const money=(n)=>n===null||n===undefined?"—":(Number(n)>=0?"+":"−")+"$"+fmt(Math.abs(Number(n)),0);
 const short=(s)=>s?String(s).slice(0,7)+"…"+String(s).slice(-5):"—";
-let session=null,tab="ranking",page=1,currentWallet="",period="365d",rankFilter={days:90,max_day:100,positive:true,sort:"regularity",q:""};
+let session=null,tab="ranking",page=1,currentWallet="",period="365d",rankFilter={days:90,max_day:30,positive:true,sort:"regularity",q:""};
 function node(tag,txt,cls){const e=document.createElement(tag);if(txt!==undefined&&txt!==null)e.textContent=String(txt);if(cls)e.className=cls;return e;}
 function toast(msg){const t=$("toast");t.textContent=msg;t.style.display="block";setTimeout(()=>t.style.display="none",3300);}
 function loginScreen(message){session=null;sessionStorage.removeItem(STORE);$("app").style.display="none";$("loginWrap").style.display="flex";if(message)$("loginError").textContent=message;}
@@ -119,7 +119,7 @@ function graph(points,key,title,color,isDd=false){
  const holder=node("div",null,"chart");
  if(!points.length){holder.append(node("p","Aucune donnée pour cette période."));box.append(holder);return box;}
  const data=points.map(p=>Number(p[key])).map(n=>Number.isFinite(n)?(isDd?-n:n):null);
- const valid=data.filter(x=>x!==null),lo=Math.min(...valid),hi=Math.max(...valid);
+ const valid=data.filter(x=>x!==null);if(!valid.length){holder.append(node("p","Courbe non disponible.","muted"));box.append(holder);return box;}const lo=Math.min(...valid),hi=Math.max(...valid);
  const WIDTH=920,HEIGHT=235,L=60,R=15,T=16,B=33,range=Math.max(1,hi-lo);
  const path=document.createElementNS("http://www.w3.org/2000/svg","path");
  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 "+WIDTH+" "+HEIGHT);svg.setAttribute("preserveAspectRatio","none");
