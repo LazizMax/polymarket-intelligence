@@ -1,10 +1,10 @@
-name: Import initial V2.0 source ZIP
+name: Bootstrap source and publish V2.0
 
 on:
   push:
     branches: [main]
     paths:
-      - 'Polymarket_Intelligence_MAJ_V2_0_Simplifiee.zip'
+      - 'bootstrap/polymarket-source.b64'
 
 permissions:
   contents: write
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   import-and-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,50 +26,50 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Safely import application source from the one-time ZIP
-        run: python scripts/import_initial_package.py Polymarket_Intelligence_MAJ_V2_0_Simplifiee.zip
+      - name: Validate and unpack V2.0 code from signed-off source bundle
+        run: python scripts/import_source_bundle.py bootstrap/polymarket-source.b64
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r app/requirements.txt pytest
 
-      - name: Compile and test
+      - name: Compile and test imported application
         run: |
           python -m compileall -q app
           pytest -q tests
 
-      - name: Read version
+      - name: Determine version
         id: version
         run: |
           VERSION=$(python -c 'import json; print(json.load(open("app/version.json"))["version"])')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure release is not already present
+      - name: Check version not published already
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::Release $TAG already exists"
+            echo "::error::Version $TAG is already published"
             exit 1
           fi
 
-      - name: Package code-only release and update manifest
+      - name: Build updater-compatible release
         run: python scripts/package_release.py
 
-      - name: Commit the extracted source, not the upload archive
+      - name: Commit real source and update manifest
         run: |
           cp dist/latest.json latest.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app latest.json
-          git rm -f Polymarket_Intelligence_MAJ_V2_0_Simplifiee.zip
-          git commit -m "feat: import V2.0 application sources and manifest"
+          git add app tests installer latest.json
+          git rm -f bootstrap/polymarket-source.b64
+          git commit -m "feat: publish Polymarket Intelligence V2.0 source"
           git push
 
-      - name: Publish updater-compatible GitHub Release
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -77,4 +77,4 @@ jobs:
           gh release create "$TAG" dist/polymarket-code.zip \
             --target "$(git rev-parse HEAD)" \
             --title "Polymarket Intelligence $TAG" \
-            --notes "Version initiale GitHub. Ce paquet contient uniquement le code de l'application."
+            --notes "Version 2.0.0 : interface simplifiée, métriques de couverture et collecte parallèle. Mise à jour du code uniquement ; données locales conservées."
