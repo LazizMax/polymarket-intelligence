@@ -54,18 +54,41 @@ function normalizePoints(body: any): Point[] {
 function pnlStats(points: Point[]) {
   const rows = points.filter((p) => p.economic !== null);
   if (rows.length < 2) return null;
-  let peak = rows[0].economic!, dd = 0, ups = 0, gaps = 0;
+  let peak = rows[0].economic!, dd = 0, ups = 0, gaps = 0, active = 0;
+  let grossUp = 0, biggestUp = 0;
+  const first = rows[0].day;
+  const values = rows.map((p) => p.economic!);
+  const xx = rows.map((p) => (Date.parse(p.day) - Date.parse(first)) / 86400000);
   for (let i = 1; i < rows.length; i++) {
-    const x = rows[i].economic!;
+    const x = values[i], change = x - values[i - 1];
     peak = Math.max(peak, x);
     dd = Math.max(dd, peak - x);
-    if (x > rows[i - 1].economic!) ups++;
-    const days = Math.round((Date.parse(rows[i].day) - Date.parse(rows[i - 1].day)) / 86400000);
-    gaps += Math.max(0, days - 1);
+    if (change !== 0) active++;
+    if (change > 0) {
+      ups++; grossUp += change; biggestUp = Math.max(biggestUp, change);
+    }
+    gaps += Math.max(0, xx[i] - xx[i - 1] - 1);
   }
-  return { day: rows[rows.length - 1].day, dd_usdc: dd, percent_positive: 100 * ups / (rows.length - 1),
-    days: rows.length, missing_days: gaps };
+  const n = rows.length, mx = xx.reduce((a, b) => a + b, 0) / n;
+  const my = values.reduce((a, b) => a + b, 0) / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xx[i] - mx, dy = values[i] - my;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  }
+  const slope = sxx > 0 ? sxy / sxx : null;
+  const r2 = sxx > 0 && syy > 0 ? Math.min(1, Math.max(0, sxy * sxy / (sxx * syy))) : null;
+  const change = values[n - 1] - values[0];
+  return {
+    day: rows[n - 1].day, first_day: first, days: n, missing_days: gaps,
+    dd_usdc: dd, change_usdc: change, recovery_factor: dd > 0 ? change / dd : null,
+    percent_positive: 100 * ups / (n - 1), active_days: active,
+    positive_active_pct: active > 0 ? 100 * ups / active : null,
+    concentration_pct: grossUp > 0 ? 100 * biggestUp / grossUp : null,
+    pnl_linearity_r2: r2, slope_usdc_per_day: slope,
+  };
 }
+
 async function discover(limit: number) {
   const wallets = new Map<string, string>();
   for (const sort of ["PNL", "VOLUME"]) {
@@ -98,8 +121,11 @@ async function refresh(wallet: string) {
     }
     if (summary) {
       await tx.unsafe(
-        "insert into pi.wallet_metrics_daily(wallet,day,max_observed_pnl_drawdown_usdc,positive_daily_change_pct,observation_days,quality_status,incomplete_reason,computed_at) values ($1,$2,$3,$4,$5,'pnl_only',$6,now()) on conflict(wallet,day) do update set max_observed_pnl_drawdown_usdc=excluded.max_observed_pnl_drawdown_usdc,positive_daily_change_pct=excluded.positive_daily_change_pct,observation_days=excluded.observation_days,quality_status='pnl_only',incomplete_reason=excluded.incomplete_reason,computed_at=now()",
+        "insert into pi.wallet_metrics_daily(wallet,day,max_observed_pnl_drawdown_usdc,positive_daily_change_pct,observation_days,pnl_observed_change_usdc,pnl_recovery_factor,pnl_slope_usdc_per_day,missing_pnl_days,pnl_observed_from,pnl_observed_through,pnl_linearity_r2,active_pnl_change_days,positive_active_change_pct,largest_positive_day_share_pct,quality_status,incomplete_reason,computed_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pnl_only',$16,now()) on conflict(wallet,day) do update set max_observed_pnl_drawdown_usdc=excluded.max_observed_pnl_drawdown_usdc,positive_daily_change_pct=excluded.positive_daily_change_pct,observation_days=excluded.observation_days,pnl_observed_change_usdc=excluded.pnl_observed_change_usdc,pnl_recovery_factor=excluded.pnl_recovery_factor,pnl_slope_usdc_per_day=excluded.pnl_slope_usdc_per_day,missing_pnl_days=excluded.missing_pnl_days,pnl_observed_from=excluded.pnl_observed_from,pnl_observed_through=excluded.pnl_observed_through,pnl_linearity_r2=excluded.pnl_linearity_r2,active_pnl_change_days=excluded.active_pnl_change_days,positive_active_change_pct=excluded.positive_active_change_pct,largest_positive_day_share_pct=excluded.largest_positive_day_share_pct,quality_status='pnl_only',incomplete_reason=excluded.incomplete_reason,computed_at=now()",
         [wallet, summary.day, summary.dd_usdc, summary.percent_positive, summary.days,
+          summary.change_usdc, summary.recovery_factor, summary.slope_usdc_per_day,
+          summary.missing_days, summary.first_day, summary.day, summary.pnl_linearity_r2,
+          summary.active_days, summary.positive_active_pct, summary.concentration_pct,
           "Observed PnL (not equity); missing days: " + summary.missing_days]);
     }
   });
