@@ -1,0 +1,33 @@
+# Personal data, secrets and trading history
+.env
+.env.*
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+settings.json
+historical/
+live_sessions/
+runs/
+logs/
+updates/
+*.log
+*.csv
+*.jsonl
+*.parquet
+*.pkl
+*.token
+*.key
+*.pem
+# Environments and transient builds
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
