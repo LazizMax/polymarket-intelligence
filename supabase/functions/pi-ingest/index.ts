@@ -123,7 +123,7 @@ async function refresh(wallet: string) {
     await tx.unsafe("insert into pi.wallets(wallet,last_seen_at) values ($1,now()) on conflict(wallet) do update set last_seen_at=now()", [wallet]);
     if (batch.length > 0) {
       await tx.unsafe(
-        "insert into pi.wallet_pnl_daily(wallet,day,source,economic_pnl_usdc,realized_pnl_usdc,position_pnl_usdc,completeness,collected_at) select $1,x.day::date,'polymarket_v2_user_pnl',x.economic,x.realized,x.positions,'partial',now() from jsonb_to_recordset($2::jsonb) as x(day text,economic numeric,realized numeric,positions numeric) on conflict(wallet,day,source) do update set economic_pnl_usdc=excluded.economic_pnl_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,position_pnl_usdc=excluded.position_pnl_usdc,collected_at=now()",
+        "insert into pi.wallet_pnl_daily(wallet,day,source,economic_pnl_usdc,realized_pnl_usdc,position_pnl_usdc,completeness,collected_at) select $1,x.day::date,'polymarket_v2_user_pnl',x.economic,x.realized,x.positions,'partial',now() from jsonb_to_recordset(($2::text)::jsonb) as x(day text,economic numeric,realized numeric,positions numeric) on conflict(wallet,day,source) do update set economic_pnl_usdc=excluded.economic_pnl_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,position_pnl_usdc=excluded.position_pnl_usdc,collected_at=now()",
         [wallet, JSON.stringify(batch)]);
     }
     if (summary) {
