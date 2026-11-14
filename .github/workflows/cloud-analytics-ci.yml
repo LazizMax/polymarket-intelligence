@@ -97,8 +97,8 @@ jobs:
                   )
                   source = Path("supabase/functions/pi-dashboard/index.ts").read_text()
                   for expression, params in (
-                      (r"const info=await db\\.unsafe\\(`([\\s\\S]*?)`,\\[address\\]\\);", (wallet,)),
-                      (r"const series=await db\\.unsafe\\(`([\\s\\S]*?)`,\\[address,days\\]\\);", (wallet,365))
+                      (r"const info=await db\.unsafe\(`([\s\S]*?)`,\[address\]\);", (wallet,)),
+                      (r"const series=await db\.unsafe\(`([\s\S]*?)`,\[address,days\]\);", (wallet,365))
                   ):
                       found = re.search(expression, source)
                       assert found, "Wallet query not found in Edge Function"
