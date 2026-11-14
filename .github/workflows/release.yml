@@ -1,0 +1,90 @@
+name: Test and publish Polymarket Intelligence
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: polymarket-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check complete source is present
+        shell: bash
+        run: |
+          test -f app/dashboard.py
+          test -f app/requirements.txt
+          test -f app/historical_db.py
+          test -f app/version.json
+          test -f scripts/package_release.py
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r app/requirements.txt pytest
+
+      - name: Compile application
+        run: python -m compileall -q app
+
+      - name: Run tests
+        run: pytest -q tests
+
+      - name: Determine release version
+        id: version
+        run: |
+          VERSION=$(python -c 'import json; print(json.load(open("app/version.json"))["version"])')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse overwriting an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Increase app/version.json."
+            exit 1
+          fi
+
+      - name: Package ZIP and SHA-256 manifest
+        run: python scripts/package_release.py
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/polymarket-code.zip \
+            --target "$GITHUB_SHA" \
+            --title "Polymarket Intelligence $TAG" \
+            --notes "Mise à jour du code. La base de données et les paramètres locaux restent conservés."
+
+      - name: Update public latest.json manifest
+        run: |
+          cp dist/latest.json latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.json
+          git commit -m "chore: publish update manifest ${{ steps.version.outputs.tag }}"
+          git push
