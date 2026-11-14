@@ -48,6 +48,18 @@ jobs:
           deno-version: v2.x
       - name: Typecheck protected Supabase ingestion function
         run: deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/page.ts
+      - name: Check embedded browser JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("supabase/functions/pi-dashboard/page.ts").read_text()
+          assert "<script>" in source and "</script>" in source
+          code = source.split("<script>",1)[1].split("</script>",1)[0]
+          code = code.replace("__SUPABASE_URL__", '"https://example.supabase.co"')
+          code = code.replace("__SUPABASE_KEY__", '"sb_publishable_test"')
+          Path("/tmp/pi-browser.js").write_text(code)
+          PY
+          node --check /tmp/pi-browser.js
       - name: Smoke-test Postgres schema and blocked anonymous permissions
         env:
           PGHOST: localhost
