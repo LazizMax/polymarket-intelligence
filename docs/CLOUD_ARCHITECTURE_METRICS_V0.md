@@ -1,6 +1,6 @@
 # Cloud analytics V0 — architecture, storage, ROI/drawdown contract
 
-**Status:** design and CI proposal on branch only. No Supabase project created, no user data migrated, no cloud UI deployed. The local V2.2 application remains unchanged.
+**Status 2026-11-14:** private schema `pi` deployed to the existing Fit Tracker Supabase instance (`bxfvgywfiifnsbjgudzj`) with user approval. Its 12 tables all have RLS enabled, roles `anon` and `authenticated` cannot access the schema, and the unrelated Fit Tracker `public.user_data` table is unchanged. The secured `pi-ingest` Edge Function is deployed (JWT + exact service-role authorization) but it has **not been triggered**, so tables contain no imported wallet history yet. No online UI deployed. The local V2.2 application is unchanged. No extra Supabase project was created.
 
 ## Goal
 
@@ -16,7 +16,7 @@ Replace heavy local reads with a fast web dashboard based on PostgreSQL summarie
 
 ### Database security
 
-SQL draft at \`sql/001_cloud_private_schema.sql\` creates a private \`pi\` schema with RLS on all 12 tables, no public or browser role access. A server-side backend accesses database with a secret kept in deployment environment variables. Browser identity/policies require deliberate authorization design before direct API exposure. Never reuse the existing LGS Poker or Fit Tracker project as a data store.
+SQL draft at \`sql/001_cloud_private_schema.sql\` creates a private \`pi\` schema with RLS on all 12 tables, no public or browser role access. A server-side backend accesses database with a secret kept in deployment environment variables. Browser identity/policies require deliberate authorization design before direct API exposure. For the initial pilot, the user approved an isolated `pi` schema inside Fit Tracker. This is an infrastructure-sharing arrangement only; no Fit Tracker business data is accessed or mixed. A dedicated project may be appropriate once actual storage and CPU use are known.
 
 ## Storage estimates (planning only, benchmark after 10,000 real rows)
 
@@ -46,7 +46,7 @@ The Python foundation \`app/performance_analytics.py\` implements separate PnL a
 
 ## First working cloud milestone
 
-- Choose a dedicated Supabase project and acceptable budget.
+- Use the existing Fit Tracker Supabase project as a temporary host (approved, done); revisit isolation after usage measurements.
 - Apply and test the private schema, security and indexes.
 - Import **100 wallets maximum initially** from the existing SQLite database (not blindly all history), deduplicate, record byte size, import latency, completeness and accounting differences.
 - Compute daily source PnL and wallet-level metrics in a background job; do not calculate tens of millions of rows on dashboard page load.
@@ -62,3 +62,14 @@ The private schema includes \`(wallet, reported_at desc)\` on trades, \`(wallet,
 ## Migration safety
 
 Existing \`%LOCALAPPDATA%\PolymarketIntelligence\` remains source-of-truth until cloud roundtrip verification. Upload batches are idempotent on \`(wallet,trade_key)\`. A dual-read comparison of total wallets/fills/positions and the latest PnL validates migration before switching the UI. No destructive migration of the user's other Supabase projects.
+
+
+## Deployed backend scope and safety
+
+- Supabase SQL migration: `sql/001_cloud_private_schema.sql` (applied) and `sql/002_pi_ingestion_wallet_idx.sql` (applied).
+- Edge Function: `pi-ingest` is deployed with JWT verification and service-role-only checks. Only a backend admin can call `POST /functions/v1/pi-ingest` with `{"action":"discover","limit":20}` or `{"action":"refresh","wallets":["0x..."]}`. **Do not put a service-role key in a webpage, repo, or mobile app.**
+- The discovery step fetches current leaderboards from Polymarket Data API v2, which are subject to survivorship/leaderboard selection bias.
+- The refresh step currently stores only daily `user-pnl` source points (with `completeness='partial'`) and observed USD drawdown. No equity ROI is calculated. This is a staged, not complete, importer; normalized trades, market metadata, wallet activities, cron, and full accounting reconciliation remain to implement.
+- No scheduled trigger or user authentication layer for the online dashboard has been configured. The deployed function should not be claimed as a running collection service until a successful authenticated invocation and valid source ingestion have been observed.
+- Post-migration verification: 12 tables, 12 with RLS, no schema USAGE privilege for `anon` or `authenticated`, trusted `service_role` permitted. One preexisting Fit Tracker row remained present.
+- Security advisor "RLS enabled without policies" on private `pi` tables is intentional: deny all browser users. Performance advisor found one missing foreign-key index, fixed in migration 002.
