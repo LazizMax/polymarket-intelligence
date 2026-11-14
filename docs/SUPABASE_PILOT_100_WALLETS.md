@@ -25,7 +25,7 @@ Un schéma privé `pi` a été créé **dans le projet Supabase Fit Tracker exis
 - Déduplication par `(wallet, day, source)` ; dernier point de la journée conservé.
 - Tous les appels du premier import ont renvoyé HTTP 200.
 - Ces classements sont **sujets au biais de survivance** : aucun avantage de trading n'est prouvé.
-- L'extension HTTP privée `pi.http_get` a été utilisée pour cet import ponctuel directement depuis PostgreSQL.
+- L'extension HTTP privée `pi.http_get` a été utilisée pour cet import ponctuel directement depuis PostgreSQL, puis **supprimée** après l'import pour réduire la surface d'accès. Les 100 wallets et 46 673 points ont été recontrôlés après suppression.
 - Une Edge Function sécurisée `pi-ingest` est déployée, mais **aucune actualisation automatique** n'est encore programmée. Ne pas confondre déploiement et ingestion planifiée.
 
 ## Données calculées
