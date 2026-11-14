@@ -1,6 +1,6 @@
 # Cloud analytics V0 — architecture, storage, ROI/drawdown contract
 
-**Status 2026-11-14:** private schema `pi` deployed to the existing Fit Tracker Supabase instance (`bxfvgywfiifnsbjgudzj`) with user approval. Its 12 tables all have RLS enabled, roles `anon` and `authenticated` cannot access the schema, and the unrelated Fit Tracker `public.user_data` table is unchanged. The secured `pi-ingest` Edge Function is deployed (JWT + exact service-role authorization) but it has **not been triggered**, so tables contain no imported wallet history yet. No online UI deployed. The local V2.2 application is unchanged. No extra Supabase project was created.
+**Status 2026-11-14:** private schema `pi` deployed to the existing Fit Tracker Supabase instance (`bxfvgywfiifnsbjgudzj`) with user approval. Its 12 tables all have RLS enabled, roles `anon` and `authenticated` cannot access the schema, and the unrelated Fit Tracker `public.user_data` table is unchanged. The secured `pi-ingest` Edge Function is deployed (JWT + exact service-role authorization) and is not yet connected to an automatic scheduler. The **100-wallet real-data pilot has been imported directly into the private pi schema**, with 46,673 daily PnL observations and 100 cached analytics rows. A private Supabase notebook provides online consultation; a dedicated web frontend is still not deployed. The local V2.2 application is unchanged. No extra Supabase project was created.
 
 ## Goal
 
@@ -73,3 +73,6 @@ Existing \`%LOCALAPPDATA%\PolymarketIntelligence\` remains source-of-truth until
 - No scheduled trigger or user authentication layer for the online dashboard has been configured. The deployed function should not be claimed as a running collection service until a successful authenticated invocation and valid source ingestion have been observed.
 - Post-migration verification: 12 tables, 12 with RLS, no schema USAGE privilege for `anon` or `authenticated`, trusted `service_role` permitted. One preexisting Fit Tracker row remained present.
 - Security advisor "RLS enabled without policies" on private `pi` tables is intentional: deny all browser users. Performance advisor found one missing foreign-key index, fixed in migration 002.
+
+
+**Updated pilot results:** [100-wallet import and tested online notebook](SUPABASE_PILOT_100_WALLETS.md). Temporary SQL `http` extension used for the one-time backfill has been removed after ingestion; ongoing ingestion should use the secured Edge collector, not synchronous HTTP inside PostgreSQL.
