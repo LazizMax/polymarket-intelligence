@@ -7,6 +7,7 @@ on:
       - 'app/performance_analytics.py'
       - 'tests/test_performance_analytics.py'
       - 'sql/**'
+      - 'supabase/functions/**'
       - '.github/workflows/cloud-analytics-ci.yml'
   workflow_dispatch:
 
@@ -42,6 +43,11 @@ jobs:
         run: |
           python -m compileall -q app
           pytest -q tests
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Typecheck protected Supabase ingestion function
+        run: deno check supabase/functions/pi-ingest/index.ts
       - name: Smoke-test Postgres schema and blocked anonymous permissions
         env:
           PGHOST: localhost
