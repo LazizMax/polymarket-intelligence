@@ -42,4 +42,6 @@ Dans l'application permanente, l'adresse du manifeste de mise à jour est :
 
 [Ouvrir l'interface Polymarket Intelligence Cloud](https://lazizmax.github.io/polymarket-intelligence/)
 
+**Activation initiale à effectuer :** ouvrir [Settings → Pages](https://github.com/LazizMax/polymarket-intelligence/settings/pages) et choisir **GitHub Actions** comme source. La première exécution du workflow `Deploy Polymarket Cloud frontend` échoue tant que Pages n'est pas activé ; relancer ensuite ce workflow. Le code frontend est déjà validé et prêt à être publié.
+
 Le dashboard en ligne utilise le schéma privé `pi` d'un projet Supabase existant. Il impose un compte Supabase Auth explicitement autorisé. L'import initial de 100 wallets, le PnL quotidien et les drawdowns observés sont opérationnels. Un job planifié rafraîchit 5 wallets toutes les 15 minutes. **Aucun ROI sur capital ni avantage de copy trading n'a encore été validé.** La documentation technique et la procédure de suspension sont dans [le runbook cloud](docs/CLOUD_RUNBOOK_V1.md).
