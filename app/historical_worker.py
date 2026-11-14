@@ -34,7 +34,7 @@ def fetch_wallet(wallet:str, first_ts:float|None, is_complete:bool, *, mode:str=
     start=max(1,int(first_ts-2*86400)) if is_complete and first_ts else 1
     # Conservative parallelism is across independent wallets, never within a cursor chain.
     api=API(wait=0.04, retries=3)
-    result={'wallet':wallet,'collected_utc':datetime.now(timezone.utc).isoformat(),
+    result={'wallet':wallet,'trade_start':start,'collected_utc':datetime.now(timezone.utc).isoformat(),
             'datasets':{},'failures':{}}
     requests_simple=[('stats','/v2/user-stats',{'user':wallet}),
                      ('volume','/v2/user-volume',{'user':wallet}),
@@ -45,9 +45,31 @@ def fetch_wallet(wallet:str, first_ts:float|None, is_complete:bool, *, mode:str=
     paged=[('closed','/v2/positions',{'user':wallet,'status':'CLOSED'},3 if fast else pages),
            ('open','/v2/positions',{'user':wallet,'status':'OPEN','include_archived':True},1 if fast else min(pages,30)),
            ('trades','/v2/trades',{'user':wallet,'start':start,'taker_only':False},2 if fast else pages)]
+    if not fast:
+        paged.extend([
+           ('redeemable','/v2/positions',{'user':wallet,'status':'REDEEMABLE'},pages),
+           ('redeemable_lost','/v2/positions',{'user':wallet,'status':'REDEEMABLE_LOST'},pages),
+           ('activity','/v2/activity',{'user':wallet,'exclude_deposits_withdrawals':False},pages)])
     for name,path,params,budget in paged:
         try:result['datasets'][name]=api.pages(path,params,max_pages=budget,size=500,kind='feed' if name=='trades' else 'positions')
         except Exception as error:result['failures'][name]=str(error)
+    if not fast:
+        # Combine all held lifecycle statuses, deduplicating the same token across feeds.
+        names=('open','redeemable','redeemable_lost')
+        if all(x in result['datasets'] for x in names):
+            sources=[result['datasets'][x] for x in names]
+            rows={}
+            for source in sources:
+                for item in source.get('rows',[]):
+                    key=(str(item.get('token_id') or ''),str(item.get('condition_id') or ''),
+                         str(item.get('outcome_index') if item.get('outcome_index') is not None else item.get('outcome') or ''))
+                    rows[key]=item
+            result['datasets']['open']={'rows':list(rows.values()),
+                'exhausted':all(bool(s.get('exhausted')) for s in sources),
+                'complete_lifecycle':True,
+                'statuses':list(names)}
+        else:
+            result['failures']['open_lifecycle']='One or more held-position status feeds failed'
     result['requested_mode']=mode
     return result
 

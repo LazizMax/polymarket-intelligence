@@ -27,7 +27,7 @@ def wallet_metrics(db):
         es=events.get(w,[])
         samples=len(es)
         closed_complete=bool(meta.get('closed_exhausted'))
-        open_complete=bool(meta.get('open_exhausted'))
+        open_complete=bool(meta.get('open_exhausted') and meta.get('open_states_complete'))
         nwin=sum(e['pnl_usdc']>0 for e in es)
         nloss=sum(e['pnl_usdc']<0 for e in es)
         nzero=samples-nwin-nloss
@@ -39,10 +39,10 @@ def wallet_metrics(db):
         wins=sum(e['pnl_usdc'] for e in es if e['pnl_usdc']>0)
         # A 100% win rate is not proof of edge; exclude tiny or incomplete samples.
         win_rate=(100*nwin/samples if closed_complete and samples>=MIN_EVIDENCE_EVENTS else None)
-        data_status=('À auditer' if not closed_complete else
+        data_status=('À auditer' if not closed_complete or not open_complete else
                      'Coûts manquants' if r.get('couts_manquants_clotures',0) else
                      'Échantillon réduit' if samples<MIN_EVIDENCE_EVENTS else
-                     'Historique exploitable')
+                     'Snapshots exploitables (non réconciliés)')
         if not es and closed_complete:data_status='Aucun événement clos'
         realized=n(meta.get('realized_pnl'))
         volume=n(meta.get('volume_usdc'))

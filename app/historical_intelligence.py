@@ -207,7 +207,10 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
         results.append({
             'wallet':w,'name':meta['name'],
             'roi_mises_cloturees_pct':round(realized_roi,3) if realized_roi is not None else None,
-            'roi_mises_global_pct':round(100*all_pnl/all_cost,3) if full_ok else None,
+            # A held position may have realized profits from already-sold shares,
+            # while total_cost_usdc covers only *remaining* inventory. The ratio
+            # would overstate lifetime ROI. Requires reconstructed cash-flow ledger.
+            'roi_mises_global_pct':None,
             'pnl_cloture_usdc':round(g['closed_pnl_usdc'],2) if cl_ok else None,
             'cout_cloture_usdc':round(g['closed_cost_usdc'],2) if cl_ok else None,
             'pnl_positions_global_usdc':round(all_pnl,2) if full_ok else None,
@@ -219,5 +222,6 @@ def wallet_roi_report(db, wallet: str | None = None) -> list[dict]:
             'historique_cloture_complet':cl_complete,
             'positions_ouvertes_completes':op_complete,
             'roi_capital_reel_pct':None,  # deposits, withdrawals and reinvestment require a ledger
+            'roi_global_reason':'Coût des positions ouvertes ≠ coût total des achats historiques ; ledger requis',
         })
     return results

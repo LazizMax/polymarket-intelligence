@@ -15,7 +15,7 @@ from typing import Any
 from collections import defaultdict
 from strategy import category as heuristic_category
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DB_FILENAME = 'historique.sqlite'
 WALLET = re.compile(r'^0x[0-9a-f]{40}$')
 
@@ -72,6 +72,12 @@ def open_db(path: str | Path) -> sqlite3.Connection:
         PRIMARY KEY(wallet,record_key)
     );
     CREATE INDEX IF NOT EXISTS idx_open_positions_wallet ON open_positions(wallet);
+    CREATE TABLE IF NOT EXISTS activity_events (
+        wallet TEXT NOT NULL, record_key TEXT NOT NULL, timestamp REAL,
+        kind TEXT, amount_usdc REAL, raw_json TEXT NOT NULL,
+        PRIMARY KEY(wallet,record_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_wallet ON activity_events(wallet,timestamp);
     CREATE TABLE IF NOT EXISTS pnl_points (
         wallet TEXT NOT NULL, timestamp REAL NOT NULL, economic_pnl REAL,
         realized_pnl REAL, settled_pnl REAL, position_pnl REAL, source_fidelity TEXT,
@@ -91,6 +97,13 @@ def open_db(path: str | Path) -> sqlite3.Connection:
     cols={r[1] for r in db.execute('PRAGMA table_info(wallets)').fetchall()}
     if 'open_exhausted' not in cols:
         db.execute('ALTER TABLE wallets ADD COLUMN open_exhausted INTEGER DEFAULT 0')
+    for col,ddl in (
+        ('open_states_complete','INTEGER DEFAULT 0'),
+        ('activity_exhausted','INTEGER DEFAULT 0'),
+        ('closed_snapshot_at','TEXT'),('open_snapshot_at','TEXT'),
+        ('activity_snapshot_at','TEXT')):
+        if col not in cols:
+            db.execute(f'ALTER TABLE wallets ADD COLUMN {col} {ddl}')
     db.commit()
     return db
 
@@ -143,21 +156,43 @@ def merge_wallet(db: sqlite3.Connection, record: dict, name: str='', source: str
     tr_ex=bool(trade_data.get('exhausted')) if isinstance(trade_data,dict) else False
     cl_ex=bool(closed_data.get('exhausted')) if isinstance(closed_data,dict) else False
     op_ex=bool(open_data.get('exhausted')) if isinstance(open_data,dict) else False
+    # OPEN alone excludes some pending redemption states. Legacy snapshots are provisional.
+    states_full=bool(open_data.get('complete_lifecycle') and op_ex) if isinstance(open_data,dict) else False
+    activity_data=d.get('activity') or {}
+    activity_ex=bool(activity_data.get('exhausted')) if isinstance(activity_data,dict) else False
     series=d.get('pnl_series') or {}
     fidelity=str(series.get('source_fidelity') or '') if isinstance(series,dict) else ''
     with db:
         if old is None:
             db.execute('INSERT INTO wallets(wallet,name,first_seen_utc) VALUES(?,?,?)',(wallet,name,at))
+        existing=db.execute('SELECT COUNT(*) FROM positions WHERE wallet=?',(wallet,)).fetchone()[0]
+        old_open=db.execute('SELECT COUNT(*) FROM open_positions WHERE wallet=?',(wallet,)).fetchone()[0]
+        replacing_closed = bool(meta_new and cl_ex) or bool(existing==0 and 'rows' in closed_data)
+        replacing_open = bool(meta_new and states_full) or bool(old_open==0 and 'rows' in open_data)
+        closed_flag = int(cl_ex) if replacing_closed else (int(old['closed_exhausted']) if old else 0)
+        open_flag = int(op_ex) if replacing_open else (int(old['open_exhausted']) if old else 0)
+        lifecycle_flag = int(states_full) if replacing_open else (int(old['open_states_complete']) if old else 0)
+        # A paginated incremental window alone cannot establish whole-life trade completeness.
+        start=int((record.get('trade_start') or 1))
+        full_trade = tr_ex and (start==1 or bool(old and old['trade_exhausted']))
+        trade_flag = int(full_trade) if 'rows' in trade_data else (int(old['trade_exhausted']) if old else 0)
         if meta_new:
             db.execute('''UPDATE wallets SET name=COALESCE(NULLIF(?,''),name), last_refresh_utc=?,
                 volume_usdc=COALESCE(?,volume_usdc),official_trade_count=COALESCE(?,official_trade_count),
                 data_source=?,trade_exhausted=COALESCE(?,trade_exhausted),
                 closed_exhausted=COALESCE(?,closed_exhausted),open_exhausted=COALESCE(?,open_exhausted),
+                open_states_complete=?,activity_exhausted=COALESCE(?,activity_exhausted),
+                closed_snapshot_at=COALESCE(?,closed_snapshot_at),open_snapshot_at=COALESCE(?,open_snapshot_at),
+                activity_snapshot_at=COALESCE(?,activity_snapshot_at),
                 pnl_fidelity=COALESCE(NULLIF(?,''),pnl_fidelity),errors=?,profile_utc=? WHERE wallet=?''',(
                 name,at,n(vol.get('volume_usdc')),int(n(vol.get('trade_count'))) if n(vol.get('trade_count')) is not None else None,source,
-                int(tr_ex) if isinstance(trade_data,dict) and 'rows' in trade_data else None,
-                int(cl_ex) if isinstance(closed_data,dict) and 'rows' in closed_data else 0,
-                int(op_ex) if isinstance(open_data,dict) and 'rows' in open_data else 0,fidelity,
+                trade_flag,closed_flag,open_flag,
+                lifecycle_flag,
+                int(activity_ex) if 'rows' in activity_data else None,
+                at if replacing_closed and cl_ex else None,
+                at if replacing_open and states_full else None,
+                at if activity_ex and 'rows' in activity_data else None,
+                fidelity,
                 ', '.join(sorted((record.get('failures') or {}).keys())),at,wallet))
         before=db.total_changes
         for t in dataset_rows(record,'trades'):
@@ -168,9 +203,8 @@ def merge_wallet(db: sqlite3.Connection, record: dict, name: str='', source: str
                 str(t.get('title') or t.get('question') or ''),str(t.get('side') or '').upper(),
                 n(t.get('price')),n(t.get('size')),json.dumps(t,ensure_ascii=False)))
         inserted=db.total_changes-before
-        existing=db.execute('SELECT COUNT(*) FROM positions WHERE wallet=?',(wallet,)).fetchone()[0]
-        # Only replace with a newer fully paged snapshot, or fill an empty table with provisional data.
-        if (meta_new and cl_ex) or existing==0:
+        # Preserve last complete snapshot when a shallow refresh arrives.
+        if replacing_closed:
             db.execute('DELETE FROM positions WHERE wallet=?',(wallet,))
             for p in dataset_rows(record,'closed'):
                 event,slug,condition=choose_event(p)
@@ -178,8 +212,7 @@ def merge_wallet(db: sqlite3.Connection, record: dict, name: str='', source: str
                     VALUES(?,?,?,?,?,?,?,?,?,?)''',(wallet,pos_key(p),event,slug,condition,
                     str(p.get('title') or p.get('question') or ''),n(p.get('realized_pnl')),
                     n(p.get('first_entry_at')),n(p.get('last_event_at')),json.dumps(p,ensure_ascii=False)))
-        old_open=db.execute('SELECT COUNT(*) FROM open_positions WHERE wallet=?',(wallet,)).fetchone()[0]
-        if (meta_new and op_ex) or old_open==0:
+        if replacing_open:
             db.execute('DELETE FROM open_positions WHERE wallet=?',(wallet,))
             for p in dataset_rows(record,'open'):
                 event,_,_=choose_event(p)
@@ -189,6 +222,15 @@ def merge_wallet(db: sqlite3.Connection, record: dict, name: str='', source: str
                     wallet,pos_key(p),event,str(p.get('title') or p.get('question') or ''),
                     n(p.get('realized_pnl')),n(p.get('unrealized_pnl')),
                     n(p.get('total_pnl')),json.dumps(p,ensure_ascii=False)))
+        # Wallet activity is an independent, auditable source, not a synonym for fills.
+        for a in dataset_rows(record,'activity'):
+            key=stable_hash(a)
+            amount=n(a.get('usdc_size'))
+            if amount is None:amount=n(a.get('amount'))
+            db.execute('''INSERT OR IGNORE INTO activity_events
+                (wallet,record_key,timestamp,kind,amount_usdc,raw_json) VALUES(?,?,?,?,?,?)''',(
+                wallet,key,n(a.get('timestamp')),str(a.get('type') or '').upper(),
+                amount,json.dumps(a,ensure_ascii=False)))
         for p in source_points(d):
             ts=n(p.get('timestamp'))
             if ts is None: continue
@@ -199,7 +241,10 @@ def merge_wallet(db: sqlite3.Connection, record: dict, name: str='', source: str
                 WHERE ? = 1''',(
                     wallet,ts,n(p.get('economic_pnl')),n(p.get('realized_pnl')),n(p.get('settled_pnl')),
                     n(p.get('position_pnl')),fidelity,int(meta_new)))
-    return {'wallet':wallet,'new_trades':inserted,'closed_snapshot_exhausted':cl_ex,'trades_exhausted':tr_ex}
+    return {'wallet':wallet,'new_trades':inserted,
+            'closed_snapshot_exhausted':bool(closed_flag),
+            'open_lifecycle_covered':bool(lifecycle_flag),
+            'trades_exhausted':bool(trade_flag)}
 
 
 def import_runs(db: sqlite3.Connection, path: str|Path, on_progress=None) -> dict:

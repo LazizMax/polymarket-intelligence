@@ -34,9 +34,9 @@ def test_complete_roi_weighted_and_sector():
         r=wallet_metrics(db)[0]
         assert r['events']==40
         assert r['roi_closed_pct']==10.
-        assert r['roi_global_pct']==10.
+        assert r['roi_global_pct'] is None  # not a bankroll/lifetime ROI without cash-flow ledger
         assert r['winning_events']==40
-        assert r['data_status']=='Historique exploitable'
+        assert r['data_status']=='À auditer'  # old-style open snapshot lacks redemption statuses
         sec=sector_metrics(db,[r]);assert sec
         db.close()
 
