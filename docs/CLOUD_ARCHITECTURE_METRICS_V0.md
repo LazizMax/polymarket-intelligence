@@ -1,0 +1,64 @@
+# Cloud analytics V0 — architecture, storage, ROI/drawdown contract
+
+**Status:** design and CI proposal on branch only. No Supabase project created, no user data migrated, no cloud UI deployed. The local V2.2 application remains unchanged.
+
+## Goal
+
+Replace heavy local reads with a fast web dashboard based on PostgreSQL summaries, while a separate Python worker imports Polymarket history into a dedicated database. Preserve original observations for auditability. Do not publish a "verified" ROI unless its basis is supported.
+
+### Services
+
+- **Ingestion worker:** runs independently of the website; bounded parallel wallet fetches, cursor checkpoints, incremental UPSERTs, 429 backoff, deterministic fill keys, retryable errors and job telemetry. Initial backfill is separate from recurring refresh.
+- **Supabase PostgreSQL:** normalized wallets, events, markets, trades, position snapshots, economic activities, daily observed PnL and audited portfolio equity. Precomputed wallet summary table refreshed after ingestion.
+- **Object storage (private):** compressed NDJSON/Parquet batches of raw API replies, archive checksum in PostgreSQL. Do not duplicate megabytes of raw JSON per trade.
+- **Web UI:** authenticated Next.js frontend, server-side paginated queries with 3 top-level areas: Explore, Wallet analysis, Data health. No service-role key or database password in browser.
+- **Hosting:** choose deployment service separately; GitHub code changes do not by themselves host a site or run recurring collection. Deploy worker and UI and add monitoring before declaring cloud launch complete.
+
+### Database security
+
+SQL draft at \`sql/001_cloud_private_schema.sql\` creates a private \`pi\` schema with RLS on all 12 tables, no public or browser role access. A server-side backend accesses database with a secret kept in deployment environment variables. Browser identity/policies require deliberate authorization design before direct API exposure. Never reuse the existing LGS Poker or Fit Tracker project as a data store.
+
+## Storage estimates (planning only, benchmark after 10,000 real rows)
+
+These are deliberately broad; actual size depends on fill payload, varchar lengths, indexes, duplicates, VACUUM, time-series frequency and archived data.
+
+| Normalized trades | Planning estimate (Postgres data + indexes) |
+|---:|---:|
+| 100,000 | ~30–150 MB |
+| 1,000,000 | ~0.3–1.5 GB |
+| 10,000,000 | ~3–15 GB |
+
+Add wallet snapshots, daily points, materialized scores and market metadata on top. Raw NDJSON/Parquet archives should be kept in compressed object storage and costed separately. Before paying for scaling, import a 10,000-fill sample and measure \`pg_total_relation_size\` table-by-table.
+
+Supabase pricing verified 2026-11-14: Free includes 500 MB database quota, Pro starts at $25 per month with more disk and possible overage. Account currently has two separate active Supabase projects; do not create a billable third one without selecting an organization and cost approval.
+
+## Financial metric contracts
+
+1. **Historical ROI on stakes (closed positions):** net realized position profit / verified total historical entry costs on those positions. Requires lifetime cost and all legs; partial redemptions, fees and incomplete snapshots invalidate. NOT return on capital.
+2. **Observed cumulative economic PnL:** the difference between two daily PnL snapshots. Missing dates yield an incomplete curve and only an observed lower bound on drawdown in USDC.
+3. **Observed PnL drawdown (USDC):** at each observed date, running peak of cumulative PnL minus current cumulative PnL. Drawdown cannot be expressed as a wallet capital percentage using this series alone. The \`PnL change / max observed PnL DD\` ratio is a descriptive *recovery factor*, not ROI/DD.
+4. **Portfolio equity drawdown (%):** requires daily portfolio cash + all held positions marked to market and reconciled external flows. Build a flow-adjusted index, max peak-to-trough fall and ratio \`flow-adjusted return / max DD\`, with **both derived from the same equity curve**.
+5. **Return on capital:** when daily external cash flows are assumed to happen at end of day, the adjusted return is only **indicative**. Intraday cash-flow timing and completeness are required before labelling it audited time-weighted return; deposits and withdrawals must never be counted as profit.
+6. **Linearity:** R² of cumulative PnL or indexed equity versus elapsed days; shown together with slope and ROI, never as a standalone badge proving skill. A smooth downward trend also has a high R². Better add fraction of positive weeks and drawdown duration later.
+7. **Selection bias:** neither a smooth curve nor a large ROI constitutes evidence that copying that wallet will work; only a predeclared, out-of-sample copy simulation at observable prices/costs can test that.
+
+The Python foundation \`app/performance_analytics.py\` implements separate PnL and equity diagnostics. Its output is exploratory; the verified equity timeline is not yet available from the current collector.
+
+## First working cloud milestone
+
+- Choose a dedicated Supabase project and acceptable budget.
+- Apply and test the private schema, security and indexes.
+- Import **100 wallets maximum initially** from the existing SQLite database (not blindly all history), deduplicate, record byte size, import latency, completeness and accounting differences.
+- Compute daily source PnL and wallet-level metrics in a background job; do not calculate tens of millions of rows on dashboard page load.
+- Deliver an online **wallet detail** showing PnL curve, observed DD $ and missing-data coverage; only show DD% and ROI/DD when equity history passes the integrity gate.
+- Deliver leaderboard with backend pagination/filtering, latest metrics cache, and source freshness.
+- Measure actual p50/p95 response time and actual database usage. Aim at sub-500 ms cached result retrieval as a target, not a promise.
+- Only after this works, add sector-level stratification, out-of-sample cohorts, and prospective copy trading validation.
+
+## SQL read performance
+
+The private schema includes \`(wallet, reported_at desc)\` on trades, \`(wallet, day desc)\` on PnL/equity and cached metrics by day/ROI. Frontend asks precomputed metrics, never a raw fill-by-fill scan. Use explicit pagination and restrict graph series to bounded date windows.
+
+## Migration safety
+
+Existing \`%LOCALAPPDATA%\PolymarketIntelligence\` remains source-of-truth until cloud roundtrip verification. Upload batches are idempotent on \`(wallet,trade_key)\`. A dual-read comparison of total wallets/fills/positions and the latest PnL validates migration before switching the UI. No destructive migration of the user's other Supabase projects.
