@@ -122,7 +122,7 @@ Deno.serve(async (req: Request) => {
     }
     if (body.action === "refresh") {
       const wallets: string[] = Array.isArray(body.wallets) ?
-        [...new Set(body.wallets.map((w: unknown) => String(w).toLowerCase()))] : [];
+        Array.from(new Set<string>((body.wallets as unknown[]).map((w) => String(w).toLowerCase()))) : [];
       if (!wallets.length || wallets.length > 10 || wallets.some((w) => !ADDRESS.test(w)))
         return json({ error: "Provide 1..10 valid wallets" }, 400);
       const results = [];
