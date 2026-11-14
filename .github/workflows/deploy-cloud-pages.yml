@@ -1,0 +1,47 @@
+name: Deploy Polymarket Cloud frontend
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-cloud-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "polymarket-pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate HTML & Javascript
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source=Path("web/index.html").read_text(encoding="utf-8")
+          assert source.startswith("<!doctype html>")
+          assert "<script>" in source and "</script>" in source
+          assert "SUPABASE_SERVICE_ROLE_KEY" not in source
+          assert "SUPABASE_DB_URL" not in source
+          assert "https://bxfvgywfiifnsbjgudzj.supabase.co/functions/v1/pi-dashboard" in source
+          Path("/tmp/pi-cloud-browser.js").write_text(source.split("<script>",1)[1].split("</script>",1)[0],encoding="utf-8")
+          PY
+          node --check /tmp/pi-cloud-browser.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
