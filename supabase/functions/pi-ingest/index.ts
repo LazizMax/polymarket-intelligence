@@ -365,7 +365,7 @@ async function scheduledRN1Trades(){
    // Archive before any aggregation. The raw envelope and row order are preserved for forensic audit.
    const raw={source_response:sourcePayload,request:{user:RN1,start:1,limit:200,requested_cursor:cursor}};
    const pageSHA=await sha256(JSON.stringify(raw));
-   const normalized=[];
+   const normalized:Record<string,unknown>[]=[];
    for(let i=0;i<data.length;i++){
     const item=normalizeV2Trade(data[i]);
     if(!item){invalid++;continue;}
