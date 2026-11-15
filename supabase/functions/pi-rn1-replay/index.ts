@@ -93,7 +93,11 @@ function observeFuture(state:State,token:string,price:number,at:number){
    if(w.done&(1<<i))continue;
    const lower=w.t+HORIZONS[i],upper=lower+GRACE[i];
    if(at>=lower&&at<=upper){addForward(state,w,HORIZONS[i],price-w.p);w.done|=1<<i}
-   else if(at>upper)w.done|=1<<i;
+   else if(at>upper){
+    w.done|=1<<i;
+    const coverage=state.totals.coverage||(state.totals.coverage={});
+    group(coverage,String(HORIZONS[i]),w.role+"_no_future_reference");
+   }
   }
   if(w.done!==(1<<HORIZONS.length)-1)still.push(w);
  }
