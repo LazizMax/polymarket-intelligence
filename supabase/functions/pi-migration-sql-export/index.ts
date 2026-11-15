@@ -43,7 +43,7 @@ async function migrateBatch(){
   if(by.size!==pk.length)throw Error("Incomplete PK definition");
   const where=cursor===null?"":`where (${pk.map(quote).join(",")}) > (${pk.map((key,i)=>"$"+(i+1)+"::"+by.get(key)).join(",")})`;
   if(cursor!==null&&(!Array.isArray(cursor)||cursor.length!==pk.length))throw Error("Malformed cursor");
-  const query=`select to_jsonb(t) as row_data from (
+  const query=`select to_jsonb(t)::text as row_text, ${pk.map((key,i)=>"t."+quote(key)+"::text as pk_"+i).join(", ")} from (
    select * from pi.${quote(table)} ${where}
    order by ${pk.map(quote).join(",")} limit 500) t`;
   const entries=await db.unsafe(query,cursor||[]);
@@ -51,14 +51,18 @@ async function migrateBatch(){
    await db.unsafe("update pi.migration_table_export_state set status='done',lease_until=null,updated_at=now(),last_success_at=now() where table_name=$1",[table]);
    return {status:"table_complete",table};
   }
-  const rows=entries.map(x=>x.row_data),last=rows.at(-1);
-  const nextCursor=pk.map(x=>last[x]);
+  // Preserve PostgreSQL JSON numerics byte-exact: never parse financial
+  // NUMERIC, 256-bit token identifiers or long decimal strings as JS Number.
+  const rows=entries.map(x=>String(x.row_text)),last=entries.at(-1);
+  const nextCursor=pk.map((_,i)=>String(last["pk_"+i]));
+  const rawRows="["+rows.join(",")+"]";
   // A final delta sweep may revisit the same PK range after source rows changed.
   // Include row contents in batch identity so changed data gets a new verified
   // idempotent upsert instead of conflicting with the original immutable batch.
-  const keySeed=new TextEncoder().encode(JSON.stringify({table,previous:cursor,next:nextCursor,rows}));
+  const keySeed=new TextEncoder().encode(JSON.stringify({table,previous:cursor,next:nextCursor})+"\\n"+rawRows);
   const batchKey=await sha(keySeed);
-  const body=new TextEncoder().encode(JSON.stringify({table,batch_key:batchKey,rows}));
+  const rawBody=`{"table":${JSON.stringify(table)},"batch_key":${JSON.stringify(batchKey)},"rows":${rawRows}}`;
+  const body=new TextEncoder().encode(rawBody);
   if(body.length>4400000)throw Error("Migration row batch too large");
   const digest=await sha(body);
   const pushed=await fetch(DEST,{method:"POST",headers:{
