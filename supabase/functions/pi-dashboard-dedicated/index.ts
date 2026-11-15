@@ -799,12 +799,66 @@ async function rn1EconomicAttribution(){
   count(*) filter(where abs(cash_return-(q0*p0+q1*p1))<=1)::int
    matching_redeemed_within_dollar
  from settled`);
+ const eventRisk=await db.unsafe(base+`
+ , event as(
+ select coalesce(nullif(event_slug,''),market_key) event_key,
+ sum(gross) gross,sum(paired_gross) paired,
+ count(*)::int markets
+ from checked where reconciled
+ group by 1
+ ), ranked as(
+ select *, row_number() over(order by gross desc) profit_rank,
+ row_number() over(order by gross asc) loss_rank,
+ count(*) over() total_events
+ from event)
+ select count(*)::int events,sum(markets)::int markets,
+ avg(gross)::float8 mean_gross_per_event,
+ stddev_samp(gross)::float8 sd_gross_per_event,
+ (avg(gross)-1.96*stddev_samp(gross)/sqrt(count(*)::numeric))::float8
+  approx_gross_event_mean_95_low,
+ (avg(gross)+1.96*stddev_samp(gross)/sqrt(count(*)::numeric))::float8
+  approx_gross_event_mean_95_high,
+ avg(paired)::float8 mean_pair_per_event,
+ (avg(paired)-1.96*stddev_samp(paired)/sqrt(count(*)::numeric))::float8
+  approx_pair_event_mean_95_low,
+ (avg(paired)+1.96*stddev_samp(paired)/sqrt(count(*)::numeric))::float8
+  approx_pair_event_mean_95_high,
+ count(*) filter(where gross>0)::int positive_events,
+ count(*) filter(where paired>0)::int positive_pair_events,
+ sum(gross) filter(where profit_rank<=ceil(total_events*0.01))::float8 top_1pct_gross,
+ sum(gross) filter(where loss_rank<=ceil(total_events*0.01))::float8 bottom_1pct_gross,
+ max(gross)::float8 best_event_gross,min(gross)::float8 worst_event_gross
+ from ranked`);
+ const oneSided=await db.unsafe(`
+ with cash as materialized(
+ select market_key,sum(reported_usdc_size) filter(where kind='REDEEM') redeemed,
+ sum(reported_usdc_size) filter(where kind='MERGE') merged
+ from pi.rn1_full_activity_metrics
+ where kind in('REDEEM','MERGE') group by 1)
+ select count(*)::int markets,
+ count(*) filter(where coalesce(c.redeemed,0)>0)::int markets_with_redemption,
+ count(*) filter(where coalesce(c.redeemed,0)=0)::int markets_without_redemption,
+ count(*) filter(where coalesce(c.redeemed,0)>0 and
+ abs(coalesce(c.redeemed,0)+coalesce(c.merged,0)-greatest(m.buy0_shares,m.buy1_shares))<=1)::int
+ matching_redeemed,
+ sum(m.buy0_cost+m.buy1_cost) filter(where coalesce(c.redeemed,0)=0)::float8
+  cost_without_observed_redemption,
+ sum(m.buy0_cost+m.buy1_cost) filter(where coalesce(c.redeemed,0)>0)::float8
+  cost_with_redemption,
+ sum(coalesce(c.redeemed,0)+coalesce(c.merged,0)) filter(where coalesce(c.redeemed,0)>0)::float8
+  returned_with_redemption
+ from pi.rn1_full_market_metrics m
+ left join cash c using(market_key)
+ where m.wallet=$1 and m.min_trade_at>='2026-09-21T00:00:00+00'
+ and m.max_trade_at<'2026-11-12T00:00:00+00'
+ and ((m.buy0_shares>0 and m.buy1_shares=0) or
+ (m.buy1_shares>0 and m.buy0_shares=0))`,[RN1]);
  const total=summary[0]||{},weeks=weekly||[];
  return {
   scope:"conditional_reconciled_two_sided_gross_before_fees",
   fixed_first_trade_cutoff:"2026-09-21T00:00:00Z",
   fixed_last_trade_cutoff:"2026-11-12T00:00:00Z",
-  summary:total,weekly:weeks,by_skew:skewImpact,official:official[0]||{},
+  summary:total,weekly:weeks,by_skew:skewImpact,official:official[0]||{},event_risk:eventRisk[0]||{},one_sided:oneSided[0]||{},
   caveats:[
    "Only 2-sided markets with REDEEM and a payout matching one observed outcome's share count within 1 USD are counted. Single-sided markets, unresolved positions and nonreconciled markets are excluded.",
    "Gross economic result excludes exchange fees, rebates, rewards, transfers and any buy/sell flow not present in the public sources.",
