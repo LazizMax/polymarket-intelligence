@@ -7,7 +7,7 @@ const send=(x:any,status=200)=>Response.json(x,{status,headers:{"Cache-Control":
 async function allow(req:Request){const token=req.headers.get("x-pi-scheduler-token")||"";if(!/^[0-9a-f]{64}$/.test(token))return false;
  const bytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(token));const hash=[...new Uint8Array(bytes)].map(x=>x.toString(16).padStart(2,"0")).join("");
  const r=await db.unsafe("select 1 from pi.scheduler_auth where single_row_id=1 and token_sha256=$1",[hash]);return r.length===1;}
-async function run(pageNo:number){
+async function run(pageNo:number,countOnly=false){
  const r=await db.unsafe("select storage_key,min_reported_at,max_reported_at,sha256,row_count from pi.rn1_full_archive_pages where stream='trades_all' and page_no=$1",[pageNo]);if(!r.length)throw Error("source page missing");
  const page=r[0],storage=await fetch(url+"/storage/v1/object/pi-rn1-research-private/"+String(page.storage_key),{headers:{Authorization:"Bearer "+key,apikey:key},signal:AbortSignal.timeout(15000)});
  if(!storage.ok||!storage.body)throw Error("archive read "+storage.status);
@@ -18,6 +18,7 @@ async function run(pageNo:number){
  const raw=JSON.parse(text)?.source_response?.data;if(!Array.isArray(raw)||raw.length!==Number(page.row_count))throw Error("archive count mismatch");
  const byToken=new Map<string,{n:number;start:number;end:number}>();
  for(const x of raw){const id=String(x.token_id||""),t=Number(x.timestamp);if(!/^[0-9]{20,100}$/.test(id)||!Number.isSafeInteger(t))continue;const prev=byToken.get(id)||{n:0,start:t,end:t};prev.n++;prev.start=Math.min(prev.start,t);prev.end=Math.max(prev.end,t);byToken.set(id,prev);}
+ if(countOnly)return {page:pageNo,tokens:byToken.size};
  const ordered=[...byToken.entries()].sort((a,b)=>b[1].n-a[1].n||a[0].localeCompare(b[0]));
  const results:any[]=[];
  for(const [id,p] of ordered.slice(0,4)){
@@ -33,5 +34,5 @@ async function run(pageNo:number){
   warning:"CLOB historical prices are an independent indicative time series, not an archived best bid/ask"};
 }
 Deno.serve(async req=>{if(req.method!=="POST")return send({error:"bad_method"},405);if(!await allow(req))return send({error:"unauthorized"},403);
- let payload:any={};try{payload=await req.json()}catch(_){};if(payload.action!=="probe"||!Number.isInteger(payload.page_no)||payload.page_no<1||payload.page_no>10000)return send({error:"invalid_request"},400);
- try{return send(await run(payload.page_no))}catch(e){return send({error:String(e).slice(0,180)},500)}});
+ let payload:any={};try{payload=await req.json()}catch(_){};if(!["probe","count_tokens"].includes(payload.action)||!Number.isInteger(payload.page_no)||payload.page_no<1||payload.page_no>10000)return send({error:"invalid_request"},400);
+ try{return send(await run(payload.page_no,payload.action==="count_tokens"))}catch(e){return send({error:String(e).slice(0,180)},500)}});
