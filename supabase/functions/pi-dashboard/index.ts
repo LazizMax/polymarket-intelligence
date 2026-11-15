@@ -368,6 +368,7 @@ async function rn1ReverseEngineering(){
  select stream,status,pages_fetched::double precision as pages_fetched,
  rows_seen::double precision as rows_seen,rows_valid::double precision as rows_valid,
  rows_invalid::double precision as rows_invalid,raw_gzip_bytes::double precision as raw_gzip_bytes,
+ metrics_rows::double precision as metrics_rows,metrics_paused_at::text as metrics_paused_at,
  first_seen_at::text as oldest_observed_at,last_seen_at::text as newest_observed_at,
  last_success_at::text,last_error,
  max_raw_bytes::double precision as max_raw_bytes,max_db_bytes::double precision as max_db_bytes
@@ -407,7 +408,7 @@ async function rn1ReverseEngineering(){
    {name:"Règles exactes de prix, ordre maker/taker et annulations",verification:"not_identifiable_from_feed_only"},
    {name:"Rentabilité nette et contribution des rebates",verification:"requires_full_inventory_and_cashflow_reconciliation"}
   ],
-  limits:"Collection stops safely if shared project database or private archive reaches its reserved quota. Completion is only verified when BOTH official feeds return has_more=false. The Data API does not expose unfilled orders or hidden private models.",
+  limits:"Full source archiving continues after the shared SQL analysis budget is reached; market aggregates may become partial. Archiving pauses only at the private Storage safety budget. Completion is only verified when BOTH feeds return has_more=false. The Data API does not expose unfilled orders or hidden private models.",
   legacy_notice:"Previous 4,000-trade analyses were based on Polymarket's default taker-only feed. Their strategic conclusions were preliminary and should not be treated as full-wallet findings."};
 }
 
