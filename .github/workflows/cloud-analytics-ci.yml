@@ -49,8 +49,8 @@ jobs:
           deno-version: v2.x
       - name: Typecheck protected Supabase ingestion function
         run: |
-          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-ingest/rn1-trade-utils.ts supabase/functions/pi-ingest/rn1-maker-match.ts supabase/functions/pi-ingest/rn1-activity-utils.ts supabase/functions/pi-ingest/arb-capture.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/arb-math.ts supabase/functions/pi-dashboard/arb-temporal.ts
-          deno test supabase/functions/pi-ingest/roi-math_test.ts supabase/functions/pi-ingest/roi-sync_test.ts supabase/functions/pi-ingest/rn1-trade-utils_test.ts supabase/functions/pi-ingest/rn1-maker-match_test.ts supabase/functions/pi-ingest/rn1-activity-utils_test.ts supabase/functions/pi-ingest/arb-capture_test.ts supabase/functions/pi-dashboard/arb-math_test.ts supabase/functions/pi-dashboard/arb-temporal_test.ts
+          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-ingest/rn1-sequence.ts supabase/functions/pi-ingest/rn1-trade-utils.ts supabase/functions/pi-ingest/rn1-maker-match.ts supabase/functions/pi-ingest/rn1-activity-utils.ts supabase/functions/pi-ingest/arb-capture.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/arb-math.ts supabase/functions/pi-dashboard/arb-temporal.ts
+          deno test supabase/functions/pi-ingest/roi-math_test.ts supabase/functions/pi-ingest/roi-sync_test.ts supabase/functions/pi-ingest/rn1-trade-utils_test.ts supabase/functions/pi-ingest/rn1-maker-match_test.ts supabase/functions/pi-ingest/rn1-sequence_test.ts supabase/functions/pi-ingest/rn1-activity-utils_test.ts supabase/functions/pi-ingest/arb-capture_test.ts supabase/functions/pi-dashboard/arb-math_test.ts supabase/functions/pi-dashboard/arb-temporal_test.ts
       - name: Check embedded browser JavaScript syntax
         run: |
           python - <<'PY'
@@ -98,14 +98,15 @@ jobs:
                                     "025_rn1_fill_price_benchmark.sql",
                                     "027_rn1_full_public_archive.sql",
                                     "029_rn1_archive_metrics_safety.sql",
-                                    "030_rn1_maker_role_audit.sql"):
+                                    "030_rn1_maker_role_audit.sql",
+                                    "032_rn1_sequence_flow_fingerprint.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 27, f"Expected RLS on all 27 tables, got {secured}"
+                  assert secured == 30, f"Expected RLS on all 30 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
