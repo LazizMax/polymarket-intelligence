@@ -40,7 +40,10 @@ Métrique principale : moyenne des valeurs absolues de `ln(taille_observée / ta
 | USDC fixes globaux | 2,229 | ×8,37 |
 | Fraction constante du coût ouvert | **2,652** | **×10,70** |
 
-**Conclusion :** parmi ces règles simples et sur cet échantillon de marché, la quantité en parts ajustée grossièrement à la cote minimise l'erreur *moyenne*, mais une erreur médiane ×5,67 n'est pas une précision exploitable. L'ajout d'inventaire ne procure pas ici de gain convaincant. En raison de l'échantillonnage sélectif, des petits effectifs par marché et des fragments d'ordres, ce tableau ne révèle pas l'algorithme privé de placement.
+**Conclusion :** parmi ces règles simples et sur cet échantillon de marché, la quantité en parts ajustée grossièrement à la cote minimise l'erreur *moyenne*, mais une erreur médiane ×5,67 n'est pas une précision exploitable.
+
+**Robustesse de la pondération :** si chaque marché reçoit un poids égal plutôt que de pondérer chaque fill, le classement change : **USDC selon cote + inventaire** est légèrement devant (erreur log moyenne par marché ≈1,915), suivi de **USDC selon cote** (≈1,924), puis **parts selon cote + inventaire** (≈1,935) ; la règle « parts selon cote » est ≈1,954. Les différences sont modestes et les sous-groupes dépendent du petit échantillon. Il n'existe donc **aucun gagnant stable** sous les deux pondérations.
+ L'ajout d'inventaire ne procure pas ici de gain convaincant. En raison de l'échantillonnage sélectif, des petits effectifs par marché et des fragments d'ordres, ce tableau ne révèle pas l'algorithme privé de placement.
 
 ### Analyse chronologique complémentaire
 L'autre test (`rn1_sizing_hypotheses`) coupe les observations **dans le temps à l'intérieur de chaque token** (70 % apprentissage / 30 % validation), sur 13 tokens ayant suffisamment de fills et un mouvement de prix ≥3 centimes pendant l'apprentissage. Il couvre environ **54 à 55 fills de test**, un effectif limité. La pente empirique `log(shares)` vs `log(price)` sur fills individuels est autour de −0,25, mais elle passe aux environs de −1,05 après regroupement des fills du même token par seconde. **La pente n'est pas stable face à la fragmentation**.
