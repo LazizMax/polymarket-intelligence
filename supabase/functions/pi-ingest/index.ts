@@ -114,7 +114,7 @@ async function refresh(wallet: string) {
   const points = normalizePoints(data);
   if (points.length === 0) throw new Error("No daily PnL data for this wallet");
   const summary = pnlStats(points);
-  const previous = await db.unsafe("select exists(select 1 from pi.wallet_pnl_daily where wallet=$1) as has_data", [wallet]);
+  const previous = await db.unsafe("select exists(select 1 from pi.wallet_pnl_daily where wallet=$1) as has_data,max(day)::text as last_day from pi.wallet_pnl_daily where wallet=$1", [wallet]);
   const alreadyStored = previous[0]?.has_data === true;
   // Reimport a 7-day revision window; full backfill only on first collection.
   // The full returned series is still used to recalculate summary metrics.
@@ -137,6 +137,13 @@ async function refresh(wallet: string) {
           "Observed PnL only (not capital return); missing days: " + summary.missing_days]);
     }
   });
+  // New PnL observation is a useful hint to check freshly closed markets
+  // at the next ROI tick; intraday changes are also caught by 6-hour polling.
+  if (summary && previous[0]?.last_day && summary.day > String(previous[0].last_day)) {
+    await db.unsafe(
+      "update pi.roi_import_state set last_recent_at=null,request_priority=true,updated_at=now() where wallet=$1 and sync_mode='idle'",
+      [wallet]);
+  }
   return { wallet, daily_observations: points.length, rows_upserted: batch.length,
     last_day: summary?.day ?? null, missing_days: summary?.missing_days ?? null,
     dd_usdc: summary?.dd_usdc ?? null, capital_roi: null };
