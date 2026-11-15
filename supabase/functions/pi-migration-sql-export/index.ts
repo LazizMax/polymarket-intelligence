@@ -29,7 +29,7 @@ async function migrateBatch(){
  if(!pk.length||pk.some(x=>!/^[a-z][a-z0-9_]{0,100}$/.test(x)))throw Error("Missing safe primary key");
  const claimed=await db.unsafe(`update pi.migration_table_export_state
  set status='running',lease_until=now()+interval '115 seconds',updated_at=now()
- where table_name=$1 and cursor_pk is not distinct from $2::jsonb
+ where table_name=$1 and cursor_pk is not distinct from $2::text::jsonb
  and (lease_until is null or lease_until<now())
  returning table_name`,[table,cursor===null?null:JSON.stringify(cursor)]);
  if(!claimed.length)return {status:"leased"};
@@ -66,9 +66,9 @@ async function migrateBatch(){
   const output=await pushed.json().catch(()=>({error:"unreadable_response"}));
   if(!pushed.ok||!output.ok)throw Error("Destination row batch rejected "+JSON.stringify(output).slice(0,230));
   const advanced=await db.unsafe(`update pi.migration_table_export_state
-   set cursor_pk=$2::jsonb,rows_copied=rows_copied+$3,batches_done=batches_done+1,
+   set cursor_pk=$2::text::jsonb,rows_copied=rows_copied+$3,batches_done=batches_done+1,
    lease_until=null,last_success_at=now(),updated_at=now(),last_error=null
-   where table_name=$1 and cursor_pk is not distinct from $4::jsonb returning rows_copied`,
+   where table_name=$1 and cursor_pk is not distinct from $4::text::jsonb returning rows_copied`,
    [table,JSON.stringify(nextCursor),rows.length,cursor===null?null:JSON.stringify(cursor)]);
   if(advanced.length!==1)throw Error("Source cursor changed unexpectedly");
   return {status:"running",table,rows:rows.length,total:advanced[0].rows_copied};
