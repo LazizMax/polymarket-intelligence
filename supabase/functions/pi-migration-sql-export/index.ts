@@ -45,7 +45,7 @@ async function migrateBatch(){
   if(cursor!==null&&(!Array.isArray(cursor)||cursor.length!==pk.length))throw Error("Malformed cursor");
   const query=`select to_jsonb(t) as row_data from (
    select * from pi.${quote(table)} ${where}
-   order by ${pk.map(quote).join(",")} limit 300) t`;
+   order by ${pk.map(quote).join(",")} limit 500) t`;
   const entries=await db.unsafe(query,cursor||[]);
   if(!entries.length){
    await db.unsafe("update pi.migration_table_export_state set status='done',lease_until=null,updated_at=now(),last_success_at=now() where table_name=$1",[table]);
