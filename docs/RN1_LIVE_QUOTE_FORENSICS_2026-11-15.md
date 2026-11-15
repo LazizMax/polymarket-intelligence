@@ -50,3 +50,26 @@ Tables privées RLS : `pi.rn1_quote_probe_state`, `pi.rn1_quote_probe_runs`, `pi
 ## Critère de succès réel
 
 Une règle de cotation n'est reproductible que si elle **prévoit des prix d'ordres et des remplissages sur des marchés jamais vus, couvre ses frais et son risque d'inventaire, et donne un résultat positif lors d'un paper trading événementiel contrôlé**. Le matching historique d'ordres exécutés et les spreads théoriques ne suffisent pas.
+
+## Reprise du 15 novembre — positions réelles synchronisées (migration 037)
+
+Audit du dépôt et du backend avant modification : PR #26 et GitHub Pages publiés, pi-dashboard v20 et pi-rn1-quote-probe v2 actifs. À 15:02 UTC : 670 000 trades + 670 000 activités archivés, 59 sondes CLOB, 50 fills avec carnet prétrade, 59 sondes SANS positions (ancienne fonction). Ces 59 anciens relevés sont conservés, **jamais rétroactivement enrichis avec un inventaire courant**, ce qui introduirait une fuite d'information.
+
+**Contrat API /v2/positions :** le filtre `condition` accepte théoriquement plusieurs ids. Mais un test réel sur huit conditions a renvoyé 10 positions dont six provenaient de marchés NON demandés, sans erreur HTTP. Avec une condition on obtient deux positions sur ce seul marché ; avec deux conditions, quatre positions sur ces seuls marchés. Le champ `condition` est donc limité côté collecteur à **deux identifiants de marché par requête** (longueur inférieure à 200 caractères), puis vérification *de chaque réponse* : wallet exact, condition exacte, token exact, index d'outcome, pagination totalement épuisée, pas de doublons. Si une seule des requêtes échoue, statut `unavailable`, zéro inventaire déduit. Ne pas assimiler `[]` issu d'un filtre ignoré à une position de taille zéro.
+
+Ordre de collecte lors d'une minute :
+1. identifier jusqu'à huit marchés actifs, en priorité récemment tradés par RN1 ;
+2. lire séparément les **positions ouvertes effectivement détenues** sur chaque paire de conditions, vérifiées jusqu'au dernier curseur (un retour `has_more=true` annule la capture d'inventaire) ;
+3. enregistrer `position_observed_at`, **puis seulement** lancer la requête CLOB et enregistrer `requested_at`, `received_at` ;
+4. enregistrer les deux carnets complets, les tokens, le JSON de positions et les quatre réponses d'origine dans une **archive gzip privée SHA-256** ;
+5. rapprocher exclusivement les fills RN1 exécutés 10 à 120 secondes *après* la réception d'un carnet précédent. Ne jamais modifier les fills anciens ni inventer les positions auparavant.
+
+`pi.rn1_quote_probe_runs` porte désormais `position_status`, `position_observed_at`, `positions` : deux lignes par marché sélectionné même lorsqu'une issue n'est pas détenue (taille zéro autorisée uniquement si le filtre et la pagination ont été validés).
+
+Les modèles testés sur les fills maker **avec carnet précédent et inventaire valide** :
+- prix au meilleur bid, à un ou deux ticks en dessous ;
+- pénalisation 1 ou 2 ticks selon le déséquilibre (plus on détient la même issue, moins on paie) ;
+- limite hypothétique d'achat complémentaire `min(best_bid, 1 - prix_moyen_de_l_issue_opposée - marge)`, marge cible 1 % ou 2 %.
+Les modèles sont évalués sur la **même cohorte de fills éligibles**, avec sélection par erreur moyenne uniquement sur la partie chronologiquement ancienne (80 %) puis contrôle sur la dernière partie (20 %). Le tableau n'affiche de classement hors période qu'avec au moins 100 fills et 10 événements ; un prix d'exécution bien prédit ne prouve ni la probabilité d'exécution ni un profit.
+
+Attention : une photo de portefeuille prise quelques secondes avant le trade ne reconstitue pas forcément tous les fills, merges ou transferts intervenus entre-temps. L'ancienne métrique de flux de 134 000 trades était encore plus imparfaite ; les deux ne doivent pas être confondues. Les montants de marge complémentaire obtenus avec le dernier coût moyen observé sont **indicatifs**, pas une formule du bot ni un PnL réalisé.
