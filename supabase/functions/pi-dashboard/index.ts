@@ -1717,7 +1717,30 @@ async function rn1SportsImpact(body:any){
    `,[token,start,end]);
   }
  }
- return {coverage:coverage[0]??{},games,totals,per_game:rows,
+ const liveRoles=await db.unsafe(`
+ with matched as (
+  select distinct on(f.fingerprint) f.fingerprint,f.trade_at,f.role,
+   q->>'event_slug' event_slug
+  from pi.rn1_quote_probe_fills f
+  join pi.rn1_quote_probe_runs r on r.id=f.run_id
+  cross join lateral jsonb_array_elements(r.quotes) q
+  where q->>'asset_id'=f.token_id and q->>'event_slug' like 'nba-%'
+  order by f.fingerprint
+ )
+ select f.event_slug,f.role,count(*)::int fills,
+  count(*) filter(where exists(
+   select 1 from pi.rn1_nba_espn_plays p
+   where p.event_slug=f.event_slug and p.is_scoring
+    and p.play_at between f.trade_at-interval '30 seconds' and f.trade_at
+  ))::int with_score_last30,
+  count(*) filter(where exists(
+   select 1 from pi.rn1_nba_espn_plays p
+   where p.event_slug=f.event_slug and p.is_scoring
+    and p.play_at between f.trade_at-interval '60 seconds' and f.trade_at
+  ))::int with_score_last60
+ from matched f group by 1,2 order by 1,2
+ `);
+ return {coverage:coverage[0]??{},games,totals,per_game:rows,live_roles:liveRoles,
    selection:slug||null,window_seconds:windowSeconds,timeline,price_timeline:priceTimeline,
    price_token:token,
    caveats:[
