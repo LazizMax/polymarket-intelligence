@@ -389,13 +389,13 @@ async function scheduledRN1Trades(){
      const rows=await tx.unsafe(`
        insert into pi.trades
         (wallet,trade_key,reported_at,first_observed_at,market_key,token_id,tx_hash,side,price,shares,
-         observed_notional_usdc,raw_archive_key,outcome_index,outcome_label,market_slug,event_slug,source_row_index)
+         observed_notional_usdc,raw_archive_key,outcome_index,outcome_label,market_slug,event_slug,source_row_index,market_title)
        select x.wallet,x.trade_key,x.reported_at,now(),x.market_key,x.token_id,x.tx_hash,x.side,x.price,x.shares,
-         x.observed_notional_usdc,x.raw_archive_key,x.outcome_index,x.outcome_label,x.market_slug,x.event_slug,x.source_row_index
+         x.observed_notional_usdc,x.raw_archive_key,x.outcome_index,x.outcome_label,x.market_slug,x.event_slug,x.source_row_index,x.market_title
        from jsonb_to_recordset(($1::text)::jsonb) as x(
         wallet text,trade_key text,reported_at timestamptz,market_key text,token_id text,tx_hash text,
         side text,price numeric,shares numeric,observed_notional_usdc numeric,raw_archive_key text,
-        outcome_index smallint,outcome_label text,market_slug text,event_slug text,source_row_index integer)
+        outcome_index smallint,outcome_label text,market_slug text,event_slug text,source_row_index integer,market_title text)
        on conflict(wallet,trade_key) do nothing returning trade_key`,[JSON.stringify(normalized)]);
      inserted=rows.length;
     }
