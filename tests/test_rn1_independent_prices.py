@@ -41,3 +41,14 @@ def test_private_tables_restrict_user_access():
     assert "ENABLE ROW LEVEL SECURITY" in SCHEMA
     assert "REVOKE ALL ON pi.rn1_independent_price_jobs FROM anon,authenticated" in SCHEMA
     assert "REVOKE ALL ON pi.rn1_independent_price_pages FROM anon,authenticated" in SCHEMA
+
+def test_inverse_token_inclusion_weighting_is_explicit():
+    assert "sourceTokenCount" in SRC
+    assert "source_tokens) values(" in SRC
+    assert "sourceTokenCount]);" in SRC
+    assert "independent_adjusted:independentAdjusted" in API
+    assert "source_tokens::numeric / nullif(sampled_tokens,0)" in API
+    assert "maker_adjusted_markout" in API
+    assert "pondération inverse de la probabilité de sélection" in UI
+    assert "elle ne corrige PAS" in UI
+    assert "source_tokens integer" in SCHEMA
