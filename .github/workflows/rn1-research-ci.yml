@@ -34,7 +34,12 @@ jobs:
           python-version: '3.11'
       - name: Install lightweight test runner
         run: python -m pip install pytest
-      - name: Verify replay source, evidence and UI caveats
+      - name: Verify RN1 source contracts and evidence caveats
         run: |
-          pytest -q             tests/test_rn1_private_large_replay.py             tests/test_rn1_large_cohort_evidence.py             tests/test_rn1_identical_model_cohort.py             tests/test_rn1_postfill_markouts.py             tests/test_rn1_inventory_transitions.py \
-            tests/test_rn1_independent_prices.py
+          python -m pytest -q \
+            tests/test_rn1_full_archive.py \
+            tests/test_rn1_independent_prices.py \
+            tests/test_rn1_maker_role_audit.py \
+            tests/test_rn1_pretrade_inventory.py \
+            tests/test_rn1_live_quote_probe.py \
+            tests/test_rn1_strategy_evidence.py
