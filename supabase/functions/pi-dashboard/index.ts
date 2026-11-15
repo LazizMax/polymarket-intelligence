@@ -241,7 +241,7 @@ async function arbitrage(body:any){
   const names=asArray(m.outcomes).map(x=>String(x).toLowerCase());
   const tokens=asArray(m.clobTokenIds).map(x=>String(x));
   if(tokens.length!==2||names.length!==2||names[0]!=="yes"||names[1]!=="no"||tokens[0]===tokens[1])continue;
-  if(!tokens.every(x=>/^\\d{20,90}$/.test(x)))continue;
+  if(!tokens.every(x=>/^\d{20,90}$/.test(x)))continue;
   selected.push({tokens,question:String(m.question||"").slice(0,220),slug:String(m.slug||"").slice(0,140),
     condition_id:String(m.conditionId||"").slice(0,100),volume_24h:Number(m.volume24hr||0)});
  }
