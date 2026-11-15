@@ -213,6 +213,7 @@ async function renderWallet(){
 }
 
 const arbSettings={shares:50,fee_reserve_pct:4,limit:30};
+const arbMoney=(n)=>n===null||n===undefined?"—":(Number(n)>=0?"+":"−")+"$"+fmt(Math.abs(Number(n)),3);
 async function renderArb(){
  const target=$("content");
  target.replaceChildren(heading("Arbitrage Lab","Scanner expérimental de paires YES/NO. Cotations actuelles et profondeur de carnet — aucun ordre réel."));
@@ -247,9 +248,9 @@ async function renderArb(){
   const link=node("a","Voir sur Polymarket","small");link.href="https://polymarket.com/event/"+encodeURIComponent(r.slug||"");link.target="_blank";link.rel="noopener noreferrer";
   cell.append(link);row.append(cell);
   row.append(node("td",fmt(r.yes_avg,4)),node("td",fmt(r.no_avg,4)),node("td","$"+fmt(r.paired_cost,2)),
-   node("td",money(r.gross_edge_usdc),r.gross_edge_usdc>0?"green":"red"),
+   node("td",arbMoney(r.gross_edge_usdc),r.gross_edge_usdc>0?"green":"red"),
    node("td","$"+fmt(r.fee_reserve_usdc,2)),
-   node("td",money(r.indicative_net_usdc),r.indicative_net_usdc>0?"green":"red"),
+   node("td",arbMoney(r.indicative_net_usdc),r.indicative_net_usdc>0?"green":"red"),
    node("td",pct(r.indicative_roi_pct,2),r.indicative_roi_pct>0?"green":"red"));
   tb.append(row);
  }
