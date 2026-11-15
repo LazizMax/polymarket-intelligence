@@ -24,6 +24,16 @@ input:focus,select:focus{outline:1px solid var(--brand)}input[type=checkbox]{min
 table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}thead{color:var(--muted);font-size:11px;letter-spacing:.02em}td,th{padding:12px 10px;border-bottom:1px solid #243543}th:first-child,td:first-child{text-align:left}tbody tr{cursor:pointer}tbody tr:hover{background:#152d36}tbody tr:last-child td{border-bottom:0}.name{font-weight:650;color:#e5f7ff}.mono{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 .green{color:var(--brand)}.red{color:var(--red)}.muted{color:var(--muted)}.foot{color:var(--muted);font-size:12px;line-height:1.7}.foot strong{color:var(--text)}
 .banner{padding:12px 15px;background:var(--shade);border:1px solid #29544e;border-radius:10px;color:#afd9d3;font-size:12px;margin:17px 0}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.pattern-bars{display:grid;gap:10px;margin-top:15px}
+.pattern-line{display:grid;grid-template-columns:minmax(145px,1.3fr) minmax(120px,2.8fr) minmax(95px,1fr);gap:10px;align-items:center}
+.pattern-label{font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pattern-track{height:15px;border-radius:6px;background:#223344;overflow:hidden}
+.pattern-fill{height:100%;background:linear-gradient(90deg,#2d8c84,#4fe4c4);border-radius:6px;min-width:1px}
+.pattern-val{font-size:12px;text-align:right;color:var(--brand);white-space:nowrap}
+.pattern-bucket{font-size:11px;color:var(--muted)}
+.pattern-sub{color:var(--muted);font-size:12px;margin-top:10px}
+.pattern-tabs{display:flex;gap:10px;flex-wrap:wrap}
+@media(max-width:720px){.pattern-line{grid-template-columns:minmax(98px,1fr) minmax(65px,1.3fr) 78px;gap:6px}.pattern-label,.pattern-val{font-size:11px}}
 .chart{height:235px;width:100%;margin-top:10px;overflow:hidden}.chart svg{width:100%;height:100%}.chart path{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .badge{display:inline-block;background:#1e3638;color:var(--brand);font-size:11px;border-radius:6px;padding:3px 7px}.status{font-size:12px;color:var(--muted)}#toast{position:fixed;right:20px;bottom:22px;padding:12px 16px;background:#214445;color:#e4f8f3;border-radius:10px;box-shadow:0 6px 25px #0007;display:none;z-index:9}
 #loginWrap{min-height:100vh;display:none;align-items:center;justify-content:center;padding:20px}.login{width:100%;max-width:410px;padding:35px;background:var(--panel);border:1px solid var(--line);border-radius:17px}.login h1{font-size:28px}.login form{display:grid;gap:12px;margin:24px 0}.login label{display:grid;gap:6px;font-size:12px;color:var(--muted)}.login button{width:100%}
@@ -42,7 +52,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -398,6 +408,194 @@ async function renderRN1Activity(target){
 }
 
 
+async function renderRN1Patterns(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Sélection des marchés & setup",
+  "Sport, type de pari, heure de début, cotes d'entrée, taille de chaque fill et constitution progressive des deux issues."));
+ let data;
+ try{data=await api("rn1_setup_patterns")}
+ catch(e){target.append(node("p","Profil RN1 indisponible : "+String(e?.message||e),"red"));return}
+ const meta=data.coverage||{},entry=data.entry_stats||{};
+ const progress=node("div",null,"metrics");
+ progress.append(
+  metric("Marchés · historique matérialisé",fmt(meta.markets||0)),
+  metric("Événements distincts",fmt(meta.events||0)),
+  metric("Exécutions détaillées inspectées",fmt(meta.profiled_fills||0)+" / 756 000"),
+  metric("Horaires Gamma retrouvés",fmt(meta.scheduled_events||0)+" / "+fmt(meta.selected_events||0))
+ );
+ target.append(progress);
+ const note=node("section",null,"card");
+ note.append(banner("Ce dashboard distingue deux univers : les agrégats de marchés "+
+ "qui s'enrichissent en continu et l'étude figée de 756 000 transactions "+
+ "dont les histogrammes détaillés sont progressivement calculés. "+
+ "Les heures analysées sont des FILLs, pas des heures de dépôt d'ordres."));
+ note.append(node("p","Avancement du profil transactionnel : "+fmt(meta.profile_pages||0)+
+ " / 756 pages, statut "+String(meta.profile_status||"inconnu")+
+ ". Les observations de début de match concernent deux échantillons sélectionnés "+
+ "(600 événements très actifs et 600 autres événements), pas tous les marchés.","foot"));
+ target.append(note);
+ const state={sport:"all",kind:"all",metric:"fills",selection:"top_activity"};
+ const sports=(data.sports||[]).map(x=>x.sport);
+ const kinds=(data.kinds||[]).map(x=>x.kind);
+ const filterCard=node("section",null,"card");
+ filterCard.append(node("h2","Explorer les combinaisons de critères"));
+ const filters=node("div",null,"filters");
+ function selectFilter(label,options,value,cb){
+  const wrap=node("label",label),sel=node("select");
+  for(const [id,name] of options){const opt=node("option",name);opt.value=id;sel.append(opt)}
+  sel.value=value;sel.addEventListener("change",()=>cb(sel.value));wrap.append(sel);return wrap;
+ }
+ const charts=node("div");
+ filters.append(
+  selectFilter("Sport / catégorie",[["all","Tous les sports"],...sports.map(x=>[x,x])],state.sport,x=>{state.sport=x;draw()}),
+  selectFilter("Type de prédiction",[["all","Tous les marchés"],...kinds.map(x=>[x,x])],state.kind,x=>{state.kind=x;draw()}),
+  selectFilter("Pondération",[["fills","Nombre de fills"],["buy_usdc","Montants d'achat"],["markets","Nombre de marchés"]],state.metric,x=>{state.metric=x;draw()}),
+  selectFilter("Débuts de matchs", [["top_activity","Événements très actifs"],["random_events","Échantillon aléatoire"]],state.selection,x=>{state.selection=x;draw()})
+ );
+ filterCard.append(filters,charts);target.append(filterCard);
+ function cardTo(parent,title,detail){
+  const c=node("section",null,"card"),header=node("div",null,"cardhead");
+  header.append(node("h2",title));if(detail)header.append(node("span",detail,"small"));
+  c.append(header);parent.append(c);return c;
+ }
+ function bars(parent,items,labelKey,valueKey,limit=15){
+  parent.replaceChildren();
+  const rows=items.slice(0,limit);
+  if(!rows.length){parent.append(node("p","Aucun résultat dans ce filtre.","foot"));return}
+  const max=Math.max(...rows.map(x=>Number(x[valueKey]||0)),1);
+  const chart=node("div",null,"pattern-bars");
+  for(const row of rows){
+   const n=Number(row[valueKey]||0),line=node("div",null,"pattern-line"),
+     label=node("div",String(row[labelKey]),"pattern-label"),
+     track=node("div",null,"pattern-track"),fill=node("div",null,"pattern-fill");
+   fill.style.width=Math.max(0,100*n/max)+"%";track.append(fill);
+   line.append(label,track,node("div",fmt(n,valueKey==="buy_usdc"?0:0)+(valueKey==="buy_usdc"?" $":""),"pattern-val"));
+   chart.append(line);
+  }
+  parent.append(chart);
+ }
+ function group(rows,groupKey,field="fills"){
+  const map=new Map();
+  for(const r of rows){
+   const k=r[groupKey],v=map.get(k)||{[groupKey]:k,fills:0,buy_usdc:0,markets:0};
+   v.fills+=Number(r.fills||0);
+   v.buy_usdc+=Number(r.buy_usdc||0);
+   v.markets+=Number(r.markets||0);
+   map.set(k,v);
+  }
+  return [...map.values()].sort((a,b)=>Number(b[field]||0)-Number(a[field]||0));
+ }
+ function draw(){
+  charts.replaceChildren();
+  const cross=(data.sport_kind||[]).filter(r=>
+   (state.sport==="all"||r.sport===state.sport)&&
+   (state.kind==="all"||r.kind===state.kind));
+  const row=node("div",null,"grid2"),left=node("div",null,"card"),right=node("div",null,"card");
+  left.append(node("h3","Sports les plus tradés"));
+  const sportBars=node("div");bars(sportBars,group(cross,"sport",state.metric),"sport",state.metric,10);left.append(sportBars);
+  right.append(node("h3","Types de prédictions"));
+  const kindBars=node("div");bars(kindBars,group(cross,"kind",state.metric),"kind",state.metric,12);right.append(kindBars);
+  row.append(left,right);charts.append(row);
+  const leagueCard=node("div",null,"card");leagueCard.append(node("h3","Compétitions et ligues privilégiées"));
+  const leagueRows=(data.leagues||[]).filter(r=>state.sport==="all"||r.sport===state.sport)
+   .sort((a,b)=>Number(b[state.metric]||0)-Number(a[state.metric]||0));
+  const leagueBars=node("div");bars(leagueBars,leagueRows,"league",state.metric,16);leagueCard.append(leagueBars);
+  leagueCard.append(node("p","Ligues : classement issu du slug de marché. Un marché peut "+
+   "représenter un vainqueur, un total, un handicap ou une période du même match.","foot"));
+  charts.append(leagueCard);
+  const sampling=cardTo(charts,"À quel moment RN1 commence-t-il à trader un match ?",
+   "Heure de coup d'envoi Gamma · première exécution RN1 observée");
+  const samplingRows=(data.start_time_coverage||[]).filter(r=>r.selection===state.selection);
+  sampling.append(node("p",samplingRows.map(r=>r.status+" : "+fmt(r.events)+" événements").join(" · "),"foot"));
+  const timing=(data.event_timing||[]).filter(r=>r.selection===state.selection&&
+   (state.sport==="all"||r.sport===state.sport));
+  const timeRows=group(timing,"timing","events").sort((a,b)=>{
+   const order=["Avant -60 min","Avant -60 à 0 min","0–5 min","5–15 min","15–30 min","30–60 min","60+ min"];
+   return order.indexOf(a.timing)-order.indexOf(b.timing);
+  });
+  const timer=node("div");bars(timer,timeRows,"timing","markets",12);
+  // group() counts field "markets" only; events should be the unit for timing.
+  timer.replaceChildren();
+  const counts=new Map();
+  for(const r of timing)counts.set(r.timing,(counts.get(r.timing)||0)+Number(r.events||0));
+  bars(timer,[...counts].map(([timing,events])=>({timing,events}))
+    .sort((a,b)=>["Avant -60 min","Avant -60 à 0 min","0–5 min","5–15 min","15–30 min","30–60 min","60+ min"].indexOf(a.timing)-
+                    ["Avant -60 min","Avant -60 à 0 min","0–5 min","5–15 min","15–30 min","30–60 min","60+ min"].indexOf(b.timing)),
+    "timing","events",7);
+  sampling.append(timer);
+  const sum=(data.event_timing_summary||[]).find(x=>x.selection===state.selection);
+  if(state.sport==="all"&&sum){
+   const n=Number(sum.events||0),m=Number(sum.first_5m||0);
+   sampling.append(node("p","Sur "+fmt(n)+" événements de cet échantillon avec une "+
+    "heure Gamma et un fill RN1 documenté : première exécution entre 0 et 5 minutes "+
+    "après le coup d'envoi dans "+(n?fmt(100*m/n,1):"—")+" % des cas. "+
+    "Décalage médian : "+fmt(sum.median_minutes,1)+" minutes.","foot"));
+  }
+  sampling.append(node("p","Attention : heure du PREMIER fill connu dans notre "+
+   "historique, pas heure de publication de son ordre. "+
+   "Les événements très actifs sont surreprésentés dans l'échantillon ciblé ; "+
+   "l'échantillon aléatoire est affiché séparément.","foot"));
+  const prices=cardTo(charts,"À quelles cotes RN1 achète-t-il ?",
+   "Tous les fills du lot figé, y compris les transactions Taker");
+  let points=[];
+  if(state.sport!=="all")points=(data.price_by_sport||[]).filter(x=>x.sport===state.sport);
+  else if(state.kind!=="all")points=(data.price_by_type||[]).filter(x=>x.kind===state.kind);
+  else points=(data.frozen_bins||[]).filter(x=>x.dimension==="price").map(x=>({price_bin:x.key,fills:x.fills,buy_usdc:x.buy_usdc}));
+  if(state.sport!=="all"&&state.kind!=="all")
+   prices.append(node("p","Le prix est ventilé par SPORT, pas simultanément par sport "+
+    "et type de pari : le croisement à trois dimensions n'est pas encore "+
+    "disponible. Le reste du tableau suit bien les deux filtres.","foot"));
+  const priceRows=group(points,"price_bin",state.metric)
+   .sort((a,b)=>String(a.price_bin).localeCompare(String(b.price_bin)));
+  const priceBars=node("div");bars(priceBars,priceRows,"price_bin",state.metric==="markets"?"fills":state.metric,20);
+  prices.append(priceBars);
+  prices.append(node("p","Ces prix concernent les transactions exécutées. Leurs "+
+   "variations futures et les remboursements ne sont pas inclus dans cet histogramme. "+
+   "La distribution n'est pas une recommandation de cote à proposer.","foot"));
+  const first=cardTo(charts,"Première position et construction de YES/NO","Données historiques du lot de 756 000 fills");
+  const s=state.sport==="all"?entry:
+   (data.entry_by_sport||[]).find(x=>x.sport===state.sport)||{};
+  first.append(node("p",fmt(s.markets||0)+" marchés avec une première entrée connue ; "+
+   fmt(s.both_sides||0)+" ont ensuite reçu des achats sur les deux issues. "+
+   "Première cote médiane : "+(s.median_first_price!==null&&s.median_first_price!==undefined?
+    fmt(100*Number(s.median_first_price),1)+" %":"—")+
+   " ; premier achat médian : "+fmt(s.median_first_usdc??s.median_first_notional,1)+" $."+
+   " Temps médian entre les premières exécutions des deux côtés : "+
+   fmt(s.median_pair_lag_min??s.median_minutes_until_both_sides,1)+" minutes.","foot"));
+  if(state.sport==="all"){
+   first.append(node("h3","Distribution de la première cote enregistrée"));
+   const vals=(data.first_price_bins||[]).map(r=>({bin:String(r.lower_pct).padStart(2,"0")+"–"+
+    String(Number(r.lower_pct)+5).padStart(2,"0")+"%",markets:r.markets}));
+   const fig=node("div");bars(fig,vals,"bin","markets",20);first.append(fig);
+  }
+  first.append(node("p","Les issues 0 et 1 ne sont pas nécessairement les mots YES et NO : "+
+   "sur un match, il peut s'agir des deux équipes. Des exécutions sur les "+
+   "deux côtés ne signifient pas forcément qu'elles étaient simultanées.","foot"));
+  const sizes=cardTo(charts,"Taille des exécutions et répétition des ordres",
+   "Fills observés, non ordres en attente");
+  const sizeRows=(data.frozen_bins||[]).filter(r=>r.dimension==="notional")
+   .map(r=>({bracket:r.key,fills:r.fills,buy_usdc:r.buy_usdc}));
+  const sizeBins=["<5","5–20","20–50","50–100","100–250","250–500","500–1000","1000–5000","5000+"];
+  const figSize=node("div");bars(figSize,sizeRows.sort((a,b)=>sizeBins.indexOf(a.bracket)-sizeBins.indexOf(b.bracket)),
+   "bracket","fills",12);sizes.append(figSize);
+  sizes.append(node("h3","Combien de fills par marché ?"));
+  const depthRows=(data.depth||[]).map(x=>({bracket:x.bracket,markets:x.markets,fills:x.fills,buy_usdc:x.buy_usdc}));
+  const figDepth=node("div");bars(figDepth,depthRows,"bracket",state.metric,8);sizes.append(figDepth);
+  const h=cardTo(charts,"Heures d'activité · UTC",
+   "Heures des fills individuels du lot, pas heure réelle de départ des matchs");
+  const hourRows=(data.frozen_bins||[]).filter(x=>x.dimension==="utc_hour")
+   .map(x=>({hour:x.key+":00",fills:x.fills,buy_usdc:x.buy_usdc}));
+  const hourBins=node("div");bars(hourBins,hourRows,"hour","fills",24);h.append(hourBins);
+  h.append(node("p","Ces heures dépendent fortement des calendriers NFL, tennis "+
+   "et compétitions esport ; une concentration horaire n'identifie pas "+
+   "une stratégie de timing indépendamment des horaires des matchs.","foot"));
+  charts.append(node("p","Les classements sportifs utilisent les tables de marché "+
+   "matérialisées et plus récentes ; les cotes et tailles sont calculées "+
+   "directement depuis les archives SHA256 du lot de 756 000 fills. "+
+   "Aucun fill non exécuté n'est observable dans ces sources.","foot"));
+ }
+ draw();
+}
 async function renderRN1(){
  const target=$("content");
  target.replaceChildren(heading("RN1 · Algorithme et rentabilité",
@@ -1202,7 +1400,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
