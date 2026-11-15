@@ -8,6 +8,8 @@ on:
       - 'supabase/functions/pi-rn1-replay/**'
       - 'supabase/functions/pi-dashboard/**'
       - 'web/index.html'
+      - 'supabase/functions/pi-dashboard-dedicated/**'
+      - 'supabase/functions/pi-rn1-official-pnl/**'
       - 'tests/test_rn1_*'
       - '.github/workflows/rn1-research-ci.yml'
   pull_request:
@@ -42,4 +44,5 @@ jobs:
             tests/test_rn1_maker_role_audit.py \
             tests/test_rn1_pretrade_inventory.py \
             tests/test_rn1_live_quote_probe.py \
-            tests/test_rn1_strategy_evidence.py
+            tests/test_rn1_strategy_evidence.py \
+            tests/test_rn1_strategy_verdict.py
