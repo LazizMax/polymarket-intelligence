@@ -1740,7 +1740,47 @@ async function rn1SportsImpact(body:any){
   ))::int with_score_last60
  from matched f group by 1,2 order by 1,2
  `);
- return {coverage:coverage[0]??{},games,totals,per_game:rows,live_roles:liveRoles,
+
+ const priceVsEvents=await db.unsafe(`
+ with mapping as (
+  select distinct b.token_id,e.event_slug
+  from pi.rn1_fill_price_benchmark b
+  join pi.rn1_pattern_market_entries e on e.market_key=b.market_key
+  join pi.rn1_nba_espn_links l on l.event_slug=e.event_slug and l.status='complete'
+ ), prices as (
+  select h.token_id,h.observed_epoch,h.price,
+   lag(h.observed_epoch) over(partition by h.token_id order by h.observed_epoch) prev_epoch,
+   lag(h.price) over(partition by h.token_id order by h.observed_epoch) prev_price
+  from pi.rn1_historical_price_points h where h.resolution_seconds=60
+ ), observed as (
+  select m.event_slug,pr.*,(pr.price-pr.prev_price) delta
+  from mapping m join prices pr on pr.token_id=m.token_id
+  join pi.rn1_nba_espn_links l on l.event_slug=m.event_slug
+  where pr.prev_price is not null and pr.observed_epoch-pr.prev_epoch between 60 and 180
+   and to_timestamp(pr.observed_epoch) between l.first_play_at and l.last_play_at
+ ), events as (
+  select x.*,
+   exists(select 1 from pi.rn1_nba_espn_plays p where p.event_slug=x.event_slug
+    and p.play_at>to_timestamp(x.prev_epoch) and p.play_at<=to_timestamp(x.observed_epoch)) has_play,
+   exists(select 1 from pi.rn1_nba_espn_plays p where p.event_slug=x.event_slug
+    and p.is_scoring and p.play_at>to_timestamp(x.prev_epoch)
+    and p.play_at<=to_timestamp(x.observed_epoch)) has_score,
+   exists(select 1 from pi.trades t where t.token_id=x.token_id
+    and t.reported_at>to_timestamp(x.observed_epoch)
+    and t.reported_at<=to_timestamp(x.observed_epoch)+interval '60 seconds') next_fill
+  from observed x
+ )
+ select has_score,
+  case when abs(delta)>=0.03 then '>=3c'
+       when abs(delta)>=0.01 then '1-3c' else '<1c' end move,
+  count(*)::int intervals,count(distinct token_id)::int tokens,
+  count(distinct event_slug)::int games,
+  count(*) filter(where next_fill)::int next_fill_windows,
+  round(100.0*count(*) filter(where next_fill)/count(*),2)::float8 next_fill_pct,
+  round(avg(abs(delta)),5)::float8 mean_abs_change
+ from events where has_play group by 1,2 order by has_score desc,move
+ `);
+ return {coverage:coverage[0]??{},games,totals,per_game:rows,live_roles:liveRoles,price_vs_events:priceVsEvents,
    selection:slug||null,window_seconds:windowSeconds,timeline,price_timeline:priceTimeline,
    price_token:token,
    caveats:[
