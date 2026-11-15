@@ -754,6 +754,27 @@ async function rn1EconomicAttribution(){
   sum(gross-paired_gross)::float8 residual_gross
  from checked where reconciled
  group by 1 order by 1`);
+ const skewImpact=await db.unsafe(base+`
+ , skewed as(
+  select *,greatest(buy0_shares,buy1_shares)/
+   nullif(least(buy0_shares,buy1_shares),0) as ratio,
+   case when buy0_shares>0 and buy1_shares>0
+    then gross-paired_gross end as residual_gross
+  from checked where reconciled
+ ), bands as(
+  select case when ratio<1.1 then 'below_1_1'
+   when ratio<1.5 then 'between_1_1_and_1_5'
+   when ratio<2 then 'between_1_5_and_2'
+   else 'at_least_2' end as imbalance_band,*
+  from skewed
+ )
+ select imbalance_band,count(*)::int markets,
+ count(distinct event_slug)::int events,
+ sum(gross)::float8 gross,sum(paired_gross)::float8 paired_gross,
+ sum(residual_gross)::float8 residual_gross,
+ count(*) filter(where gross>0)::int gross_positive_markets
+ from bands group by 1 order by 1
+ `);
  const official=await db.unsafe(`
  with official as(
   select c.market_key,
@@ -783,7 +804,7 @@ async function rn1EconomicAttribution(){
   scope:"conditional_reconciled_two_sided_gross_before_fees",
   fixed_first_trade_cutoff:"2026-09-21T00:00:00Z",
   fixed_last_trade_cutoff:"2026-11-12T00:00:00Z",
-  summary:total,weekly:weeks,official:official[0]||{},
+  summary:total,weekly:weeks,by_skew:skewImpact,official:official[0]||{},
   caveats:[
    "Only 2-sided markets with REDEEM and a payout matching one observed outcome's share count within 1 USD are counted. Single-sided markets, unresolved positions and nonreconciled markets are excluded.",
    "Gross economic result excludes exchange fees, rebates, rewards, transfers and any buy/sell flow not present in the public sources.",
