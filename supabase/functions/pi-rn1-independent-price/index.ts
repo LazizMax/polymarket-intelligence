@@ -142,6 +142,34 @@ function eventEvidence(state:State){
  }
  return result;
 }
+// Matched-event diagnostic: the SAME event must contain both positions.
+// Each eligible sporting event contributes ONE difference (equal-event weight)
+// to avoid confusing repeated fills with independent observations.
+function eventPairedDifferences(state:State){
+ const out:Record<string,{events:number,under_fills:number,over_fills:number,mean_difference:number|null,
+  se:number|null,ci_low:number|null,ci_high:number|null,coverage_start_page:number|null}>={};
+ const evs=Object.values(state.event_data||{});
+ for(const h of HORIZONS){
+  const underKey=String(h)+"|maker|underweight";
+  const overKey=String(h)+"|maker|overweight";
+  const paired=evs.map(ev=>({under:ev[underKey],over:ev[overKey]}))
+   .filter((p):p is {under:EventMoment,over:EventMoment}=>!!p.under&&!!p.over&&p.under.x>0&&p.over.x>0);
+  const n=paired.length;
+  const differences=paired.map(p=>p.under.y/p.under.x-p.over.y/p.over.x);
+  const mean=n?differences.reduce((a,b)=>a+b,0)/n:null;
+  const variance=n>1&&mean!==null?
+   differences.reduce((a,d)=>a+(d-mean)**2,0)/(n-1):null;
+  const se=n>1&&variance!==null?Math.sqrt(variance/n):null;
+  out[String(h)]={events:n,
+   under_fills:paired.reduce((a,p)=>a+p.under.n,0),
+   over_fills:paired.reduce((a,p)=>a+p.over.n,0),
+   mean_difference:mean,se,
+   ci_low:se!==null&&mean!==null?mean-1.96*se:null,
+   ci_high:se!==null&&mean!==null?mean+1.96*se:null,
+   coverage_start_page:state.event_start_page??null};
+ }
+ return out;
+}
 function process(state:State,rows:any[],roles:string[],hist:Map<string,{points:Moment[],status:string}>,selected:Set<string>,tokenIpw:number){
  const pageSummary:Summary=fresh().summary;
  const marketSet=new Set<string>(),events=new Set<string>();let minTs=Infinity,maxTs=0;
@@ -209,7 +237,9 @@ async function tick(){
   for(const [k,v] of Object.entries(coverage))bump(state.summary.coverage,k,v);
   if(state.event_start_page===undefined)state.event_start_page=pageNo;
   const out=process(state,rows,roles,hist,chosenSet,sourceTokenCount/chosen.length);
-  (state.summary as Summary & {event_cluster_evidence?:ReturnType<typeof eventEvidence>}).event_cluster_evidence=eventEvidence(state);
+  (state.summary as Summary & {event_cluster_evidence?:ReturnType<typeof eventEvidence>;
+   event_paired_differences?:ReturnType<typeof eventPairedDifferences>}).event_cluster_evidence=eventEvidence(state);
+  (state.summary as Summary & {event_paired_differences?:ReturnType<typeof eventPairedDifferences>}).event_paired_differences=eventPairedDifferences(state);
   const checkpoint="independent-prices-v1/state/page-"+String(pageNo).padStart(8,"0")+"-"+String(page.sha256).slice(0,16)+".json.gz";
   await writeStorage(checkpoint,JSON.stringify(state));
   const matched=Object.fromEntries(HORIZONS.map(h=>[String(h),Number(out.pageSummary.market_price[String(h)]?.["maker|all"]?.n||0)]));
