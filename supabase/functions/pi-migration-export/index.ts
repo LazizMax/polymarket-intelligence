@@ -80,5 +80,5 @@ Deno.serve(async req=>{
  if(!await authorised(req))return send({error:"forbidden"},403);
  let data:any={};try{data=await req.json()}catch(_){}
  if(data.action!=="transfer_storage")return send({error:"bad_action"},400);
- return send(await migrate(Math.min(10,Math.max(1,Number.isInteger(data.count)?data.count:4))));
+ return send(await migrate(Math.min(25,Math.max(1,Number.isInteger(data.count)?data.count:12))));
 });
