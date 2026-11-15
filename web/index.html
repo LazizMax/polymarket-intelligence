@@ -2,7 +2,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://bxfvgywfiifnsbjgudzj.supabase.co; img-src data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://bxfvgywfiifnsbjgudzj.supabase.co https://qamdvfakwclkuswrdckp.supabase.co; img-src data:; base-uri 'none'; form-action 'none'">
 <title>Polymarket Intelligence — Cloud</title>
 <style>
 :root{--bg:#09121c;--side:#0c1926;--panel:#101f2d;--panel2:#142637;--line:#26394a;--text:#e6eef5;--muted:#90a4b7;--brand:#4fe4c4;--blue:#8fc0ff;--red:#ff8d8d;--shade:rgba(79,228,196,.07)}
@@ -49,7 +49,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 <div id="content"></div></main></div><div id="toast" role="status"></div>
 <script>
 "use strict";
-const API="https://bxfvgywfiifnsbjgudzj.supabase.co/functions/v1/pi-dashboard";
+const API="https://qamdvfakwclkuswrdckp.supabase.co/functions/v1/pi-dashboard";
 let BASE="",KEY="";const STORE="pi-cloud-auth-v1";
 const $=(id)=>document.getElementById(id);
 const fmt=(n,d=0)=>n!==null&&n!==undefined&&n!==""&&Number.isFinite(Number(n))?new Intl.NumberFormat("fr-FR",{maximumFractionDigits:d,minimumFractionDigits:d}).format(Number(n)):"—";
