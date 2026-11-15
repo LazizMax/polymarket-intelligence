@@ -2,6 +2,7 @@
 // Backend writes private pi schema, with no credentials exposed in the browser.
 import postgres from "npm:postgres@3.4.3";
 import { closedRoi } from "./roi-math.ts";
+import { closesPageComplete } from "./roi-sync.ts";
 
 const connectionString = Deno.env.get("SUPABASE_DB_URL");
 if (!connectionString) throw new Error("SUPABASE_DB_URL is not configured");
@@ -209,7 +210,7 @@ async function refreshClosedPositions(wallet:string,maxPages=2){
   if(hasMore&&!next)throw new Error("Missing next cursor");
   if(hasMore&&next===oldCursor)throw new Error("Cursor did not advance");
   const newRows:any[]=[];
-  const sourceTimestamps:number[]=[];
+  const sourceTimestamps:(number|null)[]=[];
   for(const raw of response.data){
    const token=String(raw.token_id??"");
    if(String(raw.proxy_wallet??"").toLowerCase()!==wallet||!/^[0-9]+$/.test(token))
@@ -220,7 +221,7 @@ async function refreshClosedPositions(wallet:string,maxPages=2){
     return ts!==null&&ts>=946684800&&ts<4102444800?new Date(ts*1000).toISOString():null;
    };
    const when=epoch(raw.last_event_at);
-   if(when)sourceTimestamps.push(Date.parse(when));
+   sourceTimestamps.push(when?Date.parse(when):null);
    newRows.push({
     token_id:token,condition_id:String(raw.condition_id??"").slice(0,100),
     title:String(raw.title??"").slice(0,500),outcome:String(raw.outcome??"").slice(0,80),
@@ -232,13 +233,9 @@ async function refreshClosedPositions(wallet:string,maxPages=2){
     source_percent_realized_pnl:number(raw.percent_realized_pnl)
    });
   }
-  // The API is ordered by TIMESTAMP DESC. Check monotonicity before stopping
-  // at the overlap boundary, so an unsorted or incomplete page can't skip data.
-  const sorted=sourceTimestamps.length===response.data.length &&
-   sourceTimestamps.every((ts,i)=>i===0||sourceTimestamps[i-1]>=ts);
-  const crossed=mode==="recent"&&sorted&&sourceTimestamps.length>0&&st.checkpoint_at &&
-   sourceTimestamps[sourceTimestamps.length-1]<new Date(st.checkpoint_at).getTime();
-  const complete=!hasMore||Boolean(crossed);
+  // Never stop a cursor early unless the entire page is dated and sorted.
+  const complete=closesPageComplete(mode,hasMore,sourceTimestamps,
+   st.checkpoint_at?new Date(st.checkpoint_at).getTime():null);
   await db.begin(async(tx)=>{
    if(newRows.length)await tx.unsafe(
     "insert into pi.closed_position_roi(wallet,token_id,generation,condition_id,title,outcome,market_slug,first_entry_at,last_event_at,lifetime_shares,avg_entry_price,estimated_entry_cost_usdc,realized_pnl_usdc,estimated_roi_pct,valid_cost,quality_reason,source_percent_realized_pnl,collected_at,last_seen_scan_at) select $1,x.token_id,$3,x.condition_id,x.title,x.outcome,x.market_slug,x.first_entry_at,x.last_event_at,x.lifetime_shares,x.avg_entry_price,x.estimated_entry_cost_usdc,x.realized_pnl_usdc,x.estimated_roi_pct,x.valid_cost,x.quality_reason,x.source_percent_realized_pnl,now(),now() from jsonb_to_recordset(($2::text)::jsonb) as x(token_id text,condition_id text,title text,outcome text,market_slug text,first_entry_at timestamptz,last_event_at timestamptz,lifetime_shares numeric,avg_entry_price numeric,estimated_entry_cost_usdc numeric,realized_pnl_usdc numeric,estimated_roi_pct numeric,valid_cost boolean,quality_reason text,source_percent_realized_pnl numeric) on conflict(wallet,token_id) do update set generation=excluded.generation,condition_id=excluded.condition_id,title=excluded.title,outcome=excluded.outcome,market_slug=excluded.market_slug,first_entry_at=excluded.first_entry_at,last_event_at=excluded.last_event_at,lifetime_shares=excluded.lifetime_shares,avg_entry_price=excluded.avg_entry_price,estimated_entry_cost_usdc=excluded.estimated_entry_cost_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,estimated_roi_pct=excluded.estimated_roi_pct,valid_cost=excluded.valid_cost,quality_reason=excluded.quality_reason,source_percent_realized_pnl=excluded.source_percent_realized_pnl,collected_at=now(),last_seen_scan_at=now()",
