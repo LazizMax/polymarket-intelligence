@@ -1,6 +1,6 @@
 # Plan de migration vers un projet Supabase dédié — Polymarket Intelligence
 
-Statut : **préparation terminée ; création du projet en attente de validation du coût mensuel**. Aucun déplacement de données, coupure de cron ni nouvelle facturation effectués par ce document.
+Statut : **projet dédié créé avec accord explicite pour 10 USD/mois ; migration SQL et Storage effectivement en cours ; basculement NON réalisé**. L'ancien projet n'a subi aucune suppression de données. Consulter l'addendum d'exécution et les validations avant tout cutover.
 
 ## Inventaire source vérifié
 
@@ -41,7 +41,7 @@ Statut : **préparation terminée ; création du projet en attente de validation
 
 ## État réel du chantier
 
-Le compte et le montant ont été inspectés. **Le projet destination n'a pas été créé.** Son coût de 10 USD/mois requiert un accord explicite ; l'utilisateur doit également confirmer l'organisation `LazizMax`. Ne pas assimiler un « go » antérieur à un accord sur un prix encore inconnu.
+Le compte a été vérifié ; l'utilisateur a ensuite **confirmé explicitement le coût de 10 USD/mois et l'organisation LazizMax**. Le projet destination `qamdvfakwclkuswrdckp` a été créé. Le basculement attend les contrôles de copie et de réconciliation.
 
 Une fois ces autorisations obtenues, créer la destination, provisionner les secrets sans les exposer, copier le Storage et les tables, puis effectuer un basculement vérifié. Si les outils disponibles ne permettent pas de transférer intégralement les objets privés ou les secrets, arrêter avant le cutover et signaler précisément le blocage plutôt que d'affirmer la migration terminée.
 
@@ -88,3 +88,13 @@ Une fois ces autorisations obtenues, créer la destination, provisionner les sec
 - Après cutover, révoquer le secret de migration, retirer le droit du récepteur et arrêter les deux crons de transfert, qui n'ont plus lieu d'exister.
 
 **Ce document est un inventaire d'une migration en cours, pas une attestation de migration terminée.**
+
+### Sécurisation supplémentaire après reprise
+
+- Transfert SQL accéléré à **500 lignes maximum par lot**, 12 lots par appel toutes les 30 secondes ; stockage 25 objets maximum toutes les 30 secondes. Signature SHA-256, limites d'octets, verrou de progression et seuil de cinq erreurs conservés. Une exécution sur 500 lignes a été vérifiée réellement.
+- La clé d'idempotence des **lots SQL** inclut désormais le contenu de chaque lot, afin qu'un **second passage** puisse corriger les lignes modifiées pendant la première copie, au lieu de rejeter les mises à jour comme un conflit.
+- Garde-fou de quota des replayers séparé : **1 Gio** sur le projet dédié, anciens plafonds inchangés sur l'installation partagée. Fonctions RN1 actualisées sur le projet dédié mais **non programmées à s'exécuter**.
+- `pg_cron` / `pg_net` installés sur la destination. **10 cron Polymarket** configurés et vérifiés `active=false`, tous pointant vers la nouvelle URL Supabase, sans référence à l'ancien domaine.
+- Procédures de cutover enregistrées dans `sql/pi_source_stop_polymarket_jobs.sql`, `sql/pi_final_delta_guarded_cutover.sql`, `sql/pi_dedicated_post_cutover_activation.sql`. Elles ont des garde-fous explicites et **n'ont PAS été exécutées**.
+- `pi.migration_cutover_readiness` créé avec `verified=false`, vérifié ; la procédure d'activation refuse de démarrer sans vérification explicite du contenu.
+- Les 3 colonnes `IDENTITY` historiques sont inventoriées et leurs séquences seront recalées sur MAX(id) à l'activation, afin d'éviter des collisions.
