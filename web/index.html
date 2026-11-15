@@ -495,6 +495,41 @@ async function renderRN1(){
     ". Un écart de bids ne garantit pas que les deux ordres seraient exécutés.","foot"));
   }
 
+  const marks=Array.isArray(q.markouts)?q.markouts:[],
+   markNames={short:"30–120 secondes",medium:"3–7 minutes",long:"10–20 minutes"};
+  if(marks.length){
+   quotesCard.append(node("h3","RN1 — évolution du prix après achat"));
+   const markPanel=node("div",null,"metrics");
+   for(const horizon of ["short","medium","long"]){
+    const m=marks.find(x=>x.horizon===horizon);
+    if(!m)continue;
+    const n=Number(m.matched_fills||0),
+     weighted=Number(m.quantity_weighted_markout_per_share);
+    markPanel.append(metric(markNames[horizon],
+     Number.isFinite(weighted)?fmt(weighted*100,2)+" ¢/part":"—"));
+    quotesCard.append(node("p",markNames[horizon]+" : "+fmt(n)+" achats Maker observés, "+
+     fmt(m.markets||0)+" marchés, "+fmt(m.days||0)+" jour(s). "+
+     fmt(m.negative_markouts||0)+" ont un prix moyen ultérieur sous leur prix d'achat.","foot"));
+   }
+   quotesCard.append(markPanel);
+   const common=marks.find(x=>x.horizon==="short");
+   if(common&&Number(common.same_fills_all_horizons||0)>0){
+    const n=Number(common.same_fills_all_horizons);
+    const textByHorizon=["short","medium","long"].map(h=>{
+     const m=marks.find(x=>x.horizon===h);
+     return m&&Number.isFinite(Number(m.same_fills_weighted_markout))?
+      markNames[h]+" : "+fmt(100*Number(m.same_fills_weighted_markout),2)+" ¢":"—";
+    }).join(" ; ");
+    quotesCard.append(node("p","Même groupe observable aux trois horizons ("+fmt(n)+
+     " achats) : "+textByHorizon+". Ce sous-groupe reste sélectionné par la présence "+
+     "de cotations futures, pas par une règle d'investissement.","foot"));
+   }
+   quotesCard.append(node("p","Variation du prix moyen du carnet après achat, pondérée par la quantité "+
+    "de parts ; ni vente exécutée, ni PnL, ni ROI. Les groupes changent selon le délai "+
+    "et les fills peuvent provenir des mêmes événements. Une seule journée observée "+
+    "ne valide pas l'avantage, les frais ou la sélection adverse à long terme.","foot"));
+  }
+
   const inv=q.inventory||{},coverage=inv.coverage||{},
    invStats=Array.isArray(inv.by_side)?inv.by_side:[],
    invModels=Array.isArray(inv.models)?inv.models:[];
