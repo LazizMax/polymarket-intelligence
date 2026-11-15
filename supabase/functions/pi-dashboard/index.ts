@@ -384,6 +384,15 @@ async function rn1ActivityResearch(){
      select 1 from pi.trades t where t.wallet=a.wallet and t.market_key=a.market_key and t.token_id=a.token_id
    ))::integer as redemptions_with_some_observed_buy_or_sell
   from pi.wallet_activity a where a.wallet=$1`,[RN1]);
+
+ const windows=await db.unsafe(`
+ select
+ (select min(reported_at)::text from pi.trades where wallet=$1) as trades_oldest,
+ (select max(reported_at)::text from pi.trades where wallet=$1) as trades_newest,
+ (select min(occurred_at)::text from pi.wallet_activity where wallet=$1) as activity_oldest,
+ (select max(occurred_at)::text from pi.wallet_activity where wallet=$1) as activity_newest
+ `,[RN1]);
+
  const recent=await db.unsafe(`
   select occurred_at::text as at,kind,market_title,event_slug,market_key,token_id,
    side,shares::double precision,unit_price::double precision,
@@ -402,7 +411,7 @@ async function rn1ActivityResearch(){
   having count(*) filter(where kind<>'TRADE')>0
   order by redemptions desc,merges desc,a.market_key limit 30`,[RN1]);
  return {
-  import_state:state[0]||null,coverage:coverage[0]||{},types,recent,markets:perMarket,
+  import_state:state[0]||null,coverage:coverage[0]||{},windows:windows[0]||{},types,recent,markets:perMarket,
   reconciliation_status:"unreconciled",
   disclaimers:[
    "REDEEM denotes a reported payout, NOT profit. Basis/cost, transfers and prior inventory may be outside both samples.",
