@@ -452,6 +452,64 @@ async function renderRN1(){
   target.append(c);
  }
 
+
+ const quotesCard=node("section",null,"card");
+ const quoteHead=node("div",null,"cardhead");
+ quoteHead.append(node("h2","Prix limites · Analyse des carnets en direct"));
+ quoteHead.append(node("span","Comparaison aux exécutions futures seulement","small"));
+ quotesCard.append(quoteHead);
+ try{
+  const q=await api("rn1_quote_forensics"),probe=q.state||{},books=q.summary||{},
+    matched=q.matches||{},latest=q.latest||null;
+  const collected=Number(probe.completed_runs||0),nmatch=Number(matched.matched_fills||0);
+  if(probe.status==="paused_quota"||probe.status==="paused_error"){
+   quotesCard.append(banner("Capture suspendue : "+String(probe.last_error||"budget ou erreur du flux")+
+    ". Les données précédentes restent conservées."));
+  }
+  const metricRow=node("div",null,"metrics");
+  metricRow.append(metric("Relevés de carnets",fmt(collected)),
+   metric("Paires YES/NO observées",fmt(books.valid_book_pairs||0)),
+   metric("Trades RN1 avec carnet AVANT le trade",fmt(nmatch)),
+   metric("Exécutions maker rapprochées",fmt(matched.inferred_maker_fills||0)));
+  quotesCard.append(metricRow);
+  if(latest?.received_at){
+   quotesCard.append(node("p","Dernier relevé : "+String(latest.received_at).slice(0,19)+
+    " UTC · "+fmt(latest.market_count||0)+" marchés sportifs publics suivis, dont "+
+    fmt(latest.rn1_market_count||0)+" négociés récemment par RN1.","foot"));
+  }
+  if(!nmatch){
+   quotesCard.append(node("p","La capture de nouveaux carnets a commencé, mais nous n'avons pas encore assez de transactions RN1 intervenues APRÈS ces relevés. Aucun prix limite exact ni aucune rentabilité future n'est donc déduit de ces observations.","foot"));
+  }else{
+   const priceBase=Number(matched.maker_fills_close_enough_to_compare||0),
+    atBid=Number(matched.maker_fills_at_prior_bid||0);
+   quotesCard.append(node("p","Sur "+fmt(priceBase)+
+    " achats maker présumés avec un carnet observé au plus 60 secondes plus tôt, "+
+    (priceBase>0?fmt(100*atBid/priceBase,1)+" %":"une part encore insuffisante")+
+    " coïncident avec le meilleur bid observé (tolérance de 0,5 tick). "+
+    "Ce rapprochement ne prouve pas que RN1 était l'auteur de ce meilleur bid.","foot"));
+   const models=Array.isArray(q.models)?q.models:[],
+    train=models.find(x=>x.period==="train"),hold=models.find(x=>x.period==="holdout");
+   if(hold&&train&&Number(hold.fills)>=100&&Number(hold.markets)>=10){
+    const names=[["best_bid_mae_ticks","Au meilleur bid"],["one_tick_below_mae_ticks","Un tick sous le bid"],
+     ["two_ticks_below_mae_ticks","Deux ticks sous le bid"],["one_tick_above_mae_ticks","Un tick au-dessus du bid"]];
+    const ordered=names.map(([key,label])=>({label,mae:Number(hold[key])}))
+     .filter(x=>Number.isFinite(x.mae)).sort((a,b)=>a.mae-b.mae);
+    if(ordered.length)quotesCard.append(node("p","Validation sur la période la plus récente ("+
+     fmt(hold.fills)+" fills) : la meilleure règle simple pour PRÉDIRE le prix d'exécution est « "+
+     ordered[0].label+" » (erreur moyenne "+fmt(ordered[0].mae,2)+
+     " ticks). Il ne s'agit pas d'une stratégie rentable validée.","foot"));
+   }else{
+    quotesCard.append(node("p","Les modèles de cotation (meilleur bid, 1 ou 2 ticks en dessous, 1 tick au-dessus) seront comparés sur une période ultérieure dès que nous aurons au moins 100 exécutions et 10 marchés distincts hors entraînement.","foot"));
+   }
+  }
+  quotesCard.append(node("p","Frais sportifs : maker 0 ; taker estimé selon 0,05 × shares × prix × (1 − prix). "+
+   "Les rebates réels et la probabilité de remplissage d'un ordre passif ne sont pas identifiables dans ce seul test.","foot"));
+  quotesCard.append(banner("Les carnets anciens exacts sont indisponibles. Les nouveaux relevés sont archivés en privé ; seuls les trades postérieurs de 10 à 120 secondes à un relevé sont comparés. Sans ordres RN1 non exécutés ni test hors échantillon indépendant, aucun rendement reproductible n'est établi."));
+ }catch(e){
+  quotesCard.append(node("p","Recherche des prix en cours d'initialisation : "+String(e?.message||e),"foot"));
+ }
+ target.append(quotesCard);
+
  const status=node("section",null,"card"),head=node("div",null,"cardhead");
  head.append(node("h2","Collecte de toutes les données publiques"));
  head.append(node("span",data.status==="source_exhausted_verified"?"Historique accessible parcouru":"Historique en cours de collecte","small"));
