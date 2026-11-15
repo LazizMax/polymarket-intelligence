@@ -263,6 +263,76 @@ async function renderTemporal(target){
 }
 
 
+
+async function renderRN1Activity(target){
+ const card=node("section",null,"card");
+ const head=node("div",null,"cardhead");
+ head.append(node("h2","RN1 · Règlements et événements économiques"));
+ head.append(node("span","Reconstitution économique non réconciliée","small"));
+ card.append(head);
+ card.append(banner("Un REDEEM représente un montant remboursé rapporté par Polymarket, PAS un bénéfice. Les coûts d'acquisition et inventaires antérieurs ne sont pas encore connus. Les TRADE retrouvés dans les deux sources ne doivent pas être comptés deux fois."));
+ target.append(card);
+ let result;
+ try{result=await api("rn1_activity_research")}
+ catch(e){card.append(node("p","Flux d'activité indisponible : "+String(e?.message||e),"red"));return;}
+ const st=result.import_state||{},cov=result.coverage||{};
+ const progress=Math.min(100,st.sample_limit?100*Number(st.rows_seen||0)/Number(st.sample_limit):0);
+ const status=node("div",null,"filters");status.append(node("p","Import : "+(st.status||"en attente")+" · "+
+  fmt(st.rows_seen||0)+"/"+fmt(st.sample_limit||4000)+" lignes du pilote · "+
+  fmt(st.pages_fetched||0)+" pages sources · "+fmt(st.missing_required||0)+" invalides","foot"));
+ card.append(status);
+ const bar=node("div");bar.style.cssText="height:8px;border-radius:5px;overflow:hidden;background:#182c3a";
+ const fill=node("div");fill.style.cssText="height:100%;width:"+progress.toFixed(2)+"%;background:#14b8a6";
+ bar.append(fill);card.append(bar);
+ if(st.last_error)card.append(node("p","Import en erreur : "+String(st.last_error),"red"));
+ const metrics=node("div",null,"metrics");
+ metrics.append(metric("Événements d'activité",fmt(cov.activity_rows||0)),
+  metric("REDEEM observés",fmt(cov.redemptions||0)),
+  metric("TRADE présents dans les deux flux",
+   fmt(cov.activity_trade_rows_with_matching_trade||0)+"/"+fmt(cov.activity_trade_rows||0)),
+  metric("REDEEM liés à un token du flux trades",
+   fmt(cov.redemptions_with_some_observed_buy_or_sell||0)+"/"+fmt(cov.redemptions||0)));
+ card.append(metrics);
+ const w=result.windows||{};
+ const startTrade=Date.parse(w.trades_oldest||""),endTrade=Date.parse(w.trades_newest||"");
+ const startActivity=Date.parse(w.activity_oldest||""),endActivity=Date.parse(w.activity_newest||"");
+ const disjoint=[startTrade,endTrade,startActivity,endActivity].every(Number.isFinite)&&
+    (startActivity>endTrade||startTrade>endActivity);
+ card.append(node("p","Période des trades : "+(w.trades_oldest||"—")+" → "+(w.trades_newest||"—")+
+  " · Période des activités : "+(w.activity_oldest||"—")+" → "+(w.activity_newest||"—"),"foot"));
+ if(disjoint)card.append(banner("Attention : les périodes importées des deux flux ne se chevauchent pas encore. Un taux de correspondance nul est attendu ; il ne signifie ni erreur du trader ni absence de rapprochement possible."));
+ const types=node("div",null,"tablewrap"),table=node("table"),headrow=node("tr"),thead=node("thead");
+ ["Type source","Occurrences","Montant brut rapporté","Sans montant","Sans transaction hash"].forEach(x=>headrow.append(node("th",x)));
+ thead.append(headrow);table.append(thead);const tbody=node("tbody");
+ for(const a of (result.types||[])){
+  const row=node("tr");
+  row.append(node("td",a.kind),node("td",fmt(a.events)),
+   node("td",a.reported_usdc_size_total===null?"—":"$"+fmt(a.reported_usdc_size_total,2)),
+   node("td",fmt(a.missing_reported_amount)),node("td",fmt(a.missing_txhash)));
+  tbody.append(row);
+ }
+ if(!(result.types||[]).length){
+  const r=node("tr"),td=node("td","Aucun événement collecté pour le moment","small");td.colSpan=5;r.append(td);tbody.append(r);
+ }
+ table.append(tbody);types.append(table);card.append(types);
+ card.append(node("p","Les montants indiqués sont les valeurs de champ USDC fournies par la source, par type d'activité. Ils ne sont ni un PnL ni un ROI ; les opérations TRADE ne doivent pas être additionnées au ledger des trades. Même une concordance d'événement ne prouve pas le coût d'acquisition.","foot"));
+ const sub=node("h2","Opérations autres que TRADE");card.append(sub);
+ const wrap=node("div",null,"tablewrap"),tbl=node("table"),hd=node("tr"),th=node("thead");
+ ["Horodatage UTC","Type","Marché","Quantité","Montant USDC rapporté"].forEach(x=>hd.append(node("th",x)));
+ th.append(hd);tbl.append(th);
+ const tb=node("tbody");
+ for(const r of (result.recent||[])){
+  const row=node("tr"),name=node("td");name.append(node("div",r.market_title||"Non attribué à un marché","name"));
+  if(r.event_slug){const link=node("a","Voir événement ↗","small");link.href="https://polymarket.com/event/"+encodeURIComponent(r.event_slug);link.target="_blank";link.rel="noopener noreferrer";name.append(link);}
+  row.append(node("td",String(r.at||"").replace("T"," ").slice(0,19)),node("td",r.kind),name,
+   node("td",r.shares===null?"—":fmt(r.shares,2)),node("td",r.reported_usdc_size===null?"—":"$"+fmt(r.reported_usdc_size,2)));
+  tb.append(row);
+ }
+ if(!(result.recent||[]).length){const row=node("tr"),cell=node("td","Aucun événement économique hors TRADE dans le pilote pour l'instant","small");cell.colSpan=5;row.append(cell);tb.append(row)}
+ tbl.append(tb);wrap.append(tbl);card.append(wrap);
+ card.append(node("p","État analytique : non réconcilié. L'historique est partiel et les coûts d'acquisition des parts remboursées sont inconnus ; aucune rentabilité nette validée.","foot"));
+}
+
 async function renderRN1(){
  const target=$("content");
  target.replaceChildren(heading("RN1 · Recherche stratégique","Transactions publiques réelles, achats des deux issues et transparence de couverture. Aucun signal de profit encore validé."));
@@ -330,6 +400,7 @@ async function renderRN1(){
  }
  t.append(body);tw.append(t);recent.append(tw);target.append(recent);
  target.append(node("p","Fiabilité : la source de transactions v2 est publique mais peut manquer des migrations, transferts, fusions, remboursements et récompenses. Des événements à la même transaction peuvent former plusieurs lignes. La fenêtre actuelle est un échantillon orienté vers les échanges récents, non un historique réconcilié.","foot"));
+ await renderRN1Activity(target);
 }
 
 async function renderArb(){

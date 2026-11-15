@@ -358,6 +358,69 @@ async function temporalResearch(body:any){
 
 
 const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+
+async function rn1ActivityResearch(){
+ const state=await db.unsafe(`
+  select status,pages_fetched,rows_seen,rows_stored,missing_required,sample_limit,
+    last_success_at::text,last_error
+  from pi.rn1_activity_import_state where wallet=$1`,[RN1]);
+ const types=await db.unsafe(`
+  select kind,count(*)::integer as events,
+   sum(reported_usdc_size)::double precision as reported_usdc_size_total,
+   count(*) filter(where reported_usdc_size is null)::integer as missing_reported_amount,
+   count(*) filter(where tx_hash is null)::integer as missing_txhash,
+   min(occurred_at)::text as earliest,max(occurred_at)::text as latest
+  from pi.wallet_activity where wallet=$1 group by kind order by events desc,kind`,[RN1]);
+ const coverage=await db.unsafe(`
+  select count(*)::integer as activity_rows,
+   count(*) filter(where a.kind='TRADE')::integer as activity_trade_rows,
+   count(*) filter(where a.kind='TRADE' and exists(
+     select 1 from pi.trades t where t.wallet=a.wallet and t.tx_hash=a.tx_hash
+      and t.token_id=a.token_id and t.side=a.side
+      and abs(t.shares-a.shares)<0.00001 and abs(t.price-a.unit_price)<0.00001
+   ))::integer as activity_trade_rows_with_matching_trade,
+   count(*) filter(where a.kind='REDEEM')::integer as redemptions,
+   count(*) filter(where a.kind='REDEEM' and exists(
+     select 1 from pi.trades t where t.wallet=a.wallet and t.market_key=a.market_key and t.token_id=a.token_id
+   ))::integer as redemptions_with_some_observed_buy_or_sell
+  from pi.wallet_activity a where a.wallet=$1`,[RN1]);
+
+ const windows=await db.unsafe(`
+ select
+ (select min(reported_at)::text from pi.trades where wallet=$1) as trades_oldest,
+ (select max(reported_at)::text from pi.trades where wallet=$1) as trades_newest,
+ (select min(occurred_at)::text from pi.wallet_activity where wallet=$1) as activity_oldest,
+ (select max(occurred_at)::text from pi.wallet_activity where wallet=$1) as activity_newest
+ `,[RN1]);
+
+ const recent=await db.unsafe(`
+  select occurred_at::text as at,kind,market_title,event_slug,market_key,token_id,
+   side,shares::double precision,unit_price::double precision,
+   reported_usdc_size::double precision,tx_hash
+  from pi.wallet_activity where wallet=$1 and kind<>'TRADE'
+  order by occurred_at desc,activity_key desc limit 35`,[RN1]);
+ const perMarket=await db.unsafe(`
+  select a.market_key,(array_agg(nullif(a.market_title,'') order by a.occurred_at desc))[1] as title,
+   (array_agg(nullif(a.event_slug,'') order by a.occurred_at desc))[1] as event_slug,
+   count(*) filter(where kind='TRADE')::int as trades_in_activity,
+   count(*) filter(where kind='REDEEM')::int as redemptions,
+   count(*) filter(where kind='MERGE')::int as merges,
+   sum(a.reported_usdc_size) filter(where kind='REDEEM')::double precision as reported_redeem_usdc
+  from pi.wallet_activity a where wallet=$1 and a.market_key is not null
+  group by a.market_key
+  having count(*) filter(where kind<>'TRADE')>0
+  order by redemptions desc,merges desc,a.market_key limit 30`,[RN1]);
+ return {
+  import_state:state[0]||null,coverage:coverage[0]||{},windows:windows[0]||{},types,recent,markets:perMarket,
+  reconciliation_status:"unreconciled",
+  disclaimers:[
+   "REDEEM denotes a reported payout, NOT profit. Basis/cost, transfers and prior inventory may be outside both samples.",
+   "A TRADE recorded in both feeds is one economic trade, not two independent trades. Exact matching by attributes only establishes correspondence, not fill identity.",
+   "Source reported USDC amount is kept separately from net PnL; rewards/fees cannot be attributed to a market without evidence.",
+   "No merge, redemption, or rebate absence is inferred from incomplete recent-first data; historical source windows can differ."
+  ]};
+}
+
 async function rn1Research(){
  const stat=await db.unsafe(`
   select wallet,status,pages_fetched,rows_seen,rows_stored,missing_required,sample_limit,
@@ -454,6 +517,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="arb_temporal")return send(await temporalResearch(body));
   if(body?.action==="arb_observatory")return send(await arbObservatory());
   if(body?.action==="rn1_research")return send(await rn1Research());
+  if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
   return send({error:"Action inconnue"},400);
  }catch(e){
   console.error("pi-dashboard",e instanceof Error?e.message.slice(0,160):"unknown");
