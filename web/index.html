@@ -42,7 +42,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -211,6 +211,54 @@ async function renderWallet(){
  await renderClosedPositionRoi(target);
  target.append(banner("ROI sur capital : non calculable · Drawdown sur capital (%) : non calculable · Gains d'une stratégie copiée : non validés. Le drawdown des graphiques est recalculé sur la période choisie, indépendamment du drawdown total affiché."));
 }
+
+const arbSettings={shares:50,fee_reserve_pct:4,limit:30};
+const arbMoney=(n)=>n===null||n===undefined?"—":(Number(n)>=0?"+":"−")+"$"+fmt(Math.abs(Number(n)),3);
+async function renderArb(){
+ const target=$("content");
+ target.replaceChildren(heading("Arbitrage Lab","Scanner expérimental de paires YES/NO. Cotations actuelles et profondeur de carnet — aucun ordre réel."));
+ target.append(banner("Une marge affichée n'est PAS un arbitrage exécuté. Les deux côtés doivent réellement être remplis. Le taux de provision est un scénario paramétrable et NON le barème de frais officiel. Les éventuels rebates maker ne sont pas comptabilisés."));
+ const filter=node("section",null,"card");
+ filter.append(node("h2","Paramètres de simulation"));
+ const line=node("div",null,"filters");
+ function field(label,value,min,max,step,key){
+  const wrap=node("label",label);const input=node("input");input.type="number";input.min=String(min);input.max=String(max);input.step=String(step);
+  input.value=String(value);wrap.append(input);input.addEventListener("change",()=>{const val=Number(input.value);if(Number.isFinite(val))arbSettings[key]=Math.max(min,Math.min(max,val));input.value=String(arbSettings[key]);});return wrap;
+ }
+ line.append(field("Nombre de shares par issue",arbSettings.shares,1,1000,1,"shares"));
+ line.append(field("Provision frais / slippage (%)",arbSettings.fee_reserve_pct,0,15,0.25,"fee_reserve_pct"));
+ line.append(field("Marchés examinés (max. 50)",arbSettings.limit,5,50,5,"limit"));
+ line.append(button("Scanner maintenant",()=>renderArb().catch(showError)));
+ filter.append(line);target.append(filter);
+ const response=await api("arbitrage",arbSettings);
+ const summary=node("div",null,"metrics");
+ summary.append(metric("Marchés reçus",fmt(response.markets_seen)));
+ summary.append(metric("Binaires reconnus",fmt(response.binary_scanned)));
+ summary.append(metric("Deux carnets remplissables",fmt(response.fully_quoted)));
+ summary.append(metric("Marge indicative positive",fmt(response.rows.filter(x=>x.indicative_net_usdc>0).length)));
+ target.append(summary);
+ const c=node("section",null,"card");const h=node("div",null,"cardhead");
+ h.append(node("h2","Cotations comparées"));h.append(node("span","Relevé UTC : "+String(response.asof||"").replace("T"," ").slice(0,19),"small"));c.append(h);
+ const wrap=node("div",null,"tablewrap");const table=node("table"),thead=node("thead"),tr=node("tr");
+ ["Marché","YES moyen","NO moyen","Coût des 2 côtés","Marge brute","Provision","Marge indicative","ROI indicatif"].forEach(x=>tr.append(node("th",x)));
+ thead.append(tr);table.append(thead);
+ const tb=node("tbody");
+ for(const r of response.rows){
+  const row=node("tr");const cell=node("td");const label=node("div",r.question||"Marché","name");cell.append(label);
+  const link=node("a","Voir sur Polymarket","small");link.href="https://polymarket.com/event/"+encodeURIComponent(r.slug||"");link.target="_blank";link.rel="noopener noreferrer";
+  cell.append(link);row.append(cell);
+  row.append(node("td",fmt(r.yes_avg,4)),node("td",fmt(r.no_avg,4)),node("td","$"+fmt(r.paired_cost,2)),
+   node("td",arbMoney(r.gross_edge_usdc),r.gross_edge_usdc>0?"green":"red"),
+   node("td","$"+fmt(r.fee_reserve_usdc,2)),
+   node("td",arbMoney(r.indicative_net_usdc),r.indicative_net_usdc>0?"green":"red"),
+   node("td",pct(r.indicative_roi_pct,2),r.indicative_roi_pct>0?"green":"red"));
+  tb.append(row);
+ }
+ if(!response.rows.length){const tr=node("tr"),cell=node("td","Aucune paire YES/NO avec profondeur suffisante dans ce lot. Essaie une autre quantité ou un autre échantillon.","muted");cell.colSpan=8;tr.append(cell);tb.append(tr)}
+ table.append(tb);wrap.append(table);c.append(wrap);target.append(c);
+ target.append(node("p","Dernière cotation, pas un trade. La couverture correspond uniquement aux marchés renvoyés dans ce lot, sans garantie d'opportunités durables. "+(response.warning||""),"foot"));
+}
+
 async function renderData(){
  const target=$("content");target.replaceChildren(heading("Collecte & qualité","Santé des données stockées dans le schéma privé Supabase."));
  const v=await api("health");const stats=v.stats;
@@ -223,7 +271,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));

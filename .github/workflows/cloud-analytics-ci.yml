@@ -49,8 +49,8 @@ jobs:
           deno-version: v2.x
       - name: Typecheck protected Supabase ingestion function
         run: |
-          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts
-          deno test supabase/functions/pi-ingest/roi-math_test.ts supabase/functions/pi-ingest/roi-sync_test.ts
+          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/arb-math.ts
+          deno test supabase/functions/pi-ingest/roi-math_test.ts supabase/functions/pi-ingest/roi-sync_test.ts supabase/functions/pi-dashboard/arb-math_test.ts
       - name: Check embedded browser JavaScript syntax
         run: |
           python - <<'PY'
