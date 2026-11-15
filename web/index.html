@@ -746,6 +746,26 @@ async function renderRN1(){
     ". Côté moins accumulé : "+formatMove(under)+
     " ; côté déjà dominant : "+formatMove(over)+".","foot"));
   }
+  const historyWeeks=Array.isArray(data.independent_weekly)?data.independent_weekly:[];
+  if(historyWeeks.length){
+   c.append(node("h3","Stabilité des prix historiques, par semaine"));
+   for(const week of historyWeeks){
+    const n=Number(week.maker_reference_fills||0),
+     weighted=Number(week.maker_weighted_markout),
+     under=Number(week.maker_underweight_markout),
+     over=Number(week.maker_overweight_markout);
+    const textVal=(v,filled)=>filled>0&&Number.isFinite(v)?
+     fmt(100*v,3)+" ¢/part":"—";
+    c.append(node("p","Semaine du "+String(week.week||"")+" : "+
+     fmt(week.pages||0)+" pages, "+fmt(n)+" achats Maker avec prix futur. "+
+     "Écart pondéré : "+textVal(weighted,n)+
+     " ; côté moins accumulé : "+textVal(under,Number(week.maker_underweight_fills||0))+
+     " ; côté dominant : "+textVal(over,Number(week.maker_overweight_fills||0))+".","foot"));
+   }
+   c.append(node("p","Ces semaines décrivent l'avancement du replay historique, "+
+    "pas encore une validation hors échantillon. Les achats du même événement "+
+    "sont corrélés et les références historiques ne garantissent aucun prix de sortie.","foot"));
+  }
   const count15=Number(forwardPrices["900"]?.["maker|all"]?.n||0);
   c.append(node("p","Couverture Maker à 15 minutes : "+(makerBuys?fmt(100*count15/makerBuys,1)+" %":"non disponible")+
    " des achats Maker échantillonnés. Les tokens sont sélectionnés de manière "+
