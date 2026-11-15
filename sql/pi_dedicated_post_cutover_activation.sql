@@ -49,6 +49,14 @@ BEGIN
  UPDATE pi.rn1_independent_price_jobs SET status='running',
   last_error=null,error_attempts=0,lease_until=null,updated_at=now()
   WHERE job_key='rn1_independent_price_v1' AND status='paused_quota';
+ -- Lift only destination historical-materialization limits. Without this,
+ -- streams would archive newer source pages but silently stop aggregating RN1
+ -- market statistics after the legacy shared-DB threshold is reached.
+ UPDATE pi.rn1_full_streams
+ SET max_db_bytes=1073741824,last_error=null,
+     status=case when status='paused_quota' then 'collecting' else status end,
+     lease_until=null,updated_at=now()
+ WHERE stream IN ('activity_all','trades_all');
  UPDATE pi.rn1_quote_probe_state SET status='collecting',
   max_db_bytes=1073741824,lease_until=null,last_error=null
   WHERE singleton=true AND status='paused_quota';
