@@ -78,9 +78,9 @@ async function migrate(maxItems:number){
 // Priority transfer of only the two verified replay checkpoints; does not
 // advance or reset the ordinary lexicographic archive migration cursor.
 async function copyReplayCheckpoints(){
- const jobs=await db.unsafe(`select snapshot_key checkpoint from pi.rn1_replay_jobs
+ const jobs=await sql.unsafe(`select snapshot_key checkpoint from pi.rn1_replay_jobs
  union all select checkpoint_key checkpoint from pi.rn1_independent_price_jobs`);
- const vault=await db.unsafe("select decrypted_secret from vault.decrypted_secrets where name='pi_migration_bridge_20261115'");
+ const vault=await sql.unsafe("select decrypted_secret from vault.decrypted_secrets where name='pi_migration_bridge_20261115'");
  if(vault.length!==1||!vault[0].decrypted_secret)throw Error("Source Vault migration token unavailable");
  const token=String(vault[0].decrypted_secret);
  const results:any[]=[];
