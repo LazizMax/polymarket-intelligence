@@ -20,7 +20,7 @@ def test_future_independent_price_does_not_look_ahead_into_features():
     assert "if(points[m].t<start)l=m+1" in SRC
     assert "points[l].t<=end" in SRC
     assert "const position=own<opp?" in SRC
-    assert "const out=process(state,rows,roles,hist,chosenSet)" in SRC
+    assert "const out=process(state,rows,roles,hist,chosenSet,sourceTokenCount/chosen.length);" in SRC
 
 def test_role_attribution_and_storage_integrity():
     assert "taker_only:\"true\"" in SRC
