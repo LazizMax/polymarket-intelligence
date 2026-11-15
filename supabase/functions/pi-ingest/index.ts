@@ -1,6 +1,7 @@
 // Bounded Polymarket ingestion. Admin API needs service role; scheduled route requires a private Vault-backed token.
 // Backend writes private pi schema, with no credentials exposed in the browser.
 import postgres from "npm:postgres@3.4.3";
+import {captureTemporalBooks} from "./arb-capture.ts";
 import { closedRoi } from "./roi-math.ts";
 import { closesPageComplete } from "./roi-sync.ts";
 
@@ -290,6 +291,47 @@ async function syncQueuedRoi(){
   return {wallet,error:message};
  }
 }
+
+async function scheduledTemporal(){
+ // The public API is read-only. The scheduler stores snapshots without creating orders or wallet positions.
+ const last=await db.unsafe("select max(observed_at)::text as t from pi.arb_temporal_snapshots");
+ if(last[0]?.t && Date.now()-Date.parse(last[0].t)<8*60*1000)
+  return {status:"skipped",reason:"Recent snapshot already stored",last_at:last[0].t};
+ const job=await db.unsafe(
+  "insert into pi.ingestion_jobs(wallet,stream,status,started_at) values (null,'arb_temporal','running',now()) returning id");
+ try{
+  const result=await captureTemporalBooks(12,50);
+  const rows=result.rows;
+  if(!rows.length)throw Error("No compatible CTF binary books in Gamma sample");
+  const inserted=await db.unsafe(
+   `insert into pi.arb_temporal_snapshots
+    (batch_id,observed_at,market_key,market_slug,question,yes_token_id,no_token_id,quote_shares,
+     yes_buy_avg,no_buy_avg,yes_sell_avg,no_sell_avg,yes_best_bid,no_best_bid,yes_best_ask,no_best_ask)
+    select x.batch_id,x.observed_at,x.market_key,x.market_slug,x.question,
+      x.yes_token_id,x.no_token_id,x.quote_shares,x.yes_buy_avg,x.no_buy_avg,x.yes_sell_avg,
+      x.no_sell_avg,x.yes_best_bid,x.no_best_bid,x.yes_best_ask,x.no_best_ask
+    from jsonb_to_recordset(($1::text)::jsonb) as x(
+      batch_id uuid,observed_at timestamptz,market_key text,market_slug text,question text,
+      yes_token_id text,no_token_id text,quote_shares numeric,
+      yes_buy_avg numeric,no_buy_avg numeric,yes_sell_avg numeric,no_sell_avg numeric,
+      yes_best_bid numeric,no_best_bid numeric,yes_best_ask numeric,no_best_ask numeric)
+    on conflict(batch_id,market_key) do nothing returning snapshot_id`,
+   [JSON.stringify(rows)]);
+  // Keep costs bounded in the pre-existing project shared with Fit Tracker.
+  await db.unsafe("delete from pi.arb_temporal_snapshots where observed_at<now()-interval '14 days'");
+  await db.unsafe("update pi.ingestion_jobs set status='done',pages_fetched=2,rows_fetched=$2,finished_at=now(),updated_at=now() where id=$1",
+   [job[0].id,inserted.length]);
+  return {status:"done",markets_seen:result.markets_seen,markets_selected:result.selected,
+   stored:inserted.length,observed_at:result.observed_at};
+ }catch(e){
+  const error=e instanceof Error?e.message.slice(0,160):"unknown collector error";
+  await db.unsafe("update pi.ingestion_jobs set status='failed',finished_at=now(),updated_at=now(),error_message=$2 where id=$1",
+   [job[0].id,error]);
+  console.error("arb-temporal",error);
+  return {status:"failed",error};
+ }
+}
+
 async function schedulerAllowed(req: Request): Promise<boolean> {
   const token = req.headers.get("x-pi-scheduler-token") ?? "";
   if (!/^[0-9a-f]{64}$/.test(token)) return false;
@@ -303,6 +345,10 @@ Deno.serve(async (req: Request) => {
   if (Number(req.headers.get("content-length") ?? 0)>5000) return json({error:"Payload too large"},413);
   try {
     const body = await req.json();
+    if (body?.action === "arb_temporal_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      return json(await scheduledTemporal());
+    }
     if (body?.action === "roi_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       return json(await syncQueuedRoi());
