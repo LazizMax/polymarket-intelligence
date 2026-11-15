@@ -949,6 +949,35 @@ async function rn1ReverseEngineering(){
  from pi.rn1_independent_price_pages p
  `);
 
+ const independentAdjusted=await db.unsafe(`
+ with pages as(
+  select page_no,source_tokens::numeric / nullif(sampled_tokens,0) as weight,
+   summary from pi.rn1_independent_price_pages
+  where source_tokens is not null and sampled_tokens>0
+ ), horizons as(
+  select p.page_no,p.weight,v.key as horizon,
+   v.value->'maker|all' as maker,
+   v.value->'maker|underweight' as under_maker,
+   v.value->'maker|overweight' as over_maker
+  from pages p cross join lateral jsonb_each(p.summary->'market_price') v
+ )
+ select horizon,count(distinct page_no)::int covered_pages,
+ sum((maker->>'n')::numeric)::int observed_fills,
+ (sum((maker->>'weighted')::numeric)
+  /nullif(sum((maker->>'shares')::numeric),0))::float8 raw_quantity_markout,
+ (sum((maker->>'weighted')::numeric*weight)
+  /nullif(sum((maker->>'shares')::numeric*weight),0))::float8 adjusted_quantity_markout,
+ sum((under_maker->>'n')::numeric)::int under_fills,
+ (sum((under_maker->>'weighted')::numeric*weight)
+  /nullif(sum((under_maker->>'shares')::numeric*weight),0))::float8
+   adjusted_under_markout,
+ sum((over_maker->>'n')::numeric)::int over_fills,
+ (sum((over_maker->>'weighted')::numeric*weight)
+  /nullif(sum((over_maker->>'shares')::numeric*weight),0))::float8
+   adjusted_over_markout
+ from horizons group by horizon order by horizon::int
+ `);
+
  const independentWeekly=await db.unsafe(`
  select date_trunc('week',min_trade_at)::date::text as week,
  count(*)::int pages,
@@ -978,7 +1007,7 @@ async function rn1ReverseEngineering(){
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
