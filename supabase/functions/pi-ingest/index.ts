@@ -462,7 +462,7 @@ function fullEnvelope(payload:unknown){
 function recordRN1Aggregates(stream:RN1ArchiveStream,rows:any[],materializeMetrics:boolean){
  const markets=new Map<string,MarketRollup>();
  const activities=new Map<string,ActivityRollup>();
- let valid=0,invalid=0,minAt:string|null=null,maxAt:string|null=null;
+ let valid=0,invalid=0,minAt="",maxAt="";
  for(const raw of rows){
   const normalized=stream==="trades_all"?normalizeV2Trade(raw,RN1):normalizeActivity(raw,RN1);
   if(!normalized){invalid++;continue}
@@ -511,7 +511,7 @@ function recordRN1Aggregates(stream:RN1ArchiveStream,rows:any[],materializeMetri
    }
   }
  }
- return {valid,invalid,minAt,maxAt,markets:[...markets.values()],activities:[...activities.values()]};
+ return {valid,invalid,minAt:minAt||null,maxAt:maxAt||null,markets:[...markets.values()],activities:[...activities.values()]};
 }
 async function gzipRN1Data(input:string):Promise<Uint8Array>{
  const body=new Blob([input]).stream().pipeThrough(new CompressionStream("gzip"));
