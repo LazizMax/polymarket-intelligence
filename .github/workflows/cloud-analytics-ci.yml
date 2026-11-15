@@ -169,12 +169,12 @@ jobs:
                   # Postgres fixture, including its official-resolution cross-check.
                   attribution=source.split("async function rn1EconomicAttribution(){",1)[1].split(
                       "async function rn1ReverseEngineering(){",1)[0]
-                  common=re.search(r"const base=`([\\s\\S]*?)`;",attribution)
+                  common=re.search(r"const base=`([\s\S]*?)`;",attribution)
                   assert common, "Economic attribution base SQL missing"
                   for regex,prepend in (
-                      (r"const summary=await db\\.unsafe\\(base\\+`([\\s\\S]*?)`\\);",True),
-                      (r"const weekly=await db\\.unsafe\\(base\\+`([\\s\\S]*?)`\\);",True),
-                      (r"const official=await db\\.unsafe\\(`([\\s\\S]*?)`\\);",False)
+                      (r"const summary=await db\.unsafe\(base\+`([\s\S]*?)`\);",True),
+                      (r"const weekly=await db\.unsafe\(base\+`([\s\S]*?)`\);",True),
+                      (r"const official=await db\.unsafe\(`([\s\S]*?)`\);",False)
                   ):
                       match=re.search(regex,attribution)
                       assert match, "Economic SQL query absent"
