@@ -278,6 +278,57 @@ async function arbitrage(body:any){
 }
 
 
+
+async function arbObservatory(){
+ // Diagnostic quotes only. A spread, price drift or sum of bids DOES NOT imply an executable strategy.
+ const items=await db.unsafe(`
+ select observed_at::text as observed_at,market_key,market_slug,event_slug,question,
+  quote_shares::float8 as quote_shares,yes_best_bid::float8 as yes_bid,yes_best_ask::float8 as yes_ask,
+  no_best_bid::float8 as no_bid,no_best_ask::float8 as no_ask,
+  yes_buy_avg::float8 as yes_buy_avg,no_buy_avg::float8 as no_buy_avg
+ from pi.arb_temporal_snapshots
+ where observed_at >= now()-interval '48 hours'
+ order by observed_at desc,snapshot_id desc limit 3800
+ `);
+ const stats=new Map<string,any>();
+ for(const x of items){
+  if(!stats.has(x.market_key))stats.set(x.market_key,{
+   key:x.market_key,question:x.question,event_slug:x.event_slug||null,market_slug:x.market_slug,
+   first_at:x.observed_at,last_at:x.observed_at,observations:0,
+   yes_bid:x.yes_bid,yes_ask:x.yes_ask,no_bid:x.no_bid,no_ask:x.no_ask,
+   weighted_yes_buy:x.yes_buy_avg,weighted_no_buy:x.no_buy_avg,
+   first_yes_ask:x.yes_ask,
+   quote_shares:x.quote_shares,complete_bbo:0});
+  const a=stats.get(x.market_key);
+  a.observations++;
+  a.first_at=x.observed_at;a.first_yes_ask=x.yes_ask;
+  if(x.yes_bid!==null&&x.yes_ask!==null&&x.no_bid!==null&&x.no_ask!==null)a.complete_bbo++;
+  // Backfill the most recent known *event* slug; never invent a /event/ URL from a market slug.
+  if(!a.event_slug&&x.event_slug)a.event_slug=x.event_slug;
+ }
+ const computed=[...stats.values()].map(x=>{
+  const valid=(v:unknown)=>v!==null&&v!==undefined&&Number.isFinite(Number(v));
+  const yesSpread=valid(x.yes_ask)&&valid(x.yes_bid)?x.yes_ask-x.yes_bid:null;
+  const noSpread=valid(x.no_ask)&&valid(x.no_bid)?x.no_ask-x.no_bid:null;
+  const askSum=valid(x.weighted_yes_buy)&&valid(x.weighted_no_buy)?x.weighted_yes_buy+x.weighted_no_buy:null;
+  const drift=valid(x.yes_ask)&&valid(x.first_yes_ask)?x.yes_ask-x.first_yes_ask:null;
+  return {...x,yes_spread:yesSpread,no_spread:noSpread,
+   weighted_ask_pair:askSum,yes_ask_drift:drift,
+   duration_minutes:(Date.parse(x.last_at)-Date.parse(x.first_at))/60000,
+   quote_quality: x.observations>=12&&x.complete_bbo>=12?"descriptive_only":"insufficient_observations"};
+ });
+ computed.sort((a,b)=>b.observations-a.observations);
+ const last=await db.unsafe(`
+ select status,started_at::text as started_at,finished_at::text as finished_at,
+ left(coalesce(error_message,''),120) as error
+ from pi.ingestion_jobs where stream='arb_temporal' order by id desc limit 1
+ `);
+ return {markets:computed,history_rows:items.length,window_hours:48,
+  last_observation_at:items[0]?.observed_at??null,last_job:last[0]??null,
+  sampling_interval_minutes:10,truncated:items.length>=3800,
+  disclaimer:"Observation uniquement : spread et variation de cotations ne sont PAS une rentabilité. Sans journal d'ordres, trades maker/taker, latence, file et risque d'inventaire, aucune EV n'est estimable."};
+}
+
 async function temporalResearch(body:any){
  const cfg={
   entryCeiling:number(body.entry_ceiling,.47,.05,.49),
@@ -331,6 +382,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="health")return send(await health());
   if(body?.action==="arbitrage")return send(await arbitrage(body));
   if(body?.action==="arb_temporal")return send(await temporalResearch(body));
+  if(body?.action==="arb_observatory")return send(await arbObservatory());
   return send({error:"Action inconnue"},400);
  }catch(e){
   console.error("pi-dashboard",e instanceof Error?e.message.slice(0,160):"unknown");
