@@ -505,6 +505,21 @@ async function renderRN1(){
     pct(newer.underweight_buys,Number(newer.underweight_buys||0)+Number(newer.overweight_buys||0))+
     " sur la moitié plus récente. Une différence marquée suggère une stratégie dépendante du contexte.","foot"));
   }
+  const skew=Array.isArray(seq.skew)?seq.skew:[];
+  const getSkew=(period,bin)=>skew.find(x=>x.sample_half===period&&Number(x.skew_bin)===bin);
+  const between=getSkew("total",2),extreme=getSkew("total",3);
+  const minorityRate=x=>x?100*Number(x.underweight||0)/Math.max(1,Number(x.underweight||0)+Number(x.overweight||0)):0;
+  if(job.status==="complete"&&between&&extreme){
+   c.append(node("p","Lorsque les shares déjà observées sont modérément déséquilibrées (10–50 %), "+
+    fmt(minorityRate(between),1)+" % des achats exécutés se font sur l'issue minoritaire. "+
+    "Quand l'écart dépasse 50 %, cette proportion tombe à "+fmt(minorityRate(extreme),1)+
+    " %. RN1 ne semble donc pas chercher systématiquement à neutraliser les positions, mais les exécutions disponibles ne révèlent pas les ordres non remplis.","foot"));
+   const oldExtreme=getSkew("older",3),newExtreme=getSkew("newer",3);
+   if(oldExtreme&&newExtreme)c.append(node("p","Stabilité sur les deux périodes : "+
+    fmt(minorityRate(oldExtreme),1)+" % puis "+fmt(minorityRate(newExtreme),1)+
+    " % d'achats sur l'issue minoritaire lorsque le déséquilibre dépasse 50 %.","foot"));
+  }
+
   c.append(node("p","Ces statistiques décrivent exclusivement les achats exécutés : elles ne révèlent ni les limites des ordres non remplis ni les probabilités sportives utilisées par RN1.","foot"));
  }
 
