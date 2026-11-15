@@ -264,6 +264,70 @@ async function renderTemporal(target){
 
 
 
+
+async function renderRN1StrategyEvidence(target){
+ const c=node("section",null,"card"),head=node("div",null,"cardhead");
+ head.append(node("h2","RN1 · Hypothèses stratégiques vérifiées"));
+ head.append(node("span","Résultats de recherche — pas un signal de trading","small"));
+ c.append(head);target.append(c);
+ let r;
+ try{r=await api("rn1_strategy_evidence")}
+ catch(e){c.append(node("p","Audit des résolutions / prix indisponible : "+String(e?.message||e),"red"));return}
+ const h=r.hold||{},count=r.count||{},first=r.first_selection||{};
+ c.append(banner("Les gains ci-dessous sont des SCÉNARIOS d'achats conservés jusqu'au règlement. Ce ne sont pas les profits réels du wallet : historique, inventaire, fusions, récompenses et frais non réconciliés."));
+ c.append(node("p","Preuves publiques : "+fmt(count.settled_markets||0)+" marchés résolus sur "+
+  fmt(count.resolution_markets_checked||0)+" interrogés · "+fmt(count.benchmarked_buys||0)+
+  " achats comparés à "+fmt(count.observed_price_points||0)+
+  " prix historiques sur "+fmt(count.benchmarked_markets||0)+" marchés.","foot"));
+ const stats=node("div",null,"metrics");
+ const amount=x=>x===null||x===undefined?"—":(Number(x)<0?"−":"+")+"$"+fmt(Math.abs(Number(x)),0);
+ const scenarioRoi=Number(h.buy_cost)>0?100*Number(h.hypothetical_gross_pnl)/Number(h.buy_cost):null;
+ stats.append(metric("Scénario brut si toutes les parts achetées étaient conservées",amount(h.hypothetical_gross_pnl)),
+  metric("ROI brut hypothétique",scenarioRoi===null?"—":(scenarioRoi>=0?"+":"")+fmt(scenarioRoi,2)+" %"),
+  metric("Composante de paires équilibrées",amount(h.pairing_component)),
+  metric("Composante directionnelle résiduelle",amount(h.directional_residual)));
+ c.append(stats);
+ c.append(node("p","Lecture : sur "+fmt(h.fills||0)+" achats de "+fmt(h.markets||0)+
+  " marchés officiellement résolus, la part calculée comme paire équilibrée est faible par rapport au résultat des quantités non appariées. Ce découpage est conditionnel au seul portefeuille acheté pendant le pilote.","foot"));
+ c.append(node("h3","L'avantage prédictif est-il démontré ?"));
+ const expected=Number(first.expected_winners_from_prices),actual=Number(first.first_side_winners);
+ c.append(node("p","Premier choix sur "+fmt(first.markets||0)+" marchés ("+fmt(first.distinct_events||0)+
+  " événements sportifs distincts) : "+fmt(actual,0)+" résultats gagnants observés, contre "+
+  fmt(expected,1)+" attendus selon les prix juste avant l'achat. Cette différence est insuffisante pour conclure à une supériorité statistique."));
+ c.append(node("h3","Que montrent les prix 15 minutes après les achats ?"));
+ const wrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),hr=node("tr");
+ ["Échantillon","Marchés","Achats","Capital observé","Scénario brut au règlement","Mouvement valorisé à +15 min","Part des achats suivis d'une hausse"].forEach(x=>hr.append(node("th",x)));
+ thead.append(hr);table.append(thead);
+ const tbody=node("tbody");
+ const order={top20:0,next60:1,total:2};
+ for(const t of [...(r.tiers||[])].sort((a,b)=>(order[a.segment]??3)-(order[b.segment]??3))){
+  const label=t.segment==="top20"?"20 principaux marchés":t.segment==="next60"?"60 suivants":"Total des 80 marchés";
+  const row=node("tr");
+  row.append(node("td",label),node("td",fmt(t.markets)),node("td",fmt(t.fills)),
+    node("td","$"+fmt(t.buy_cost,0)),
+    node("td",amount(t.hypothetical_gross_pnl),Number(t.hypothetical_gross_pnl)>=0?"green":"red"),
+    node("td",amount(t.markout_15m)),
+    node("td",t.favorable_markout_pct===null?"—":fmt(t.favorable_markout_pct,1)+" %"));
+  tbody.append(row);
+ }
+ table.append(tbody);wrap.append(table);c.append(wrap);
+ c.append(banner("Attention : les 20 marchés les plus importants concentrent l'essentiel du résultat positif. La cote de référence est une observation historique, pas le carnet BID/ASK réellement disponible lors de l'exécution (décalage moyen d'environ 31 s). Les marchés sont corrélés entre eux. Il n'existe pas encore de preuve de rendement reproductible."));
+ const top=node("h3","Exemples vérifiables — plus grands engagements");c.append(top);
+ const markets=node("div",null,"tablewrap"),t=node("table"),hrow=node("tr"),th=node("thead");
+ ["Marché","Achats","Coût observé","Scénario brut au règlement"].forEach(x=>hrow.append(node("th",x)));
+ th.append(hrow);t.append(th);const rows=node("tbody");
+ for(const m of (r.examples||[])){
+  const row=node("tr"),name=node("td");
+  name.append(node("div",m.market_title||m.market_key,"name"));
+  if(m.event_slug){const a=node("a","Voir sur Polymarket ↗","small");a.href="https://polymarket.com/event/"+encodeURIComponent(m.event_slug);a.target="_blank";a.rel="noopener noreferrer";name.append(a)}
+  row.append(name,node("td",fmt(m.fills)),node("td","$"+fmt(m.buy_cost,0)),
+   node("td",amount(m.hypothetical_gross_pnl),Number(m.hypothetical_gross_pnl)>=0?"green":"red"));
+  rows.append(row);
+ }
+ t.append(rows);markets.append(t);c.append(markets);
+ c.append(node("p","Méthode : Data API /v2/trades, /v2/resolutions et /v2/prices-history. Seuls les prix dont le relevé est terminé avant l'achat servent de référence. Aucun ordre maker n'est reconstitué ni aucune probabilité de bookmaker externe utilisée. L'absence de preuve de prédiction ne signifie pas absence d'avantage d'exécution.","foot"));
+}
+
 async function renderRN1Activity(target){
  const card=node("section",null,"card");
  const head=node("div",null,"cardhead");
@@ -360,6 +424,7 @@ async function renderRN1(){
   metric("Marchés distincts",fmt(sum.markets||0)),
   metric("Marchés avec achats sur 2 issues",fmt(two.both_issues_observed||0)));
  target.append(metrics);
+ await renderRN1StrategyEvidence(target);
  const context=node("section",null,"card");context.append(node("h2","Interprétation des résultats"));
  context.append(node("p","Fenêtre observée : "+(sum.first_trade_at||"—")+" → "+(sum.last_trade_at||"—")
   +" · Volume notionnel enregistré : "+(sum.traded_notional_usdc===null?"—":"$"+fmt(sum.traded_notional_usdc,2)),"foot"));

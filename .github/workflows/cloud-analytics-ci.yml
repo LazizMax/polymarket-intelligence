@@ -88,14 +88,17 @@ jobs:
                                     "016_arb_temporal_snapshots.sql",
                                     "018_arb_event_slug_links.sql",
                                     "019_rn1_trade_pilot.sql",
-                                    "021_rn1_activity_pilot.sql"):
+                                    "021_rn1_activity_pilot.sql",
+                                    "023_rn1_outcome_market_price_evidence.sql",
+                                    "024_rn1_historical_price_points.sql",
+                                    "025_rn1_fill_price_benchmark.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 19, f"Expected RLS on all 19 tables, got {secured}"
+                  assert secured == 23, f"Expected RLS on all 23 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
@@ -146,5 +149,12 @@ jobs:
                       if "roi_total_weighted" in query:
                           assert abs(result[0][5] - (-1000/140)) < .00001,result[0]
                           assert abs(result[0][6] - 2.5) < .00001,result[0]
+                      # Verify all real research API SQL against the protected schema.
+                  strategy=source.split("async function rn1StrategyEvidence(){",1)[1].split("async function rn1ActivityResearch(){",1)[0]
+                  queries=re.findall(r"await db\.unsafe\(`([\s\S]*?)`,\[RN1\]\)",strategy)
+                  assert len(queries)==5, f"Expected 5 RN1 strategy SQL queries; found {len(queries)}"
+                  for query in queries:
+                      cur.execute(query.replace("$1","%s"),tuple(wallet for _ in range(query.count("$1"))))
+                      cur.fetchall()
           con.close()
           PY
