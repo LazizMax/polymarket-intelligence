@@ -266,7 +266,7 @@ async function renderTemporal(target){
  for(const r of data.rows){
   const line=node("tr"),first=node("td"),label=node("div",r.question||r.market_key,"name");
   first.append(label);
-  if(r.slug){const a=node("a","Marché","small");a.href="https://polymarket.com/event/"+encodeURIComponent(r.slug);a.rel="noopener noreferrer";a.target="_blank";first.append(a)}
+  if(r.event_slug){const a=node("a","Ouvrir sur Polymarket ↗","small");a.href="https://polymarket.com/event/"+encodeURIComponent(r.event_slug);a.rel="noopener noreferrer";a.target="_blank";first.append(a)}else{first.append(node("span","Lien événement indisponible","small"));}
   line.append(first,node("td",fmt(r.snapshots)),node("td",r.latest_pair_cost===null?"—":fmt(r.latest_pair_cost,4)+" $ / 1 paire"),
    node("td",fmt(r.pairs)),node("td",fmt(r.stops)),
    node("td",arbMoney(r.closed_net_scenario),r.closed_net_scenario>=0?"green":"red"),
@@ -309,8 +309,8 @@ async function renderArb(){
  const tb=node("tbody");
  for(const r of response.rows){
   const row=node("tr");const cell=node("td");const label=node("div",r.question||"Marché","name");cell.append(label);
-  const link=node("a","Voir sur Polymarket","small");link.href="https://polymarket.com/event/"+encodeURIComponent(r.slug||"");link.target="_blank";link.rel="noopener noreferrer";
-  cell.append(link);row.append(cell);
+  if(r.event_slug){const link=node("a","Voir sur Polymarket ↗","small");link.href="https://polymarket.com/event/"+encodeURIComponent(r.event_slug);link.target="_blank";link.rel="noopener noreferrer";cell.append(link);}else{cell.append(node("span","Lien événement indisponible","small"));}
+  row.append(cell);
   row.append(node("td",fmt(r.yes_avg,4)),node("td",fmt(r.no_avg,4)),node("td","$"+fmt(r.paired_cost,2)),
    node("td",arbMoney(r.gross_edge_usdc),r.gross_edge_usdc>0?"green":"red"),
    node("td","$"+fmt(r.fee_reserve_usdc,2)),

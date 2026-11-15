@@ -85,7 +85,8 @@ jobs:
                                     "004_pi_pnl_concentration_metrics.sql",
                                     "012_closed_position_roi.sql",
                                     "014_pi_auto_roi_refresh.sql",
-                                    "016_arb_temporal_snapshots.sql"):
+                                    "016_arb_temporal_snapshots.sql",
+                                    "018_arb_event_slug_links.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace

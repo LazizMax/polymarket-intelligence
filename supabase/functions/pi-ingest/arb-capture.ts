@@ -44,6 +44,7 @@ export async function captureTemporalBooks(maxMarkets=12,quoteShares=50){
   if(outcomes.length!==2||outcomes[0]!=="yes"||outcomes[1]!=="no"||tokens.length!==2
     ||tokens[0]===tokens[1]||!tokens.every(x=>/^\d{20,90}$/.test(x))||!condition)continue;
   selected.push({market_key:condition,slug:String(m.slug||"").slice(0,180),
+   event_slug:String(Array.isArray(m.events)?m.events[0]?.slug||"":"" ).slice(0,180),
    question:String(m.question||"").slice(0,220),tokens});
  }
  if(!selected.length)return {markets_seen:source.length,selected:0,rows:[]};
@@ -61,7 +62,7 @@ export async function captureTemporalBooks(maxMarkets=12,quoteShares=50){
   if(!y||!n)continue;
   const minSize=Math.max(Number(y.min_order_size||0),Number(n.min_order_size||0));
   const fillable=Number.isFinite(minSize)&&quoteShares>=minSize;
-  rows.push({batch_id:batch,observed_at:at,market_key:m.market_key,market_slug:m.slug,question:m.question,
+  rows.push({batch_id:batch,observed_at:at,market_key:m.market_key,market_slug:m.slug,event_slug:m.event_slug||null,question:m.question,
    yes_token_id:m.tokens[0],no_token_id:m.tokens[1],quote_shares:quoteShares,
    yes_buy_avg:fillable?weightedBook(y.asks,quoteShares,"asks"):null,
    no_buy_avg:fillable?weightedBook(n.asks,quoteShares,"asks"):null,

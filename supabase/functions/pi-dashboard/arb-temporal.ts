@@ -1,7 +1,7 @@
 // Prospective-style, time-ordered counterfactual replay of observed orderbook snapshots.
 // Crucial: no actual trades happened; no maker queue/fill probability is inferred here.
 export type TemporalSample = {
- market_key:string; market_slug:string; question:string; observed_at:string;
+ market_key:string; market_slug:string; event_slug?:string|null; question:string; observed_at:string;
  yes_token_id:string; no_token_id:string; quote_shares:number | string;
  yes_buy_avg:number|string|null;no_buy_avg:number|string|null;
  yes_sell_avg:number|string|null;no_sell_avg:number|string|null;
@@ -86,7 +86,8 @@ export function replayTemporal(raw:TemporalSample[],cfg:TemporalConfig){
    openMarkets++;
   }
   totalPairs+=pairs;totalStops+=stops;unpricedStops+=stuck;lockedNet+=pairedNet;stoppedNet+=stopNet;
-  results.push({market_key:market,slug:trunc(first.market_slug,140),question:trunc(first.question,220),
+  const confirmedEventSlug=items.map(x=>x.event_slug).filter(x=>typeof x==="string"&&x.length>0).at(-1)||null;
+  results.push({market_key:market,slug:trunc(first.market_slug,140),event_slug:confirmedEventSlug,question:trunc(first.question,220),
     snapshots:items.length,first_at:first.observed_at,last_at:lastAt,latest_yes_buy:lastBuyYes,
     latest_no_buy:lastBuyNo,latest_pair_cost:lastPair,pairs,stops,stuck_snapshots:stuck,
     paired_net:pairedNet,stop_net:stopNet,closed_net_scenario:pairedNet+stopNet,

@@ -32,3 +32,12 @@ Deno.test("provision can eliminate a previously attractive pair",()=>{
 Deno.test("reject invalid thresholds",()=>{
  assertThrows(()=>replayTemporal([],{...c,maxHoldMinutes:0}));
 });
+
+Deno.test("event navigation uses the event slug, not a different market slug",()=>{
+ const a=replayTemporal([
+  {...row(0,.47,.55),market_slug:"will-player-x-win-finals",event_slug:"worlds-2026-winner"},
+  {...row(20,.56,.49),market_slug:"will-player-x-win-finals",event_slug:"worlds-2026-winner"}
+ ],c);
+ assertEquals(a.rows[0].slug,"will-player-x-win-finals");
+ assertEquals(a.rows[0].event_slug,"worlds-2026-winner");
+});
