@@ -2017,7 +2017,7 @@ function rn1RollingScenario(rows:any[],lookback:number,minPriceSpan:number,burst
  };
 }
 async function rn1SizingHypotheses(){
- const rows=await db.unsafe("select fingerprint,market_key,token_id,extract(epoch from trade_at)::float8 trade_epoch,\n fill_price::float8 price,shares::float8 shares\n from pi.rn1_quote_probe_fills\n where role='maker_inferred' and side='BUY'\n and shares>0 and fill_price between 0.005 and 0.995\n order by token_id,trade_at,fingerprint limit 10001");
+ const rows=await db.unsafe("select fingerprint,market_key,token_id,extract(epoch from trade_at)::float8 trade_epoch,\n fill_price::float8 price,shares::float8 shares\n from pi.rn1_quote_probe_fills\n where role='maker_inferred' and side='BUY'\n and shares>0 and fill_price between 0.005 and 0.995\n order by trade_at desc,fingerprint desc limit 10001");
  const limited=rows.length>10000,sample=limited?rows.slice(0,10000):rows;
  const variations=[
   rn1ModelScenario(sample,0,0.03,true),
