@@ -768,11 +768,35 @@ async function renderRN1(){
      fmt(week.pages||0)+" pages, "+fmt(n)+" achats Maker avec prix futur. "+
      "Écart pondéré : "+textVal(weighted,n)+
      " ; côté moins accumulé : "+textVal(under,Number(week.maker_underweight_fills||0))+
-     " ; côté dominant : "+textVal(over,Number(week.maker_overweight_fills||0))+".","foot"));
+     " ; côté dominant : "+textVal(over,Number(week.maker_overweight_fills||0))+
+     " ; achats Taker : "+textVal(Number(week.taker_adjusted_markout),Number(week.taker_reference_fills||0))+
+     " ("+fmt(week.taker_reference_fills||0)+" fills).","foot"));
    }
    c.append(node("p","Ces semaines décrivent l'avancement du replay historique, "+
     "pas encore une validation hors échantillon. Les achats du même événement "+
     "sont corrélés et les références historiques ne garantissent aucun prix de sortie.","foot"));
+  }
+  const leaveOne=Array.isArray(data.independent_leave_one_week_out)?
+   data.independent_leave_one_week_out:[];
+  if(leaveOne.length>=2){
+   c.append(node("h3","Robustesse : exclure une semaine à la fois"));
+   const stable=leaveOne.filter(x=>Number(x.other_maker_fills||0)>0&&
+     Number.isFinite(Number(x.other_maker_adjusted_markout)));
+   for(const week of stable){
+    c.append(node("p","Sans la semaine du "+String(week.excluded_week)+
+     " : "+fmt(week.other_maker_fills)+" achats Maker restants, "+
+     fmt(100*Number(week.other_maker_adjusted_markout),3)+
+     " ¢/part à 15 min (pondération des tokens et quantités).","foot"));
+   }
+   const values=stable.map(x=>Number(x.other_maker_adjusted_markout));
+   if(values.some(x=>x<0)&&values.some(x=>x>0))
+    c.append(node("p","Diagnostic : le signe du résultat change lorsqu'on retire une semaine. "+
+     "Le résultat global dépend donc fortement de la période étudiée. "+
+     "Ce contrôle de sensibilité ne constitue pas un test hors échantillon.","foot"));
+   c.append(node("p","Maker et Taker représentent des transactions différentes "+
+     "(prix, moments, sports, montants et sélection des ordres exécutés). "+
+     "Une différence de suivi de prix entre leurs groupes n'est ni un avantage causal "+
+     "du Maker, ni une preuve de gain net après frais.","foot"));
   }
   const clustered=ip.event_cluster_evidence||{};
   const evt15=clustered["900|maker|all"]||{},
