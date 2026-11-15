@@ -425,6 +425,13 @@ async function rn1QuoteForensics(){
  count(*) filter(where lag_seconds<=30)::int matched_under_30s,
  count(*) filter(where lag_seconds>30 and lag_seconds<=60)::int matched_30to60s,
  count(*) filter(where lag_seconds>60)::int matched_over60s,
+ count(*) filter(where role='maker_inferred' and lag_seconds<=30)::int maker_recent_under30,
+ count(*) filter(where role='maker_inferred' and lag_seconds<=30
+  and abs(bid_offset_ticks)<=0.5)::int maker_at_bid_under30,
+ count(*) filter(where role='maker_inferred' and lag_seconds>30
+  and lag_seconds<=60)::int maker_recent_30to60,
+ count(*) filter(where role='maker_inferred' and lag_seconds>30
+  and lag_seconds<=60 and abs(bid_offset_ticks)<=0.5)::int maker_at_bid_30to60,
  count(*) filter(where role='maker_inferred' and lag_seconds<=60
   and abs(bid_offset_ticks)<=0.5)::int maker_fills_at_prior_bid,
  count(*) filter(where role='maker_inferred' and lag_seconds<=60)::int

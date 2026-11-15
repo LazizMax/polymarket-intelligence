@@ -73,3 +73,19 @@ Les modèles testés sur les fills maker **avec carnet précédent et inventaire
 Les modèles sont évalués sur la **même cohorte de fills éligibles**, avec sélection par erreur moyenne uniquement sur la partie chronologiquement ancienne (80 %) puis contrôle sur la dernière partie (20 %). Le tableau n'affiche de classement hors période qu'avec au moins 100 fills et 10 événements ; un prix d'exécution bien prédit ne prouve ni la probabilité d'exécution ni un profit.
 
 Attention : une photo de portefeuille prise quelques secondes avant le trade ne reconstitue pas forcément tous les fills, merges ou transferts intervenus entre-temps. L'ancienne métrique de flux de 134 000 trades était encore plus imparfaite ; les deux ne doivent pas être confondues. Les montants de marge complémentaire obtenus avec le dernier coût moyen observé sont **indicatifs**, pas une formule du bot ni un PnL réalisé.
+
+## Contrôle de l'âge du carnet (nouvel échantillon de la journée)
+
+Sur 65 fills RN1 déjà appariés à 20 marchés, le `bid_offset_ticks` par rapport à un snapshot précédent n'est **pas stationnaire en fonction de l'âge du carnet** :
+
+| Âge du carnet au moment du fill | Fills maker au meilleur bid enregistré | MAE absolue |
+|---|---:|---:|
+| 10–30 s | 21/29 = 72,4 % | 0,45 tick |
+| 30–60 s | 5/28 = 17,9 % | 3,32 ticks |
+| >60 s (jusqu'à 120 s) | 4/8 | 1,88 tick |
+
+Cette divergence impose de **présenter séparément les fenêtres 10–30s et 30–60s** : calculer un taux combiné diluerait l'information et risquerait de faire croire à une règle de prix différente. Le groupe >60s est trop petit pour tirer une tendance.
+
+Sur 546 paires de carnets observées, **546/546** avaient `bid_yes+bid_no<1` et **0/546** avaient `ask_yes+ask_no<1`. Écart moyen `1 - (bid_yes+bid_no)` = **0,0206 $ par paire**. Cela correspond à une **marge maker passive théorique conditionnée aux DEUX remplissages**, pas à un arbitrage immédiat acheté aux asks. La distribution de futures exécutions et la sélection adverse restent indispensables pour valider un signal économiquement exploitable.
+
+Ces observations sont uniquement les premières ~60 minutes, sur un faible nombre d'événements potentiellement corrélés, et **ne remplacent pas** la future validation hors échantillon sur des jours/événements indépendants.

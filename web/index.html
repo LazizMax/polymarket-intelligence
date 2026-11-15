@@ -472,6 +472,29 @@ async function renderRN1(){
    metric("Trades RN1 avec carnet AVANT le trade",fmt(nmatch)),
    metric("Exécutions maker rapprochées",fmt(matched.inferred_maker_fills||0)));
   quotesCard.append(metricRow);
+
+  const freshN=Number(matched.maker_recent_under30||0),
+   freshAt=Number(matched.maker_at_bid_under30||0),
+   lateN=Number(matched.maker_recent_30to60||0),
+   lateAt=Number(matched.maker_at_bid_30to60||0);
+  if(freshN>=10){
+   quotesCard.append(node("p","Prix maker et fraîcheur du carnet : "+fmt(freshAt)+"/"+fmt(freshN)+
+    " exécutions ("+fmt(100*freshAt/freshN,1)+" %) au bid observé 10–30 secondes auparavant"+
+    (lateN>0?", contre "+fmt(lateAt)+"/"+fmt(lateN)+
+     " ("+fmt(100*lateAt/lateN,1)+" %) avec un carnet vieux de 30–60 secondes.":".")+
+    " Une baisse rapide du taux de concordance indique que les cotations peuvent bouger entre deux relevés.","foot"));
+  }
+  if(Number(books.valid_book_pairs||0)>=10){
+   const nPair=Number(books.valid_book_pairs||0),bidSumBelow=Number(books.resting_two_bid_sum_below_one||0),
+    asksBelow=Number(books.buying_two_asks_sum_below_one_before_fees||0),
+    bidGap=Number(books.mean_unfilled_maker_pair_gap);
+   quotesCard.append(node("p","Paires de carnets : "+fmt(bidSumBelow)+"/"+fmt(nPair)+
+    " montrent bid(YES)+bid(NO) inférieur à 1 $. "+
+    (Number.isFinite(bidGap)?"Écart passif théorique moyen : "+fmt(100*bidGap,2)+" centimes par paire. ":"")+
+    "Achats immédiats des deux asks sous 1 $ : "+fmt(asksBelow)+"/"+fmt(nPair)+
+    ". Un écart de bids ne garantit pas que les deux ordres seraient exécutés.","foot"));
+  }
+
   const inv=q.inventory||{},coverage=inv.coverage||{},
    invStats=Array.isArray(inv.by_side)?inv.by_side:[],
    invModels=Array.isArray(inv.models)?inv.models:[];
