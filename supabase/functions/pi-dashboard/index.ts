@@ -1,7 +1,7 @@
 // Authenticated Polymarket Intelligence web API, read-only analytics.
 import postgres from "npm:postgres@3.4.3";
 import {quotePair} from "./arb-math.ts";
-import {replayTemporal} from "./arb-temporal.ts";
+import {replayTemporal,type TemporalSample} from "./arb-temporal.ts";
 const url = Deno.env.get("SUPABASE_URL") || "";
 const pub = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
@@ -297,7 +297,7 @@ async function temporalResearch(body:any){
  select status,started_at::text,finished_at::text,rows_fetched,left(coalesce(error_message,''),120) error
  from pi.ingestion_jobs where stream='arb_temporal' order by id desc limit 1
  `);
- const result=replayTemporal([...rows].reverse(),cfg);
+ const result=replayTemporal([...rows].reverse() as unknown as TemporalSample[],cfg);
  return {config:cfg,quantity:50,poll_minutes:10,window_hours:48,
   truncated:rows.length>=3800,last_observation_at:rows[0]?.observed_at??null,
   last_job:audit[0]??null,...result,
