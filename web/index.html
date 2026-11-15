@@ -413,9 +413,9 @@ async function renderRN1Activity(target){
 async function renderRN1Sports(){
  const target=$("content");
  target.replaceChildren(heading("RN1 · Événements sportifs",
-  "Quand RN1 est-il exécuté par rapport aux paniers, changements de leader et débuts de quart-temps ? Tests sur matchs NBA horodatés ESPN."));
+  "Quand le sous-échantillon Taker-only de RN1 est-il exécuté ? Analyse des paniers, mouvements de cotes et débuts de quart-temps dans les matchs NBA."));
  const intro=node("section",null,"card");
- intro.append(banner("ANALYSE DESCRIPTIVE : les exécutions observées ne révèlent PAS quand RN1 a déposé ou annulé ses ordres Maker. Nous ne concluons pas à une règle de déclenchement ni à un avantage copiable."));
+ intro.append(banner("IMPORTANT — BIAIS DE SOURCE : les 4 000 fills du pilote historique proviennent de /v2/trades sans taker_only=false, donc du flux Taker-only implicite. Les statistiques principales ci-dessous portent sur ce sous-échantillon Taker, PAS sur le flux Maker de 756 000 fills. Le tableau Maker/Taker live est une autre source, beaucoup plus petite. Aucune heure de dépôt d'ordre privé ni avantage copiable n'est identifié."));
  target.append(intro);
  const results=node("div");target.append(results);
  let windowSeconds=30,slug="",data=null;
@@ -467,7 +467,7 @@ async function renderRN1Sports(){
   }
   const frame=node("div");frame.style.cssText="overflow-x:auto;width:100%";
   frame.append(svg);parent.append(frame);
-  parent.append(node("p","Vert : nombre de fills RN1. Orange : nombre d'actions NBA qui marquent. Agrégation par tranches de 2 minutes depuis le premier jeu ESPN ; chaque série possède sa propre échelle.","foot"));
+  parent.append(node("p","Vert : nombre de fills du pilote Taker-only RN1. Orange : nombre d'actions NBA qui marquent. Agrégation par tranches de 2 minutes depuis le premier jeu ESPN ; chaque série possède sa propre échelle.","foot"));
   if(prices&&prices.length){
    const valid=prices.filter(x=>Number.isFinite(Number(x.mean_price))&&Number(x.i)>=0&&Number(x.i)<n);
    if(valid.length>=2){
@@ -497,18 +497,18 @@ async function renderRN1Sports(){
   stats.append(metric("Matchs NBA terminés enrichis",fmt(cov.complete||0)),
    metric("Actions sportives horodatées",fmt(cov.timed_plays||0)),
    metric("Actions marquant des points",fmt(cov.scoring_plays||0)),
-   metric("Trades RN1 du pilote",fmt(cov.pilot_trades||0)));
+   metric("Fills pilote Taker-only",fmt(cov.pilot_trades||0)));
   results.append(stats);
   const params=node("section",null,"card");
   const filters=node("div",null,"filters");
   filters.append(select("Durée des fenêtres",[["30","30 secondes"],["60","60 secondes"]],String(windowSeconds),v=>{windowSeconds=Number(v);load()}));
   filters.append(select("Match pour explorer la chronologie",
-   [["","Tous les matchs"],...games.map(g=>[g.event_slug, g.event_slug+" ("+fmt(g.observed_fills)+" fills pilote)"])],
+   [["","Tous les matchs"],...games.map(g=>[g.event_slug, g.event_slug+" ("+fmt(g.observed_fills)+" fills Taker pilote)"])],
    slug,v=>{slug=v;load()}));
   params.append(filters);results.append(params);
   const study=node("section",null,"card");
   study.append(node("h2","Probabilité d'observer au moins un fill dans la fenêtre suivante"));
-  study.append(node("p","Une fenêtre avec jeu est classée selon les événements NBA qu'elle contient. Nous comptons ensuite les fills RN1 dans la fenêtre chronologique suivante, de même durée. Les contrôles proviennent des mêmes matchs.","foot"));
+  study.append(node("p","Une fenêtre avec jeu est classée selon les événements NBA qu'elle contient. Nous comptons ensuite les fills du pilote Taker-only dans la fenêtre chronologique suivante, de même durée. Les contrôles proviennent des mêmes matchs.","foot"));
   const comparisons=[
    ["score","Action qui marque des points","Autre action de jeu"],
    ["lead","Changement de leader","Autre fenêtre avec panier (sans changement de leader)"],
@@ -534,7 +534,7 @@ async function renderRN1Sports(){
 
   // Run heavier same-token, same-price-move sensitivity test only on an explicit click.
   const robustCard=node("section",null,"card");
-  robustCard.append(node("h2","Validation conditionnelle · panier ou mouvement de cote ?"));
+  robustCard.append(node("h2","Validation conditionnelle Taker-only · panier ou mouvement de cote ?"));
   robustCard.append(node("p","Comparer les mêmes tokens, à la même phase du match et au même mouvement de cote (amplitude et direction). Ce test contrôle l'association avec le prix, mais ne mesure PAS l'effet causal total des paniers.","foot"));
   const robustOutput=node("div");
   const runRobust=button("Calculer les comparaisons appariées",async()=>{
@@ -612,7 +612,7 @@ async function renderRN1Sports(){
   if(cross.length){
    const card=node("section",null,"card");
    card.append(node("h2","Matchs NBA → variation de cote → fill RN1"));
-   card.append(node("p","Pour chaque token disposant d'un historique minute, on compare le mouvement de prix entre deux observations lorsque l'intervalle contient un panier, ou une autre action de jeu. On observe ensuite l'existence d'un fill RN1 dans les 60 secondes après la dernière cote.","foot"));
+   card.append(node("p","Pour chaque token du pilote Taker-only disposant d'un historique minute, on compare le mouvement de prix entre deux observations lorsque l'intervalle contient un panier, ou une autre action de jeu. On observe ensuite l'existence d'un fill RN1 dans les 60 secondes après la dernière cote.","foot"));
    const summary=node("div",null,"metrics");
    for(const [flag,name] of [[true,"Avec panier"],[false,"Sans panier"]]){
     const group=cross.filter(x=>x.has_score===flag),n=group.reduce((s,r)=>s+Number(r.intervals),0);
@@ -640,7 +640,7 @@ async function renderRN1Sports(){
   if(live.length){
    const c=node("section",null,"card");
    c.append(node("h2","Maker / Taker live — rapprochement avec un panier"));
-   c.append(node("p","Petit sous-échantillon des fills ayant un carnet CLOB enregistré avant leur exécution. Le nombre après panier indique les fills observés dans les 30 ou 60 secondes APRÈS une action qui marque, sans supposer un nouveau dépôt d'ordre.","foot"));
+   c.append(node("p","Échantillon LIVE DISTINCT du pilote historique Taker-only, contenant des fills Maker inférés et Taker vérifiés avec carnet CLOB antérieur à l'exécution. Le nombre après panier indique les fills observés dans les 30 ou 60 secondes APRÈS une action qui marque, sans supposer un nouveau dépôt d'ordre.","foot"));
    const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),hr=node("tr");
    ["Match","Rôle observé","Fills avec carnet","Après panier ≤30 s","Après panier ≤60 s"].forEach(z=>hr.append(node("th",z)));
    head.append(hr);table.append(head);
