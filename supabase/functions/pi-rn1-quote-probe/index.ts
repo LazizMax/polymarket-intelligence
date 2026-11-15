@@ -1,7 +1,7 @@
 // Public RN1 market research: read-only data feed + before-fill CLOB snapshots.
 // No trading keys, no order placement, no claims of full wallet or executable alpha.
 import postgres from "npm:postgres@3.4.3";
-import {targetFromGamma,bookQuotes,matchPreTradeBook,sportsTakerFee,signature,
+import {targetFromGamma,bookQuotes,matchPreTradeBook,sportsTakerFee,signature,normalizeCurrentHoldings,
  type Target,type Quote,type BookRun,type PublicFill} from "./quote-utils.ts";
 
 const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
@@ -214,6 +214,24 @@ async function tick(){
    "&start=1&limit=1000&taker_only=false",{headers:{accept:"application/json"}}));
   const targets=await selectMarkets(walletRows);
   if(!targets.length)throw Error("No currently tradable sports markets; cannot measure books");
+  // The selected market's publicly reported OPEN holdings must be sampled
+  // BEFORE books and any future trade. A partial/failed response is unavailable,
+  // NEVER interpreted as 0 inventory.
+  let holdings:any[]=[],
+   positionStatus:"complete"|"unavailable"="unavailable",
+   positionObservedAt:string|null=null,rawPositions:any=null;
+  try{
+   const positionUrl=new URL("https://data-api.polymarket.com/v2/positions");
+   positionUrl.searchParams.set("user",RN1);
+   positionUrl.searchParams.set("status","OPEN");
+   positionUrl.searchParams.set("limit","1000");
+   positionUrl.searchParams.set("filter_amount","0");
+   positionUrl.searchParams.set("condition",targets.map(t=>t.market_key).join(","));
+   const response=await fetchJSON(positionUrl.toString(),{headers:{accept:"application/json"}});
+   const checked=normalizeCurrentHoldings(response,targets,RN1);
+   holdings=checked;rawPositions=response;
+   positionObservedAt=stamp();positionStatus="complete";
+  }catch(e){console.warn("Pretrade wallet inventory unavailable",String(e));}
   const requestStarted=stamp();
   const books=await fetchJSON("https://clob.polymarket.com/books",{
    method:"POST",headers:{"content-type":"application/json",accept:"application/json"},
@@ -222,7 +240,9 @@ async function tick(){
   const quotes=bookQuotes(books,targets);
   if(quotes.length<2)throw Error("CLOB did not return two valid books");
   const raw=JSON.stringify({source:"https://clob.polymarket.com/books",
-   request_started_at:requestStarted,received_at:receivedAt,targets,books});
+   request_started_at:requestStarted,received_at:receivedAt,targets,books,
+   position_observed_at:positionObservedAt,position_status:positionStatus,
+   positions_response:rawPositions});
   const digest=await hash(raw);
   const payload=await gzip(raw);
   if(payload.length>20_000_000)throw Error("Quote archive exceeded maximum object size");
@@ -233,12 +253,15 @@ async function tick(){
   const inserted=await db.unsafe(`
    insert into pi.rn1_quote_probe_runs(
     slot_at,requested_at,received_at,market_count,book_count,rn1_market_count,
-    archive_key,raw_sha256,compressed_bytes,quotes)
-   values($1,$2,$3,$4,$5,$6,$7,$8,$9,($10::text)::jsonb)
+    archive_key,raw_sha256,compressed_bytes,quotes,
+    position_observed_at,position_status,positions)
+   values($1,$2,$3,$4,$5,$6,$7,$8,$9,($10::text)::jsonb,
+    $11,$12,($13::text)::jsonb)
    on conflict(slot_at) do nothing returning id`,
    [slot,requestStarted,receivedAt,targets.length,quotes.length,
    targets.filter(t=>t.origin==="rn1_recent").length,
-   key,digest,payload.length,JSON.stringify(quotes)]);
+   key,digest,payload.length,JSON.stringify(quotes),
+   positionObservedAt,positionStatus,JSON.stringify(holdings)]);
   if(!inserted.length)throw Error("Concurrent quote probe minute already archived");
   // Current quotes are NEVER used as historical evidence for earlier trades.
   const match=await collectMatches(walletRows,quotes,new Date(receivedAt));
@@ -249,6 +272,7 @@ async function tick(){
    where singleton=true`,[match.matched,payload.length]);
   output.markets=targets.length;output.books=quotes.length;output.matched=match.matched;
   return {...output,rn1_targets:targets.filter(t=>t.origin==="rn1_recent").length,
+   positions_status:positionStatus,positions_markets:positionStatus==="complete"?targets.length:0,
    quote_age_sec:0,archive_bytes:payload.length};
  }catch(e){
   const message=e instanceof Error?e.message.slice(0,190):"quote sampling failure";
