@@ -3,6 +3,7 @@
 import postgres from "npm:postgres@3.4.3";
 import {captureTemporalBooks} from "./arb-capture.ts";
 import {RN1,normalizeV2Trade,pageEnvelope,sha256} from "./rn1-trade-utils.ts";
+import {normalizeActivity,envelopeActivity,sha256Activity} from "./rn1-activity-utils.ts";
 import { closedRoi } from "./roi-math.ts";
 import { closesPageComplete } from "./roi-sync.ts";
 
@@ -340,6 +341,101 @@ async function scheduledTemporal(){
 }
 
 
+
+async function scheduledRN1Activity(){
+ // Bounded, audit-preserving source activity ingestion. Zero PnL assumptions, no orders.
+ await db.unsafe("insert into pi.rn1_activity_import_state(wallet) values($1) on conflict do nothing",[RN1]);
+ const claim=await db.unsafe(`
+   update pi.rn1_activity_import_state
+   set lease_until=now()+interval '110 seconds',updated_at=now()
+   where wallet=$1 and status='collecting' and (lease_until is null or lease_until<now())
+   returning next_cursor,rows_seen,sample_limit`,[RN1]);
+ if(!claim.length)return {status:"idle_or_leased"};
+ const job=await db.unsafe("insert into pi.ingestion_jobs(wallet,stream,status,started_at) values($1,'rn1_v2_activity','running',now()) returning id",[RN1]);
+ let cursor=claim[0].next_cursor as string|null;
+ let seen=0,stored=0,rejected=0,pages=0,status="collecting";
+ try{
+  for(let page=0;page<2;page++){
+   const params:Record<string,string>={user:RN1,limit:"200",start:"1"};
+   if(cursor)params.cursor=cursor;
+   const sourcePayload=await get("/v2/activity",params);
+   const envelope=envelopeActivity(sourcePayload);
+   if(!envelope)throw Error("Unexpected V2 activity envelope");
+   const {data,hasMore,nextCursor}=envelope;
+   if(hasMore&&nextCursor===cursor)throw Error("V2 activity cursor failed to advance");
+   const nextTotal=Number(claim[0].rows_seen)+seen+data.length;
+   if(nextTotal>Number(claim[0].sample_limit))throw Error("Activity page exceeds pilot cap");
+   const raw={source_response:sourcePayload,request:{user:RN1,start:1,limit:200,requested_cursor:cursor}};
+   const pageSHA=await sha256Activity(JSON.stringify(raw));
+   const normalized:Record<string,unknown>[]=[];
+   for(let i=0;i<data.length;i++){
+    const row=normalizeActivity(data[i],RN1);
+    if(!row){rejected++;continue;}
+    normalized.push({...row,activity_key:"v2-activity:"+await sha256Activity(pageSHA+":"+i),
+      raw_archive_key:"rn1-activity-v2:"+pageSHA,source_row_index:i});
+   }
+   const terminal=!hasMore,capReached=nextTotal>=Number(claim[0].sample_limit);
+   const oldCursor=cursor;
+   let inserted=0;
+   await db.begin(async tx=>{
+    const timeValues=data.map((r:any)=>Number(r.timestamp)).filter((t:number)=>Number.isSafeInteger(t)&&t>=946684800&&t<4102444800);
+    const archived=await tx.unsafe(`
+     insert into pi.rn1_activity_pages
+       (page_sha,wallet,requested_cursor,returned_cursor,row_count,first_event_at,last_event_at,raw_payload)
+     values($1,$2,$3,$4,$5,$6,$7,($8::text)::jsonb)
+     on conflict(page_sha) do nothing returning page_sha`,
+     [pageSHA,RN1,oldCursor,nextCursor,data.length,
+      timeValues.length?new Date(Math.min(...timeValues)*1000).toISOString():null,
+      timeValues.length?new Date(Math.max(...timeValues)*1000).toISOString():null,
+      JSON.stringify(raw)]);
+    if(!archived.length)throw Error("Repeated raw activity page; cursor not advancing");
+    if(normalized.length){
+     const rows=await tx.unsafe(`
+     insert into pi.wallet_activity(
+      wallet,activity_key,occurred_at,kind,amount_usdc,amount_classification,raw_archive_key,
+      market_key,token_id,tx_hash,side,shares,unit_price,outcome_index,event_slug,
+      market_title,reported_usdc_size,source_row_index)
+     select x.wallet,x.activity_key,x.occurred_at,x.kind,x.amount_usdc,x.amount_classification,
+      x.raw_archive_key,x.market_key,x.token_id,x.tx_hash,x.side,x.shares,x.unit_price,
+      x.outcome_index,x.event_slug,x.market_title,x.reported_usdc_size,x.source_row_index
+     from jsonb_to_recordset(($1::text)::jsonb) as x(
+      wallet text,activity_key text,occurred_at timestamptz,kind text,
+      amount_usdc numeric,amount_classification text,raw_archive_key text,market_key text,token_id text,
+      tx_hash text,side text,shares numeric,unit_price numeric,outcome_index smallint,event_slug text,
+      market_title text,reported_usdc_size numeric,source_row_index integer)
+     on conflict(wallet,activity_key) do nothing returning activity_key`,
+      [JSON.stringify(normalized)]);
+     inserted=rows.length;
+    }
+    const state=await tx.unsafe(`
+     update pi.rn1_activity_import_state
+     set next_cursor=$2,rows_seen=rows_seen+$3,rows_stored=rows_stored+$4,
+      missing_required=missing_required+$5,pages_fetched=pages_fetched+1,
+      status=case when $6::boolean then 'source_exhausted'
+        when $7::boolean then 'pilot_complete' else 'collecting' end,
+      lease_until=case when $6::boolean or $7::boolean then null else lease_until end,
+      last_success_at=now(),last_error=null,updated_at=now()
+     where wallet=$1 and next_cursor is not distinct from $8 and status='collecting'
+     returning wallet`,
+     [RN1,nextCursor,data.length,inserted,data.length-normalized.length,terminal,capReached,oldCursor]);
+    if(!state.length)throw Error("Concurrent RN1 activity cursor changed");
+   });
+   seen+=data.length;stored+=inserted;pages++;cursor=nextCursor;
+   if(terminal||capReached){status=terminal?"source_exhausted":"pilot_complete";break;}
+  }
+  if(status==="collecting")
+   await db.unsafe("update pi.rn1_activity_import_state set lease_until=null,updated_at=now() where wallet=$1",[RN1]);
+  await db.unsafe("update pi.ingestion_jobs set status='done',pages_fetched=$2,rows_fetched=$3,finished_at=now(),updated_at=now() where id=$1",[job[0].id,pages,seen]);
+  return {status,pages,seen,stored,rejected};
+ }catch(e){
+  const message=e instanceof Error?e.message.slice(0,170):"unknown activity feed failure";
+  await db.unsafe("update pi.rn1_activity_import_state set last_error=$2,lease_until=null,updated_at=now() where wallet=$1",[RN1,message]);
+  await db.unsafe("update pi.ingestion_jobs set status='failed',error_message=$2,finished_at=now(),updated_at=now() where id=$1",[job[0].id,message]);
+  console.error("rn1_v2_activity",message);
+  return {status:"failed",pages,seen,stored,error:message};
+ }
+}
+
 async function scheduledRN1Trades(){
  // Bounded 4,000-row study: not a complete historical backfill. No orders and no claims of maker identity.
  await db.unsafe("insert into pi.rn1_trade_import_state(wallet) values($1) on conflict do nothing",[RN1]);
@@ -438,6 +534,10 @@ Deno.serve(async (req: Request) => {
   if (Number(req.headers.get("content-length") ?? 0)>5000) return json({error:"Payload too large"},413);
   try {
     const body = await req.json();
+    if (body?.action === "rn1_activity_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      return json(await scheduledRN1Activity());
+    }
     if (body?.action === "rn1_trades_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       return json(await scheduledRN1Trades());
