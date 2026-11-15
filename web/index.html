@@ -476,6 +476,38 @@ async function renderRN1(){
   c.append(node("p",proportion(cheap,two)+" des marchés avec achats des deux issues présentent un coût moyen combiné inférieur à 1 $ sur les achats visibles. Ce critère ne prouve ni une paire effectivement verrouillée ni une rentabilité après les frais."));
  }else c.append(node("p","Le diagnostic commencera dès que le collecteur aura accumulé ses premières données utilisables."));
  c.append(node("p","Les mécanismes encore à isoler sont : les prix limites réellement acceptés, la politique de couverture dans le temps, les rôles maker/taker et la rentabilité économique nette. Le diagnostic sera réévalué à chaque progression de la collecte.","foot"));
+
+ const seq=data.sequence||{},job=seq.job||{},ss=Array.isArray(seq.stats)?seq.stats:[];
+ const total=ss.find(x=>x.sample_half==="total")||{};
+ const newer=ss.find(x=>x.sample_half==="newer")||{};
+ const older=ss.find(x=>x.sample_half==="older")||{};
+ c.append(node("h3","Empreinte de ses décisions exécutées"));
+ c.append(node("p","Analyse chronologique du flux BUY/SELL, en conservant pour chaque marché les quantités déjà observées. "+
+  (job.status==="complete"?"Le premier échantillon figé est intégralement analysé.":"Analyse en cours : "+fmt(job.pages_done||0)+"/"+fmt(job.cohort_last_page||0)+" pages du premier échantillon.")+
+  " Le flux observable n'est pas son portefeuille réel : les règlements, fusions et inventaires antérieurs manquent.","foot"));
+ const evaluated=Number(total.comparable_buys||0);
+ if(evaluated>0){
+  const flowMetrics=node("div",null,"metrics");
+  const pct=(numerator,denominator)=>Number(denominator)>0?fmt(100*Number(numerator||0)/Number(denominator),1)+" %":"—";
+  const unequal=Number(total.underweight_buys||0)+Number(total.overweight_buys||0);
+  const samePrice=Number(total.same_outcome_repeats_5min||0);
+  flowMetrics.append(
+   metric("Achats sur le côté le moins accumulé",pct(total.underweight_buys,unequal)),
+   metric("Achats réduisant l'écart de shares",pct(total.gap_reducing_buys,evaluated)),
+   metric("Prix inchangé sur fills répétés ≤ 5 min",pct(total.repeated_price_unchanged,samePrice)),
+   metric("Premiers achats opposés observés",fmt(total.first_opposite_fills||0))
+  );
+  c.append(flowMetrics);
+  if(job.status==="complete"&&Number(older.comparable_buys||0)>200&&Number(newer.comparable_buys||0)>200){
+   c.append(node("p","Contrôle de stabilité : achat de l'issue moins accumulée = "+
+    pct(older.underweight_buys,Number(older.underweight_buys||0)+Number(older.overweight_buys||0))+
+    " sur l'ancienne moitié de l'échantillon, contre "+
+    pct(newer.underweight_buys,Number(newer.underweight_buys||0)+Number(newer.overweight_buys||0))+
+    " sur la moitié plus récente. Une différence marquée suggère une stratégie dépendante du contexte.","foot"));
+  }
+  c.append(node("p","Ces statistiques décrivent exclusivement les achats exécutés : elles ne révèlent ni les limites des ordres non remplis ni les probabilités sportives utilisées par RN1.","foot"));
+ }
+
  c.append(banner("Nous ne connaissons pas encore les ordres non exécutés, son algorithme privé ou ses probabilités sportives internes. Le but est de déduire des règles falsifiables à partir des données, pas d'inventer son code."));
  target.append(c);
  const storage=data.storage||{};
