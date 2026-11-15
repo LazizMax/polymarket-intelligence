@@ -531,6 +531,26 @@ async function renderRN1Sports(){
   }
   study.append(node("p","Le taux de fenêtres suivies d'un fill ne mesure ni le nombre de décisions de RN1 ni sa rentabilité. Les répétitions de fenêtres du même match créent une dépendance statistique.","foot"));
   results.append(study);
+
+  const live=(data.live_roles||[]);
+  if(live.length){
+   const c=node("section",null,"card");
+   c.append(node("h2","Maker / Taker live — rapprochement avec un panier"));
+   c.append(node("p","Petit sous-échantillon des fills ayant un carnet CLOB enregistré avant leur exécution. Le nombre après panier indique les fills observés dans les 30 ou 60 secondes APRÈS une action qui marque, sans supposer un nouveau dépôt d'ordre.","foot"));
+   const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),hr=node("tr");
+   ["Match","Rôle observé","Fills avec carnet","Après panier ≤30 s","Après panier ≤60 s"].forEach(z=>hr.append(node("th",z)));
+   head.append(hr);table.append(head);
+   const tb=node("tbody");
+   for(const r of live){
+    const tr=node("tr");
+    tr.append(node("td",r.event_slug),node("td",r.role==="maker_inferred"?"Maker inféré":r.role==="taker_verified"?"Taker vérifié":"Indéterminé"),
+     node("td",fmt(r.fills)),node("td",fmt(r.with_score_last30)),node("td",fmt(r.with_score_last60)));
+    tb.append(tr);
+   }
+   table.append(tb);wrap.append(table);c.append(wrap);
+   c.append(node("p","Échantillon très restreint et conditionné par les marchés sondés ; les fractions ne démontrent ni déclencheur, ni ordre Maker posé à cet instant, ni avantage économique.","foot"));
+   results.append(c);
+  }
   if(slug){
    const game=games.find(g=>g.event_slug===slug),tlCard=node("section",null,"card");
    tlCard.append(node("h2",slug+" — actions et fills au cours du match"));
