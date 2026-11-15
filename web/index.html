@@ -508,6 +508,107 @@ async function renderRN1Sizing(){
   table.append(tb);wrap.append(table);breakdown.append(wrap);
  }
  drawBreakdown();target.append(explore);
+
+ const modelsCard=node("section",null,"card");
+ modelsCard.append(node("h2","Tester les formules possibles de sizing"));
+ modelsCard.append(node("p","Validation chronologique sur les exécutions Maker inférées : calibrer chaque issue sur ses premiers 70 % de fills, tester les suivants. Les prix doivent avoir changé d'au moins 3 centimes pendant l'apprentissage. Les comparaisons d'une même seconde sont écartées de l'ordre chronologique.","foot"));
+ const reload=button("Recalculer avec les dernières sondes",()=>{void refreshModels()},"secondary");
+ modelsCard.append(reload);
+ const modelOutput=node("div");modelsCard.append(modelOutput);target.append(modelsCard);
+ async function refreshModels(){
+  reload.disabled=true;
+  modelOutput.replaceChildren(node("p","Recalcul des règles sur les fills Maker live…","foot"));
+  try{
+   const x=await api("rn1_sizing_hypotheses"),main=x.primary||{},models=main.models||{};
+   modelOutput.replaceChildren();
+   const metrics=node("div",null,"metrics");
+   metrics.append(
+    metric("Exécutions Maker observées",fmt(x.source_fills||0)),
+    metric("Issues comparables",fmt(main.eligible_tokens||0)),
+    metric("Fills hors période d'apprentissage",fmt(main.heldout_events||0)),
+    metric("Pente parts / cote · entraînement",main.fitted_beta===null?"—":fmt(main.fitted_beta,2))
+   );modelOutput.append(metrics);
+   const result=node("section");
+   result.append(node("h3","Quelle hypothèse prédit le moins mal la taille exécutée ?"));
+   const choices=[
+    ["Parts fixes",models.fixed_shares,"#8fc0ff"],
+    ["USDC fixes",models.fixed_usdc,"#4fe4c4"],
+    ["Elasticité apprise sur d'autres marchés",models.learned_power,"#d2a9ff"]
+   ],finite=choices.map(v=>Number(v[1]?.mean_abs_log_error)).filter(Number.isFinite),max=Math.max(1,...finite);
+   for(const [name,value,color] of choices){
+    const line=node("div");line.style.cssText="display:grid;grid-template-columns:minmax(120px,1.5fr) minmax(80px,2fr) 160px;gap:10px;align-items:center;margin:12px 0";
+    line.append(node("span",name,"small"));
+    const track=node("div");track.style.cssText="height:12px;background:#26394a;border-radius:7px;overflow:hidden";
+    const error=Number(value?.mean_abs_log_error),bar=node("div");
+    bar.style.cssText="height:100%;width:"+(Number.isFinite(error)?100*error/max:0)+"%;background:"+color+";border-radius:7px";
+    track.append(bar);line.append(track);
+    line.append(node("span",value?.median_error_factor==null?"—":"erreur médiane ×"+fmt(value.median_error_factor,1),"small"));
+    result.append(line);
+   }
+   result.append(node("p","Barre = erreur moyenne absolue sur le logarithme des tailles : plus courte = moins mauvaise. Le facteur médian ×7 signifie que la taille réelle vaut typiquement environ 7 fois la prédiction, ou son inverse. Ce n'est PAS une erreur de 7 %.","foot"));
+   result.append(node("p","Hypothèse la mieux classée par issue : parts fixes "+fmt(main.token_wins?.shares||0)+", USDC fixes "+fmt(main.token_wins?.usd||0)+", égalités "+fmt(main.token_wins?.tie||0)+". Par marché : parts fixes "+fmt(main.market_wins?.shares||0)+", USDC fixes "+fmt(main.market_wins?.usd||0)+". Aucun de ces votes n'est une validation de rentabilité.","foot"));
+   modelOutput.append(result);
+   const scenarios=[main,...(x.sensitivities||[])],sensitivity=node("section");
+   sensitivity.append(node("h3","Robustesse selon la définition d'un événement et le mouvement de cote"));
+   const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),row=node("tr");
+   ["Unité de comparaison","Amplitude min. de cote à l'entraînement","Issues / marchés","Fills de validation","Erreur médiane parts","Erreur médiane USDC","Pente parts / cote"].forEach(v=>row.append(node("th",v)));
+   head.append(row);table.append(head);const body=node("tbody");
+   for(const entry of scenarios){
+    const tr=node("tr"),burst=Number(entry.burst_seconds),title=burst===0?"Fill individuel":"Regroupement même issue / "+burst+" s";
+    const fa=entry.models?.fixed_shares?.median_error_factor,fb=entry.models?.fixed_usdc?.median_error_factor;
+    tr.append(node("td",title,"name"),node("td",fmt(100*Number(entry.min_training_price_span),0)+" c"),
+     node("td",fmt(entry.eligible_tokens)+" / "+fmt(entry.eligible_markets)),
+     node("td",fmt(entry.heldout_events)),
+     node("td",fa==null?"—":"×"+fmt(fa,1)),
+     node("td",fb==null?"—":"×"+fmt(fb,1)),
+     node("td",entry.fitted_beta==null?"—":fmt(entry.fitted_beta,2)));
+    body.append(tr);
+   }
+   table.append(body);wrap.append(table);sensitivity.append(wrap);
+   const sec=scenarios.find(z=>z.burst_seconds===1&&Math.abs(Number(z.min_training_price_span)-.03)<1e-8);
+   if(sec)sensitivity.append(node("p","Test de fragmentation : "+fmt(sec.multi_fill_groups||0)+" groupes du même token dans la même seconde, représentant "+fmt(sec.fills_in_multi_groups||0)+" fills au total. Le regroupement ne révèle pas l'identifiant de l'ordre parent et peut réunir plusieurs ordres distincts.","foot"));
+   modelOutput.append(sensitivity);
+   const online=node("section");
+   online.append(node("h3","Contre-test séquentiel : prédire à partir des 3 ou 5 derniers fills"));
+   online.append(node("p","À chaque exécution, les estimations ne lisent que les observations des secondes précédentes. Ce test est plus adaptatif mais ses fenêtres se chevauchent et restent conditionnées sur les fills.","foot"));
+   const rollingWrap=node("div",null,"tablewrap"),rt=node("table"),rhead=node("thead"),rh=node("tr");
+   ["Historique disponible","Regroupement","Prédictions","Issues","Erreur médiane log : parts","Erreur médiane log : USDC","Issues favorisant parts / USDC"].forEach(v=>rh.append(node("th",v)));
+   rhead.append(rh);rt.append(rhead);const rb=node("tbody");
+   for(const row of x.rolling||[]){
+    const tr=node("tr");
+    tr.append(node("td",fmt(row.lookback)+" fills"),node("td",row.burst_seconds?row.burst_seconds+" seconde(s)":"Fill individuel"),
+     node("td",fmt(row.n_predictions)),node("td",fmt(row.tokens)),
+     node("td",row.fixed_shares_mean_abs_log==null?"—":fmt(row.fixed_shares_mean_abs_log,2)),
+     node("td",row.fixed_usdc_mean_abs_log==null?"—":fmt(row.fixed_usdc_mean_abs_log,2)),
+     node("td",fmt(row.token_wins?.shares||0)+" / "+fmt(row.token_wins?.usd||0)));
+    rb.append(tr);
+   }
+   rt.append(rb);rollingWrap.append(rt);online.append(rollingWrap);modelOutput.append(online);
+   const details=node("section"),expand=button("Afficher le contrôle issue par issue",()=>{const visible=detailsWrap.style.display!=="none";detailsWrap.style.display=visible?"none":"block";expand.textContent=visible?"Afficher le contrôle issue par issue":"Masquer le détail"},"secondary");
+   details.append(expand);
+   const detailsWrap=node("div");detailsWrap.style.display="none";
+   const dw=node("div",null,"tablewrap"),dt=node("table"),dh=node("thead"),dhr=node("tr");
+   ["Marché","Token","Entraînement / test","Amplitude de prix","Erreur moyenne parts","Erreur moyenne USDC","Moins mauvais"].forEach(v=>dhr.append(node("th",v)));
+   dh.append(dhr);dt.append(dh);const db=node("tbody");
+   for(const t of (main.tokens||[])){
+    const tr=node("tr"),winner=t.shares_mae<t.usd_mae?"Parts fixes":t.usd_mae<t.shares_mae?"USDC fixes":"Égalité";
+    tr.append(node("td",t.market),node("td",t.token),node("td",fmt(t.train_events)+" / "+fmt(t.test_events)),
+     node("td",fmt(100*Number(t.train_price_span),1)+" c"),
+     node("td",fmt(t.shares_mae,2)),node("td",fmt(t.usd_mae,2)),node("td",winner));
+    db.append(tr);
+   }
+   dt.append(db);dw.append(dt);detailsWrap.append(dw);details.append(detailsWrap);modelOutput.append(details);
+   const caution=node("section");
+   caution.append(node("h3","Conditions de validité"));
+   if(x.truncated)caution.append(node("p","AVERTISSEMENT : limite de 10 000 fills les plus récents atteinte ; ce n'est pas l'historique intégral.","red"));
+   caution.append(node("p",x.definitions?.split||"","foot"));
+   for(const v of x.definitions?.constraints||[])caution.append(node("p","• "+v,"foot"));
+   caution.append(node("p","Verdict : aucune formule de taille d'ORDRE n'est établie. On teste ici uniquement des tailles de fills Maker exécutés, qui peuvent être fragmentés.","foot"));
+   modelOutput.append(caution);
+  }catch(e){modelOutput.replaceChildren(node("p","Calcul des hypothèses indisponible : "+String(e?.message||e),"red"))}
+  finally{reload.disabled=false}
+ }
+ void refreshModels();
  const limits=node("section",null,"card");limits.append(node("h2","Précautions d'interprétation"));
  for(const warning of data.definitions?.warnings||[])limits.append(node("p","• "+warning,"foot"));
  limits.append(node("p","Objectif de recherche : expliquer pourquoi RN1 utilise des tailles différentes à partir des cotes, de l'inventaire et de la liquidité ; aucun modèle de taille d'ordre ou de capital à risque n'est encore validé hors échantillon.","foot"));
