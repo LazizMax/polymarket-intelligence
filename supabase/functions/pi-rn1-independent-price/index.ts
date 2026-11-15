@@ -18,7 +18,8 @@ type Summary={fills:number;sampled_buy_fills:number;roles:Record<string,number>;
  market_price:Record<string,Record<string,{n:number,positive:number,negative:number,flat:number,weighted:number,shares:number,sum:number}>>;
  coverage:{requested:number,ok:number,history_empty:number,history_error:number};
 };
-type State={hold:Record<string,Holding>;summary:Summary};
+type EventMoment={n:number;x:number;y:number};
+type State={hold:Record<string,Holding>;summary:Summary;event_data?:Record<string,Record<string,EventMoment>>;event_start_page?:number};
 const zero=()=>({n:0,positive:0,negative:0,flat:0,weighted:0,shares:0,sum:0});
 const fresh=():State=>({hold:{},summary:{fills:0,sampled_buy_fills:0,roles:{maker:0,taker:0,unknown:0},
  market_price:{},coverage:{requested:0,ok:0,history_empty:0,history_error:0}}});
@@ -112,7 +113,36 @@ function stat(s:Summary,h:number,role:string,position:string,priceMove:number,sh
   m.weighted+=shares*priceMove;m.shares+=shares;m.sum+=priceMove;
  }
 }
-function process(state:State,rows:any[],roles:string[],hist:Map<string,{points:Moment[],status:string}>,selected:Set<string>){
+function addEvent(state:State,eventId:string,h:number,role:string,position:string,move:number,shares:number,ipw:number){
+ const event=(state.event_data||(state.event_data={}))[eventId]||(state.event_data![eventId]={});
+ for(const group of [role+"|all",role+"|"+position]){
+  const key=String(h)+"|"+group;
+  const m=event[key]||(event[key]={n:0,x:0,y:0});
+  m.n++;m.x+=ipw*shares;m.y+=ipw*shares*move;
+ }
+}
+function eventEvidence(state:State){
+ const result:Record<string,{events:number,fills:number,mean:number|null,se:number|null,ci_low:number|null,ci_high:number|null,coverage_start_page:number|null}>={};
+ const eventData=Object.values(state.event_data||{});
+ for(const horizon of HORIZONS)for(const group of ["maker|all","maker|underweight","maker|overweight"]){
+  const key=String(horizon)+"|"+group;
+  const blocks=eventData.map(event=>event[key]).filter((m):m is EventMoment=>!!m&&m.x>0);
+  const count=blocks.length,denom=blocks.reduce((acc,m)=>acc+m.x,0);
+  const numerator=blocks.reduce((acc,m)=>acc+m.y,0);
+  const mu=denom>0?numerator/denom:null;
+  let se:number|null=null;
+  if(mu!==null&&count>=3){
+   const residual=blocks.reduce((acc,m)=>acc+(m.y-mu*m.x)**2,0);
+   se=Math.sqrt((count/(count-1))*residual/(denom*denom));
+  }
+  result[key]={events:count,fills:blocks.reduce((acc,m)=>acc+m.n,0),
+   mean:mu,se,ci_low:se!==null&&mu!==null?mu-1.96*se:null,
+   ci_high:se!==null&&mu!==null?mu+1.96*se:null,
+   coverage_start_page:state.event_start_page??null};
+ }
+ return result;
+}
+function process(state:State,rows:any[],roles:string[],hist:Map<string,{points:Moment[],status:string}>,selected:Set<string>,tokenIpw:number){
  const pageSummary:Summary=fresh().summary;
  const marketSet=new Set<string>(),events=new Set<string>();let minTs=Infinity,maxTs=0;
  for(let i=rows.length-1;i>=0;i--){
@@ -134,6 +164,8 @@ function process(state:State,rows:any[],roles:string[],hist:Map<string,{points:M
     if(price!==null){
      stat(state.summary,HORIZONS[j],role,position,price-p,q);
      stat(pageSummary,HORIZONS[j],role,position,price-p,q);
+     const eventId=String(r.event_slug||"").trim().toLowerCase();
+     addEvent(state,eventId?"event:"+eventId:"market:"+market,HORIZONS[j],role,position,price-p,q,tokenIpw);
     }
    }
   }
@@ -175,7 +207,9 @@ async function tick(){
   const coverage={requested:chosen.length,ok:series.filter(x=>x.status==="ok").length,
     history_empty:series.filter(x=>x.status==="empty").length,history_error:series.filter(x=>x.status==="error").length};
   for(const [k,v] of Object.entries(coverage))bump(state.summary.coverage,k,v);
-  const out=process(state,rows,roles,hist,chosenSet);
+  if(state.event_start_page===undefined)state.event_start_page=pageNo;
+  const out=process(state,rows,roles,hist,chosenSet,sourceTokenCount/chosen.length);
+  (state.summary as Summary & {event_cluster_evidence?:ReturnType<typeof eventEvidence>}).event_cluster_evidence=eventEvidence(state);
   const checkpoint="independent-prices-v1/state/page-"+String(pageNo).padStart(8,"0")+"-"+String(page.sha256).slice(0,16)+".json.gz";
   await writeStorage(checkpoint,JSON.stringify(state));
   const matched=Object.fromEntries(HORIZONS.map(h=>[String(h),Number(out.pageSummary.market_price[String(h)]?.["maker|all"]?.n||0)]));
