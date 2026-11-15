@@ -1,6 +1,15 @@
 name: RN1 research smoke tests
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/pi-rn1-independent-price/**'
+      - 'supabase/functions/pi-rn1-replay/**'
+      - 'supabase/functions/pi-dashboard/**'
+      - 'web/index.html'
+      - 'tests/test_rn1_*'
+      - '.github/workflows/rn1-research-ci.yml'
   pull_request:
     paths:
       - 'supabase/functions/pi-rn1-replay/**'
