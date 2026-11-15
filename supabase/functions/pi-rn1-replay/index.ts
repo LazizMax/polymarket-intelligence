@@ -176,7 +176,7 @@ async function tick(){
  const job=claims[0],pageNo=Number(job.next_page);
  try{
   const caps=await db.unsafe("select pg_database_size(current_database())::bigint as db_bytes");
-  if(Number(caps[0].db_bytes)>297000000){
+  if(Number(caps[0].db_bytes) > ((Deno.env.get("SUPABASE_URL")||"").includes("qamdvfakwclkuswrdckp") ? 1073741824 : 297000000)){
    await db.unsafe("update pi.rn1_replay_jobs set status='paused_quota',lease_until=null,last_error='Database safety headroom' where job_key=$1",[JOB]);
    return {status:"paused_quota"};
   }
