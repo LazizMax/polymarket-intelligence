@@ -692,7 +692,7 @@ async function analyzeRN1ExecutedFlow(){
  try{
   // Preserve the shared Fit Tracker database: source archiving remains independent.
   const size=await db.unsafe("select pg_database_size(current_database())::bigint as bytes");
-  if(Number(size[0].bytes)>290*1048576){
+  if(Number(size[0].bytes)>((Deno.env.get("SUPABASE_URL")||"").includes("qamdvfakwclkuswrdckp") ? 1073741824 : 290*1048576)){
    await db.unsafe(`update pi.rn1_sequence_jobs set status='paused_quota',
      lease_until=null,last_error='SQL analysis paused before shared project budget'
      where job_key='rn1_executed_flow'`);
