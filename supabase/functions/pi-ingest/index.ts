@@ -5,6 +5,7 @@ import {captureTemporalBooks} from "./arb-capture.ts";
 import {RN1,normalizeV2Trade,pageEnvelope,sha256} from "./rn1-trade-utils.ts";
 import {normalizeActivity,envelopeActivity,sha256Activity} from "./rn1-activity-utils.ts";
 import {matchMakerTaker} from "./rn1-maker-match.ts";
+import {classifyExecutedFlowPage,type SourceMarketState} from "./rn1-sequence.ts";
 import { closedRoi } from "./roi-math.ts";
 import { closesPageComplete } from "./roi-sync.ts";
 
@@ -673,6 +674,152 @@ async function runRN1FullStream(stream:RN1ArchiveStream){
 }
 
 
+
+async function analyzeRN1ExecutedFlow(){
+ const service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
+ const origin=Deno.env.get("SUPABASE_URL")||"";
+ if(!service||!/^https:\/\/[^/]+\.supabase\.co$/.test(origin))
+  return {status:"failed",error:"Private archive credentials unavailable"};
+ const claim=await db.unsafe(`
+ update pi.rn1_sequence_jobs
+ set lease_until=now()+interval '110 seconds',updated_at=now()
+ where job_key='rn1_executed_flow' and status='running'
+ and (lease_until is null or lease_until<now())
+ returning next_page,cohort_last_page`);
+ if(!claim.length)return {status:"idle_or_leased"};
+ const cohort=Number(claim[0].cohort_last_page);
+ const result={pages:0,rows:0,valid:0,cohort_pages:cohort,next_page:Number(claim[0].next_page)};
+ try{
+  // Preserve the shared Fit Tracker database: source archiving remains independent.
+  const size=await db.unsafe("select pg_database_size(current_database())::bigint as bytes");
+  if(Number(size[0].bytes)>290*1048576){
+   await db.unsafe(`update pi.rn1_sequence_jobs set status='paused_quota',
+     lease_until=null,last_error='SQL analysis paused before shared project budget'
+     where job_key='rn1_executed_flow'`);
+   return {...result,status:"paused_quota"};
+  }
+  for(let j=0;j<5;j++){
+   const pageNo=result.next_page;
+   if(pageNo<1)break;
+   const p=await db.unsafe(`
+    select page_no,storage_key,sha256,row_count
+    from pi.rn1_full_archive_pages where stream='trades_all' and page_no=$1`,[pageNo]);
+   if(!p.length)throw Error("Frozen cohort archive page "+pageNo+" missing");
+   const source=await fetch(origin+"/storage/v1/object/"+RN1_FULL_BUCKET+"/"+String(p[0].storage_key),{
+    headers:{"Authorization":"Bearer "+service,"apikey":service},
+    signal:AbortSignal.timeout(20000)});
+   if(!source.ok||!source.body)throw Error("Private source archive read HTTP "+source.status);
+   const raw=await new Response(source.body.pipeThrough(new DecompressionStream("gzip"))).text();
+   if(await sha256(raw)!==p[0].sha256)throw Error("Unchanged source page SHA mismatch");
+   const archive=JSON.parse(raw);
+   const rows=archive?.source_response?.data;
+   if(!Array.isArray(rows)||rows.length!==Number(p[0].row_count))
+    throw Error("Archive page does not match source page row count");
+   // Keyset source is latest-first. Reverse it to calculate chronological flow.
+   for(let i=1;i<rows.length;i++){
+    if(Number(rows[i]?.timestamp)>Number(rows[i-1]?.timestamp))
+     throw Error("Source is not latest-first, chronological reconstruction unsafe");
+   }
+   const fills=rows.map((t:any)=>normalizeV2Trade(t,RN1));
+   const norm=fills.filter((t):t is NonNullable<typeof t>=>t!==null);
+   if(norm.length!==rows.length)throw Error("Archive normalized fills do not match source count");
+   const ids=[...new Set(norm.map(x=>String(x.market_key)))];
+   const existing=await db.unsafe(`
+    select market_key,buy0_shares,buy1_shares,sell0_shares,sell1_shares,
+     fills0,fills1,first_at::text as first_at,first_side,
+     first_opposite_at::text as first_opposite_at,last_at::text as last_at,
+     last_at0::text as last_at0,last_at1::text as last_at1,
+     last_price0,last_price1
+    from pi.rn1_sequence_market_state
+    where market_key in (select jsonb_array_elements_text(($1::text)::jsonb))`,
+    [JSON.stringify(ids)]);
+   const states=new Map<string,SourceMarketState>();
+   for(const v of existing){
+    states.set(String(v.market_key),{
+     market_key:String(v.market_key),
+     buy0_shares:Number(v.buy0_shares),buy1_shares:Number(v.buy1_shares),
+     sell0_shares:Number(v.sell0_shares),sell1_shares:Number(v.sell1_shares),
+     fills0:Number(v.fills0),fills1:Number(v.fills1),
+     first_at:String(v.first_at),first_side:Number(v.first_side),
+     first_opposite_at:v.first_opposite_at?String(v.first_opposite_at):null,
+     last_at:String(v.last_at),
+     last_at0:v.last_at0?String(v.last_at0):null,
+     last_at1:v.last_at1?String(v.last_at1):null,
+     last_price0:v.last_price0===null?null:Number(v.last_price0),
+     last_price1:v.last_price1===null?null:Number(v.last_price1)
+    });
+   }
+   const {stats,changed}=classifyExecutedFlowPage(
+    norm.map(x=>({
+     market_key:String(x.market_key),reported_at:String(x.reported_at),
+     outcome_index:x.outcome_index===null?null:Number(x.outcome_index),
+     side:String(x.side),shares:Number(x.shares),price:Number(x.price),
+     observed_notional_usdc:Number(x.observed_notional_usdc)
+    })),states);
+   const half=pageNo>Math.floor(cohort/2)?"older":"newer";
+   await db.begin(async tx=>{
+    if(changed.length){
+     await tx.unsafe(`
+       insert into pi.rn1_sequence_market_state(
+        market_key,buy0_shares,buy1_shares,sell0_shares,sell1_shares,
+        fills0,fills1,first_at,first_side,first_opposite_at,
+        last_at,last_at0,last_at1,last_price0,last_price1)
+       select x.market_key,x.buy0_shares,x.buy1_shares,x.sell0_shares,x.sell1_shares,
+        x.fills0,x.fills1,x.first_at,x.first_side,x.first_opposite_at,
+        x.last_at,x.last_at0,x.last_at1,x.last_price0,x.last_price1
+       from jsonb_to_recordset(($1::text)::jsonb) as x(
+        market_key text,buy0_shares float8,buy1_shares float8,sell0_shares float8,sell1_shares float8,
+        fills0 int,fills1 int,first_at timestamptz,first_side smallint,
+        first_opposite_at timestamptz,last_at timestamptz,last_at0 timestamptz,
+        last_at1 timestamptz,last_price0 float8,last_price1 float8)
+       on conflict(market_key) do update set
+        buy0_shares=excluded.buy0_shares,buy1_shares=excluded.buy1_shares,
+        sell0_shares=excluded.sell0_shares,sell1_shares=excluded.sell1_shares,
+        fills0=excluded.fills0,fills1=excluded.fills1,
+        first_at=excluded.first_at,first_side=excluded.first_side,
+        first_opposite_at=excluded.first_opposite_at,
+        last_at=excluded.last_at,last_at0=excluded.last_at0,last_at1=excluded.last_at1,
+        last_price0=excluded.last_price0,last_price1=excluded.last_price1,
+        updated_at=now()`,[JSON.stringify(changed)]);
+    }
+    const recorded=await tx.unsafe(`
+     insert into pi.rn1_sequence_page_stats(page_no,source_sha,cohort_last_page,sample_half,stats)
+     values($1,$2,$3,$4,($5::text)::jsonb)
+     on conflict(page_no) do nothing returning page_no`,
+     [pageNo,p[0].sha256,cohort,half,JSON.stringify(stats)]);
+    if(!recorded.length)throw Error("Page already processed: transaction not idempotent");
+    const advance=await tx.unsafe(`
+     update pi.rn1_sequence_jobs
+     set next_page=next_page-1,pages_done=pages_done+1,
+      observed_fills=observed_fills+$2,valid_fills=valid_fills+$3,
+      last_success_at=now(),updated_at=now(),
+      status=case when next_page=1 then 'complete' else 'running' end,
+      completed_at=case when next_page=1 then now() else completed_at end,
+      lease_until=case when next_page=1 then null else lease_until end,
+      error_attempts=0,last_error=null
+     where job_key='rn1_executed_flow' and next_page=$1 and status='running'
+     returning next_page`,[pageNo,stats.fills,stats.valid_fills]);
+    if(!advance.length)throw Error("Analysis cohort cursor moved concurrently");
+   });
+   result.pages++;result.rows+=stats.fills;result.valid+=stats.valid_fills;
+   result.next_page=pageNo-1;
+   if(pageNo===1)return {...result,status:"complete"};
+  }
+  await db.unsafe(`update pi.rn1_sequence_jobs
+   set lease_until=null where job_key='rn1_executed_flow' and status='running'`);
+  return {...result,status:"running"};
+ }catch(e){
+  const message=e instanceof Error?e.message.slice(0,220):"RN1 executed-flow audit failed";
+  console.error("rn1_sequence",message);
+  await db.unsafe(`update pi.rn1_sequence_jobs set
+   error_attempts=error_attempts+1,
+   status=case when error_attempts+1>=5 then 'paused_error' else status end,
+   lease_until=null,last_error=$1,updated_at=now()
+   where job_key='rn1_executed_flow'`,[message]);
+  return {...result,status:"error",error:message};
+ }
+}
+
 async function auditRN1MakerRoles(){
  const result={checked:0,maker:0,taker:0,failures:0};
  const service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
@@ -851,6 +998,10 @@ Deno.serve(async (req: Request) => {
     if (body?.action === "rn1_activity_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       return json(await scheduledRN1Activity());
+    }
+    if (body?.action === "rn1_sequence_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      return json(await analyzeRN1ExecutedFlow());
     }
     if (body?.action === "rn1_maker_audit_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
