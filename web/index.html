@@ -532,6 +532,35 @@ async function renderRN1Sports(){
   study.append(node("p","Le taux de fenêtres suivies d'un fill ne mesure ni le nombre de décisions de RN1 ni sa rentabilité. Les répétitions de fenêtres du même match créent une dépendance statistique.","foot"));
   results.append(study);
 
+
+  const cross=(data.price_vs_events||[]);
+  if(cross.length){
+   const card=node("section",null,"card");
+   card.append(node("h2","Matchs NBA → variation de cote → fill RN1"));
+   card.append(node("p","Pour chaque token disposant d'un historique minute, on compare le mouvement de prix entre deux observations lorsque l'intervalle contient un panier, ou une autre action de jeu. On observe ensuite l'existence d'un fill RN1 dans les 60 secondes après la dernière cote.","foot"));
+   const summary=node("div",null,"metrics");
+   for(const [flag,name] of [[true,"Avec panier"],[false,"Sans panier"]]){
+    const group=cross.filter(x=>x.has_score===flag),n=group.reduce((s,r)=>s+Number(r.intervals),0);
+    const moved=group.filter(x=>x.move!=="<1c").reduce((s,r)=>s+Number(r.intervals),0);
+    const avgAbs=n?group.reduce((s,r)=>s+Number(r.mean_abs_change||0)*Number(r.intervals),0)/n:null;
+    summary.append(metric(name+" · mouvement ≥1 centime",n?fmt(100*moved/n,1)+" %":"—"));
+    summary.append(metric(name+" · amplitude moyenne",avgAbs===null?"—":fmt(100*avgAbs,2)+" centimes"));
+   }
+   card.append(summary);
+   const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),hr=node("tr");
+   ["Action sportive dans l'intervalle","Amplitude de cote","Intervalles prix","Fills RN1 dans les 60 s","Taux observé"].forEach(s=>hr.append(node("th",s)));
+   head.append(hr);table.append(head);const body=node("tbody");
+   for(const r of cross){
+    const tr=node("tr");
+    tr.append(node("td",r.has_score?"Avec panier":"Autre action"),
+     node("td",r.move),node("td",fmt(r.intervals)),
+     node("td",fmt(r.next_fill_windows)),node("td",fmt(r.next_fill_pct,2)+" %"));
+    body.append(tr);
+   }
+   table.append(body);wrap.append(table);card.append(wrap);
+   card.append(node("p","IMPORTANT : les 153 tokens analysés ont été choisis autour de trades RN1 ; ces observations minute-token sont corrélées et les prix API ne sont pas des carnets historiques. Le taux apparent n'est pas une probabilité généralisable de déclenchement d'ordre, ni un edge de copy trading.","foot"));
+   results.append(card);
+  }
   const live=(data.live_roles||[]);
   if(live.length){
    const c=node("section",null,"card");
