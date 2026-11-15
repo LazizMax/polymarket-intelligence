@@ -55,3 +55,19 @@ Deno.test("invalid outcome does not update state",()=>{
  const {stats}=classifyExecutedFlowPage([{...mk("d",0,5,10),outcome_index:null}],states);
  assertEquals(stats.fills,1);assertEquals(stats.valid_fills,0);assertEquals(states.size,0);
 });
+
+Deno.test("imbalance bin counts reconcile exactly with global classification for every side",()=>{
+ const states=new Map<string,SourceMarketState>();
+ const rows=[
+  mk("x",400,1,2,.6), // outcome 1 already heavily overweight
+  mk("x",300,1,4,.6),
+  mk("x",200,0,1,.4),
+  mk("x",100,1,10,.6),
+  mk("x",0,1,20,.6)
+ ];
+ const {stats}=classifyExecutedFlowPage(rows,states);
+ assertEquals(stats.imbalance_buckets.reduce((s,b)=>s+b.total,0),stats.comparable_buy_fills);
+ assertEquals(stats.imbalance_buckets.reduce((s,b)=>s+b.underweight,0),stats.underweight_buys);
+ assertEquals(stats.imbalance_buckets.reduce((s,b)=>s+b.overweight,0),stats.overweight_buys);
+ assertEquals(stats.imbalance_buckets.reduce((s,b)=>s+b.neutral,0),stats.neutral_buys);
+});
