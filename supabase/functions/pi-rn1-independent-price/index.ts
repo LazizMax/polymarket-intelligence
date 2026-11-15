@@ -202,5 +202,11 @@ Deno.serve(async req=>{
  if(!await allowed(req))return response({error:"unauthorized"},403);
  let data:any={};try{data=await req.json()}catch(_){}
  if(data.action!=="independent_price_tick")return response({error:"invalid_action"},400);
- return response(await tick());
+ const pages=Math.min(3,Math.max(1,Number.isInteger(data.pages)?data.pages:1));
+ const results:any[]=[];
+ for(let i=0;i<pages;i++){
+  const current=await tick();results.push(current);
+  if(current.status!=="running")break;
+ }
+ return response({status:results.at(-1)?.status||"idle",pages_completed:results.filter(x=>x.page).length,results});
 });
