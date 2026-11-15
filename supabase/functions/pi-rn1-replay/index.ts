@@ -143,6 +143,24 @@ function replayPage(state:State,raw:any[],roles:string[]){
    else{const sold=Math.min(qty,h.q1);h.c1=h.q1>0?h.c1*(h.q1-sold)/h.q1:0;h.q1-=sold}
   }
  }
+ // Drop waiting fills whose entire future-trade observation window has
+ // elapsed. This bounds memory and preserves a missing-reference denominator.
+ const lastAt=Math.max(...raw.map(r=>num(r.timestamp)).filter(Number.isFinite));
+ for(const [token,list] of Object.entries(state.pending)){
+  const keep:Waiting[]=[];
+  for(const w of list){
+   for(let k=0;k<HORIZONS.length;k++){
+    if(w.done&(1<<k))continue;
+    if(lastAt>w.t+HORIZONS[k]+GRACE[k]){
+     w.done|=1<<k;
+     const coverage=state.totals.coverage||(state.totals.coverage={});
+     group(coverage,String(HORIZONS[k]),w.role+"_no_future_reference");
+    }
+   }
+   if(w.done!==(1<<HORIZONS.length)-1)keep.push(w);
+  }
+  if(keep.length)state.pending[token]=keep;else delete state.pending[token];
+ }
  bump(state.totals,"invalid",invalid);
  return {maker,taker,unknown,valid,invalid};
 }
@@ -212,5 +230,11 @@ Deno.serve(async req=>{
  if(!await authorized(req))return json({error:"unauthorized"},403);
  let data:any={};try{data=await req.json()}catch(_){}
  if(data.action!=="rn1_replay_tick")return json({error:"invalid_action"},400);
- return json(await tick());
+ const pages=Math.max(1,Math.min(4,Number.isInteger(data.pages)?data.pages:4));
+ const results:any[]=[];
+ for(let i=0;i<pages;i++){
+  const result=await tick();results.push(result);
+  if(result.status!=="running")break;
+ }
+ return json({status:results.at(-1)?.status||"idle",pages_completed:results.filter(x=>x.page_processed).length,results});
 });
