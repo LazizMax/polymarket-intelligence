@@ -400,7 +400,7 @@ async function renderRN1Activity(target){
 
 async function renderRN1(){
  const target=$("content");
- target.replaceChildren(heading("RN1 · Reverse Engineering",
+ target.replaceChildren(heading("RN1 · Algorithme et rentabilité",
   "Comprendre son algorithme à partir de tout l'historique public, sans te faire explorer les transactions une par une."));
  const intro=node("section",null,"card");
  intro.append(node("h2","Objectif : retrouver les règles de trading de RN1"));
@@ -413,6 +413,45 @@ async function renderRN1(){
   const c=node("section",null,"card");c.append(node("p","Collecte RN1 indisponible : "+String(e?.message||e),"red"));target.append(c);
   return;
  }
+
+ const econ=data.economics||{},proof=econ.summary||{},oracle=econ.official||{};
+ if(Number(proof.reconciled_markets||0)>0){
+  const c=node("section",null,"card");
+  const head=node("div",null,"cardhead");
+  head.append(node("h2","Ce qui semble vraiment faire gagner RN1"));
+  head.append(node("span","Transactions et remboursements réconciliés","small"));
+  c.append(head);
+  c.append(node("p","Hypothèse principale : RN1 apporte de la liquidité avec des ordres d'achat passifs sur les deux issues, laisse les exécutions créer des paires à coût avantageux, puis encaisse surtout à la résolution. La prise de risque directionnelle compense une partie de ce gain.","foot"));
+  const usd=x=>(Number(x)<0?"−":"+")+"$"+fmt(Math.abs(Number(x||0)),0);
+  const cash=Number(proof.invested||0),pl=Number(proof.gross||0),
+   matched=Number(proof.paired_gross||0),direction=Number(proof.residual_gross||0),
+   paircost=Number(proof.paired_invested||0);
+  const boxes=node("div",null,"metrics");
+  boxes.append(
+   metric("Résultat BRUT sur marchés réconciliés",usd(pl)),
+   metric("ROI brut (avant frais)",cash>0?(pl>=0?"+":"")+fmt(100*pl/cash,2)+" %":"—"),
+   metric("Contribution des paires YES/NO",usd(matched)),
+   metric("Contribution directionnelle résiduelle",usd(direction))
+  );
+  c.append(boxes);
+  c.append(node("p","Sur "+fmt(proof.reconciled_markets||0)+" marchés où les deux issues ont été achetées et où les flux de remboursement correspondent aux shares acquises : "+
+   "$"+fmt(Number(proof.paired_invested||0),0)+" de capital apparié, pour "+
+   (paircost>0?(matched>=0?"+":"")+fmt(100*matched/paircost,2)+" %":"—")+
+   " de rendement mécanique brut sur les parts appariées. Ces chiffres sont une décomposition a posteriori, pas une promesse de prix exécutables à l'avenir.","foot"));
+  const weeks=Array.isArray(econ.weekly)?econ.weekly:[];
+  const positive=weeks.filter(w=>Number(w.gross)>0).length;
+  c.append(node("p","Contrôles : "+fmt(proof.reconciled_markets||0)+
+   " / "+fmt(proof.markets_with_redemption||0)+
+   " marchés remboursés réconciliés ; "+fmt(proof.independent_events||0)+
+   " événements distincts ; "+positive+"/"+weeks.length+
+   " semaines analysées à résultat brut positif (la dernière semaine est tronquée). "+
+   "Échantillon indépendant de "+fmt(oracle.sampled_markets||0)+
+   " marchés : "+fmt(oracle.matching_redeemed_within_cent||0)+
+   " remboursements concordent au centime près avec l'oracle.","foot"));
+  c.append(banner("Périmètre : marchés avec les DEUX issues achetées et remboursements vérifiés, du 21 septembre au 12 novembre 2026. Les marchés à une seule issue, positions non dénouées, frais, rebates et récompenses ne sont PAS inclus. Ce n'est pas le PnL net du wallet ni un arbitrage garanti."));
+  target.append(c);
+ }
+
  const status=node("section",null,"card"),head=node("div",null,"cardhead");
  head.append(node("h2","Collecte de toutes les données publiques"));
  head.append(node("span",data.status==="source_exhausted_verified"?"Historique accessible parcouru":"Historique en cours de collecte","small"));

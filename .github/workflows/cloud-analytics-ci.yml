@@ -99,14 +99,15 @@ jobs:
                                     "027_rn1_full_public_archive.sql",
                                     "029_rn1_archive_metrics_safety.sql",
                                     "030_rn1_maker_role_audit.sql",
-                                    "032_rn1_sequence_flow_fingerprint.sql"):
+                                    "032_rn1_sequence_flow_fingerprint.sql",
+                                    "034_rn1_price_edge_cohort.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 30, f"Expected RLS on all 30 tables, got {secured}"
+                  assert secured == 31, f"Expected RLS on all 31 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
@@ -163,6 +164,21 @@ jobs:
                   assert len(queries)==5, f"Expected 5 RN1 strategy SQL queries; found {len(queries)}"
                   for query in queries:
                       cur.execute(query.replace("$1","%s"),tuple(wallet for _ in range(query.count("$1"))))
+                      cur.fetchall()
+                  # Execute actual RN1 economic cashflow SQL against an isolated
+                  # Postgres fixture, including its official-resolution cross-check.
+                  attribution=source.split("async function rn1EconomicAttribution(){",1)[1].split(
+                      "async function rn1ReverseEngineering(){",1)[0]
+                  common=re.search(r"const base=`([\s\S]*?)`;",attribution)
+                  assert common, "Economic attribution base SQL missing"
+                  for regex,prepend in (
+                      (r"const summary=await db\.unsafe\(base\+`([\s\S]*?)`\);",True),
+                      (r"const weekly=await db\.unsafe\(base\+`([\s\S]*?)`\);",True),
+                      (r"const official=await db\.unsafe\(`([\s\S]*?)`\);",False)
+                  ):
+                      match=re.search(regex,attribution)
+                      assert match, "Economic SQL query absent"
+                      cur.execute((common.group(1) if prepend else "")+match.group(1))
                       cur.fetchall()
           con.close()
           PY
