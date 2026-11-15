@@ -170,6 +170,34 @@ function eventPairedDifferences(state:State){
  }
  return out;
 }
+// Compare Maker-vs-Taker only for sporting events containing BOTH observed
+// roles at the same forward horizon. One event = one difference; not a causal
+// role effect: order selection, execution times and prices are uncontrolled.
+function eventMakerTakerContrast(state:State){
+ const evidence:Record<string,{events:number,maker_fills:number,taker_fills:number,
+  mean_difference:number|null,se:number|null,ci_low:number|null,ci_high:number|null,
+  coverage_start_page:number|null}>={};
+ const evs=Object.values(state.event_data||{});
+ for(const h of HORIZONS){
+  const makerKey=String(h)+"|maker|all",takerKey=String(h)+"|taker|all";
+  const matched=evs.map(ev=>({maker:ev[makerKey],taker:ev[takerKey]}))
+   .filter((x):x is {maker:EventMoment,taker:EventMoment}=>
+    !!x.maker&&!!x.taker&&x.maker.x>0&&x.taker.x>0);
+  const n=matched.length;
+  const d=matched.map(x=>x.maker.y/x.maker.x-x.taker.y/x.taker.x);
+  const mu=n?d.reduce((a,b)=>a+b,0)/n:null;
+  const v=n>1&&mu!==null?d.reduce((a,x)=>a+(x-mu)**2,0)/(n-1):null;
+  const se=v!==null?Math.sqrt(v/n):null;
+  evidence[String(h)]={events:n,
+   maker_fills:matched.reduce((a,x)=>a+x.maker.n,0),
+   taker_fills:matched.reduce((a,x)=>a+x.taker.n,0),
+   mean_difference:mu,se,
+   ci_low:se!==null&&mu!==null?mu-1.96*se:null,
+   ci_high:se!==null&&mu!==null?mu+1.96*se:null,
+   coverage_start_page:state.event_start_page??null};
+ }
+ return evidence;
+}
 function process(state:State,rows:any[],roles:string[],hist:Map<string,{points:Moment[],status:string}>,selected:Set<string>,tokenIpw:number){
  const pageSummary:Summary=fresh().summary;
  const marketSet=new Set<string>(),events=new Set<string>();let minTs=Infinity,maxTs=0;
@@ -240,6 +268,7 @@ async function tick(){
   (state.summary as Summary & {event_cluster_evidence?:ReturnType<typeof eventEvidence>;
    event_paired_differences?:ReturnType<typeof eventPairedDifferences>}).event_cluster_evidence=eventEvidence(state);
   (state.summary as Summary & {event_paired_differences?:ReturnType<typeof eventPairedDifferences>}).event_paired_differences=eventPairedDifferences(state);
+  (state.summary as Summary & {event_maker_taker_contrast?:ReturnType<typeof eventMakerTakerContrast>}).event_maker_taker_contrast=eventMakerTakerContrast(state);
   const checkpoint="independent-prices-v1/state/page-"+String(pageNo).padStart(8,"0")+"-"+String(page.sha256).slice(0,16)+".json.gz";
   await writeStorage(checkpoint,JSON.stringify(state));
   const matched=Object.fromEntries(HORIZONS.map(h=>[String(h),Number(out.pageSummary.market_price[String(h)]?.["maker|all"]?.n||0)]));
