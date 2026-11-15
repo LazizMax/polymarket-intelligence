@@ -81,3 +81,23 @@ def test_within_event_paired_contrast_has_same_event_and_causal_caveats():
     assert "Comparaison à l'intérieur d'un même événement" in UI
     assert "Chaque événement compte une seule fois" in UI
     assert "n>=30" in UI
+
+def test_dedicated_dashboard_week_sensitivity_is_fully_reported():
+    dedicated=(ROOT/"supabase/functions/pi-dashboard-dedicated/index.ts").read_text(encoding="utf8")
+    assert "const independentLeaveOneWeekOut=await db.unsafe(" in dedicated
+    assert "independent_leave_one_week_out:independentLeaveOneWeekOut" in dedicated
+    assert "w.week<>excluded.week" in dedicated
+    assert "taker_adjusted_markout" in dedicated
+    assert "Robustesse : exclure une semaine à la fois" in UI
+    assert "Maker contre Taker : uniquement au sein du même événement" in UI
+
+def test_match_maker_taker_at_event_level_not_as_causal_profit():
+    dedicated=(ROOT/"supabase/functions/pi-dashboard-dedicated/index.ts").read_text(encoding="utf8")
+    assert "function eventMakerTakerContrast(state:State)" in SRC
+    assert 'String(h)+"|maker|all"' in SRC
+    assert 'String(h)+"|taker|all"' in SRC
+    assert "x.maker.y/x.maker.x-x.taker.y/x.taker.x" in SRC
+    assert "event_maker_taker_contrast=eventMakerTakerContrast(state)" in SRC
+    assert "summary->'event_maker_taker_contrast' as event_maker_taker_contrast" in dedicated
+    assert "Une différence de suivi de prix entre leurs groupes" in UI
+    assert "ni la rentabilité nette après frais ou rebates" in UI
