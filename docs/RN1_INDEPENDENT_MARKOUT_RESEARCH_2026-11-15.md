@@ -70,3 +70,34 @@ This is a **cluster-robust diagnostic only**. It does not establish a valid caus
 First verified operation: page 677 succeeded with 7 sporting-event clusters and 20 eligible Maker fills, estimated mean +$0.04016 per share and indicative interval +$0.00948 to +$0.07083. A few pages later, event count 25 / 89 fills, interval −$0.02536 to +$0.05234 **crossing zero**. This demonstrates how unstable very early event-cluster estimates are; it is **not** a stable or significant edge.
 
 For any final investment/copy decision, confirm multiple disjoint time periods, sufficient separate events and unaffected-outcome price references, known probability of order fill, fees and capital exposure. Neither statistical clustering nor correction for token sampling addresses those execution constraints.
+
+## Addendum: within-the-same-event Maker inventory comparison (v5/v6)
+
+New `eventPairedDifferences` compares purchases classified **underweight** (less accumulated YES/NO side) with purchases classified **overweight** (already dominant side) **inside the same sporting event**. Both groups must have an independently observed public price at the same requested post-fill horizon.
+
+Each eligible event receives exactly one value:
+
+```text
+D_event = [sum(token-IPW * shares * price_move) / sum(token-IPW * shares)]_underweight
+        - [sum(token-IPW * shares * price_move) / sum(token-IPW * shares)]_overweight
+```
+
+Across events, each sporting event has equal weight; an approximate 95% interval uses the sample standard deviation of event differences divided by `sqrt(number_of_events)`, and is only shown on the dashboard with at least 30 paired events. This is a *matched-event association*, NOT a randomized intervention or proof of a portfolio-management causal mechanism. Different buy times within the same event, unfilled passive orders, unavailable future prices and outcomes can still confound it.
+
+**Important source coverage:** event-level accumulation started with page 677 of the immutable cohort. A refresh operation reads the existing private gzip checkpoint and writes only the compact `event_paired_differences` summary field, **without replaying earlier pages or updating the cursor**. This method was verified successfully with the worker in `paused_quota` mode.
+
+At 107 independent-price sample pages / 33 paired events:
+
+| Horizon | Paired events | Underweight fills | Overweight fills | Difference (cents per share) | Approx. 95% interval (cents) |
+|---|---:|---:|---:|---:|---:|
+| 1m | 33 | 154 | 191 | −0.875 | [−2.363, +0.613] |
+| 5m | 33 | 154 | 191 | +0.771 | [−2.463, +4.004] |
+| 15m | 33 | 154 | 191 | +0.793 | [−4.076, +5.661] |
+| 30m | 33 | 153 | 179 | +1.240 | [−4.350, +6.829] |
+| 60m | 25 | 85 | 135 | +5.021 | [−6.092, +16.134] |
+
+Every interval **includes zero**, and the 60m interval is not actionable due to fewer than 30 paired events. There is no statistically demonstrated difference in independent public market price moves between the underweight and overweight Maker cohorts in this early matched-event analysis.
+
+### Operational incident at 107 pages
+
+The shared database passed **298 MB**; both `rn1_full_chronology_v1` and `rn1_independent_price_v1` workers correctly transitioned to `paused_quota` at 211,000 chronological fills and 107,000 scanned independent-price fills respectively. Three further safe concurrent index rebuilds reduced the footprint to approximately **295.7 MB**, but not to a sustainable headroom for both workers. **Do not simply raise caps or indefinitely reindex hot tables.** Private archive ingestion and the CLOB quote collector were still independently active at the last confirmed check. A durable capacity change, likely isolating Polymarket analytical storage from the shared project, is still required; existing data and checkpoints are preserved.
