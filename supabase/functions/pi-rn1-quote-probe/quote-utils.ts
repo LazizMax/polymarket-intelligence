@@ -103,3 +103,57 @@ export function signature(f:any):string{
   num(f?.timestamp),str(f?.condition_id).toLowerCase()
  ]);
 }
+
+/** Public OPEN position observed for both tokens in each explicitly filtered market.
+ * NEVER infer a position at a time before the network response was received.
+ */
+export type CurrentHolding={
+ market_key:string,token_id:string,outcome_index:0|1,
+ current_size:number,avg_price:number|null,entry_cost_usdc:number|null,
+ last_event_at:number|null,returned_by_api:boolean
+};
+export function normalizeCurrentHoldings(
+ response:any,targets:Target[],wallet:string
+):CurrentHolding[]{
+ if(!response||!Array.isArray(response.data)||!response.pagination||
+  response.pagination.has_more!==false||response.data.length>1000)
+  throw Error("Filtered position source not completely exhausted");
+ const mapped=new Map<string,{target:Target,index:0|1}>();
+ for(const t of targets){mapped.set(t.assets[0],{target:t,index:0});mapped.set(t.assets[1],{target:t,index:1});}
+ const found=new Map<string,CurrentHolding>();
+ for(const row of response.data){
+  if(str(row.proxy_wallet).toLowerCase()!==wallet)throw Error("Unexpected wallet in position response");
+  const id=str(row.token_id),mappedToken=mapped.get(id);
+  if(!mappedToken||str(row.condition_id).toLowerCase()!==mappedToken.target.market_key)
+   throw Error("Filtered position response included an unrelated token");
+  if(found.has(id))throw Error("Position token occurred twice in response");
+  const size=num(row.current_size),price=num(row.avg_price),cost=num(row.entry_cost_usdc);
+  if(!Number.isFinite(size)||size<0)throw Error("Public position has invalid current size");
+  if(Number.isFinite(price)&&(price<0||price>1))throw Error("Public position average price out of range");
+  const sec=num(row.last_event_at);
+  found.set(id,{market_key:mappedToken.target.market_key,token_id:id,
+   outcome_index:mappedToken.index,current_size:size,
+   avg_price:Number.isFinite(price)?price:null,
+   entry_cost_usdc:Number.isFinite(cost)&&cost>=0?cost:null,
+   last_event_at:Number.isSafeInteger(sec)?sec:null,returned_by_api:true});
+ }
+ const result:CurrentHolding[]=[];
+ for(const t of targets)for(let i=0;i<2;i++){
+  const id=t.assets[i];
+  result.push(found.get(id)||{market_key:t.market_key,token_id:id,
+   outcome_index:i as 0|1,current_size:0,avg_price:null,entry_cost_usdc:null,
+   last_event_at:null,returned_by_api:false});
+ }
+ return result;
+}
+export function signedInventoryImbalance(
+ holding:CurrentHolding[],market:string,side:0|1
+):{signed_skew:number,absolute_skew:number,size0:number,size1:number}|null{
+ const zero=holding.find(h=>h.market_key===market&&h.outcome_index===0);
+ const one=holding.find(h=>h.market_key===market&&h.outcome_index===1);
+ if(!zero||!one)return null;
+ const a=zero.current_size,b=one.current_size;
+ const total=a+b;
+ const signed=total>0?(a-b)/total:0;
+ return {signed_skew:side===0?signed:-signed,absolute_skew:Math.abs(signed),size0:a,size1:b};
+}
