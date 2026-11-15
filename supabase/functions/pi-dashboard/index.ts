@@ -949,6 +949,28 @@ async function rn1ReverseEngineering(){
  from pi.rn1_independent_price_pages p
  `);
 
+ const independentWeekly=await db.unsafe(`
+ select date_trunc('week',min_trade_at)::date::text as week,
+ count(*)::int pages,
+ sum(sampled_buy_fills)::int sampled_buy_fills,
+ sum((summary->'market_price'->'900'->'maker|all'->>'n')::numeric)::int
+  maker_reference_fills,
+ (sum((summary->'market_price'->'900'->'maker|all'->>'weighted')::numeric)
+  /nullif(sum((summary->'market_price'->'900'->'maker|all'->>'shares')::numeric),0))::float8
+  maker_weighted_markout,
+ sum((summary->'market_price'->'900'->'maker|underweight'->>'n')::numeric)::int
+  maker_underweight_fills,
+ (sum((summary->'market_price'->'900'->'maker|underweight'->>'weighted')::numeric)
+  /nullif(sum((summary->'market_price'->'900'->'maker|underweight'->>'shares')::numeric),0))::float8
+  maker_underweight_markout,
+ sum((summary->'market_price'->'900'->'maker|overweight'->>'n')::numeric)::int
+  maker_overweight_fills,
+ (sum((summary->'market_price'->'900'->'maker|overweight'->>'weighted')::numeric)
+  /nullif(sum((summary->'market_price'->'900'->'maker|overweight'->>'shares')::numeric),0))::float8
+  maker_overweight_markout
+ from pi.rn1_independent_price_pages group by 1 order by 1
+ `);
+
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
@@ -956,7 +978,7 @@ async function rn1ReverseEngineering(){
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
