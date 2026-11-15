@@ -361,6 +361,111 @@ const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 
 
 
+
+async function rn1EconomicAttribution(){
+ // Reconcile ONLY binary-like two-sided markets with on-chain-account settlement
+ // flows whose reported USDC matches EITHER observed winning-side share count.
+ // This is conditional gross trading cashflow, NOT total wallet PnL or net fees.
+ const base=`
+ with account as(
+  select market_key,
+   sum(reported_usdc_size) filter(where kind='REDEEM') redeemed,
+   sum(reported_usdc_size) filter(where kind='MERGE') merged
+  from pi.rn1_full_activity_metrics where kind in('REDEEM','MERGE')
+  group by market_key
+ ), eligible as(
+  select b.market_key,b.event_slug,b.max_trade_at,
+   b.buy0_shares,b.buy1_shares,b.buy0_cost,b.buy1_cost,
+   coalesce(a.redeemed,0) redeemed,coalesce(a.merged,0) merged,
+   coalesce(a.redeemed,0)+coalesce(a.merged,0) returned,
+   least(abs(coalesce(a.redeemed,0)+coalesce(a.merged,0)-b.buy0_shares),
+    abs(coalesce(a.redeemed,0)+coalesce(a.merged,0)-b.buy1_shares)) payout_mismatch
+  from pi.rn1_full_market_metrics b left join account a using(market_key)
+  where b.wallet='0x2005d16a84ceefa912d4e380cd32e7ff827875ea'
+   and b.min_trade_at>='2026-09-21T00:00:00+00'
+   and b.max_trade_at<'2026-11-12T00:00:00+00'
+   and b.buy0_shares>0 and b.buy1_shares>0
+ ), checked as(
+  select *,
+   redeemed>0 and payout_mismatch<=1 as reconciled,
+   buy0_cost+buy1_cost as invested,
+   returned-buy0_cost-buy1_cost as gross,
+   least(buy0_shares,buy1_shares) as paired_shares,
+   least(buy0_shares,buy1_shares)*(buy0_cost/buy0_shares+buy1_cost/buy1_shares)
+    as paired_invested,
+   least(buy0_shares,buy1_shares)*(1-buy0_cost/buy0_shares-buy1_cost/buy1_shares)
+    as paired_gross
+  from eligible
+ )
+ `;
+ const summary=await db.unsafe(base+`
+ select count(*)::int eligible_markets,
+  count(*) filter(where redeemed>0)::int markets_with_redemption,
+  count(*) filter(where reconciled)::int reconciled_markets,
+  count(*) filter(where redeemed>0 and not reconciled)::int mismatched_markets,
+  count(*) filter(where redeemed=0)::int no_redemption_yet,
+  count(distinct event_slug) filter(where reconciled)::int independent_events,
+  coalesce(sum(invested) filter(where reconciled),0)::float8 invested,
+  coalesce(sum(returned) filter(where reconciled),0)::float8 returned,
+  coalesce(sum(gross) filter(where reconciled),0)::float8 gross,
+  coalesce(sum(paired_gross) filter(where reconciled),0)::float8 paired_gross,
+  coalesce(sum(gross-paired_gross) filter(where reconciled),0)::float8 residual_gross,
+  coalesce(sum(paired_shares) filter(where reconciled),0)::float8 paired_shares,
+  coalesce(sum(paired_invested) filter(where reconciled),0)::float8 paired_invested,
+  coalesce(sum(invested-paired_invested) filter(where reconciled),0)::float8 residual_invested,
+  count(*) filter(where reconciled and paired_gross>0)::int positive_pair_markets,
+  count(*) filter(where reconciled and gross>0)::int profitable_markets,
+  count(*) filter(where reconciled and merged>0)::int merger_markets
+ from checked`);
+ const weekly=await db.unsafe(base+`
+ select date_trunc('week',max_trade_at)::date::text week,
+  count(*)::int markets,
+  sum(invested)::float8 invested,
+  sum(gross)::float8 gross,
+  sum(paired_gross)::float8 paired_gross,
+  sum(gross-paired_gross)::float8 residual_gross
+ from checked where reconciled
+ group by 1 order by 1`);
+ const official=await db.unsafe(`
+ with official as(
+  select c.market_key,
+   (r.payouts->>0)::numeric/1000000 p0,
+   (r.payouts->>1)::numeric/1000000 p1,
+   c.frozen_buy0_shares q0,c.frozen_buy1_shares q1
+  from pi.rn1_price_edge_cohort c join pi.rn1_resolution_evidence r using(market_key)
+  where r.status='resolved' and jsonb_typeof(r.payouts)='array'
+    and jsonb_array_length(r.payouts)=2
+    and (r.payouts->>0)::numeric+(r.payouts->>1)::numeric=1000000
+ ), settled as(
+  select o.*,coalesce(sum(a.reported_usdc_size)
+   filter(where a.kind in('REDEEM','MERGE')),0) as cash_return
+  from official o left join pi.rn1_full_activity_metrics a
+   on a.market_key=o.market_key
+  group by o.market_key,o.p0,o.p1,o.q0,o.q1
+ )
+ select (select count(*)::int from pi.rn1_price_edge_cohort) sampled_markets,
+  count(*)::int officially_binary_resolved,
+  count(*) filter(where abs(cash_return-(q0*p0+q1*p1))<=0.01)::int
+   matching_redeemed_within_cent,
+  count(*) filter(where abs(cash_return-(q0*p0+q1*p1))<=1)::int
+   matching_redeemed_within_dollar
+ from settled`);
+ const total=summary[0]||{},weeks=weekly||[];
+ return {
+  scope:"conditional_reconciled_two_sided_gross_before_fees",
+  fixed_first_trade_cutoff:"2026-09-21T00:00:00Z",
+  fixed_last_trade_cutoff:"2026-11-12T00:00:00Z",
+  summary:total,weekly:weeks,official:official[0]||{},
+  caveats:[
+   "Only 2-sided markets with REDEEM and a payout matching one observed outcome's share count within 1 USD are counted. Single-sided markets, unresolved positions and nonreconciled markets are excluded.",
+   "Gross economic result excludes exchange fees, rebates, rewards, transfers and any buy/sell flow not present in the public sources.",
+   "Paired contribution is an ex post VWAP-based algebraic decomposition. It does not establish that RN1 placed executable complementary orders simultaneously.",
+   "No historical unexecuted limit-order book is available, so precise quote-setting thresholds and adverse-selection losses cannot be independently identified.",
+   "Weekly results are grouped by latest observed trade and the week of November 9 is truncated by the fixed November 12 cutoff."
+  ]
+ };
+}
+
 async function rn1ReverseEngineering(){
  // Full public-source collection is distinct from the old 4k taker-only pilot.
  // All percentages below describe observed fills, not trader's alpha or true current inventory.
@@ -460,10 +565,11 @@ async function rn1ReverseEngineering(){
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
+ const economics=await rn1EconomicAttribution();
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,role_audit:role[0]||{},sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
