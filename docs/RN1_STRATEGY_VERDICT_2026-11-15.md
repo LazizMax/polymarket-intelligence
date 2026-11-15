@@ -144,4 +144,14 @@ Une validation prospective doit mesurer les ordres **passés avant le fill** et 
 - Rôles Maker/Taker et prix indépendants : `pi.rn1_replay_jobs`, `pi.rn1_independent_price_jobs`, archives privées immuables.
 - Carnets : `pi.rn1_quote_probe_runs` et `pi.rn1_quote_probe_fills`.
 - UI : `web/index.html` dans https://lazizmax.github.io/polymarket-intelligence/.
-- Le contrôle ultime des **756 000 fills** reste à terminer si les compteurs `pages_done` sont inférieurs à 756. Le verdict de rentabilité historique sur la fenêtre est déjà soutenu par l'historique natif de PnL et les remboursements réconciliés ; les règles exactes de quotation/replication restent inconnues même si le replay de 756 pages s'achève.
+- Le **contrôle chronologique complet des 756 000 fills est terminé et validé**. Le verdict de rentabilité historique sur la fenêtre est déjà soutenu par l'historique natif de PnL et les remboursements réconciliés ; les règles exactes de quotation/replication restent inconnues même si le replay de 756 pages s'achève.
+
+## Mise à jour : audit intégral de la relecture chronologique du 15 novembre
+
+La relecture privée du lot gelé est **terminée, 756 pages sur 756, 756 000 fills**. Le job est `complete`, `next_page=0`, aucune erreur. **674 459 Maker (89,21 %)**, **81 541 Taker (10,79 %)**, **zéro rôle inconnu**. Les **756 pages** correspondent toutes exactement aux empreintes SHA256, nombres de fills et rôles vérifiés de l'archive source ; le checkpoint gzip final existe dans le bucket privé. Période des transactions de ce lot : **27 août – 15 novembre 2026**.
+
+Sur ce replay terminé, **39,65 %** des achats Maker avec déséquilibre mesurable réduisent l'écart YES/NO et **60,35 % l'augmentent**. Le proxy de paires nouvellement complétées attribué aux achats Maker est **+1 482 783,65 USDC** sur **101 526 796,31 unités appariées** (**1,4605 centime par paire**). Le proxy côté Taker est **+32 072,57 USDC**. **Ne pas additionner** ces données avec les résultats de règlement (+1 326 424,98 USDC de composante des paires) : périmètres et algorithmes comptables distincts, et le proxy n'est pas un encaissement.
+
+Sur la population SQL actuellement matérialisée de **828 000 fills RN1**, **828 000 sont des achats (BUY) et aucun n'est une vente (SELL)**. Les flux d'activité contiennent de nombreux REDEEM et quelques MERGE. Le comportement observé correspond davantage à l'accumulation/au règlement des tokens qu'à un bot qui revend systématiquement dans le carnet après chaque swing. Les opérations on-chain hors source et les ordres non exécutés ne sont toujours pas couverts.
+
+Le sous-replay de prix publics indépendants est une expérience distincte sur 756 pages : son état complet n'est établi que lorsque la table `pi.rn1_independent_price_jobs` affiche 756 pages et le statut `complete`. Son inachèvement éventuel n'invalide pas les contrôles de cashflow du wallet ni le replay chronologique déjà terminé.
