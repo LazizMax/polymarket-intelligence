@@ -50,3 +50,10 @@ def test_dashboard_publication_does_not_call_proxy_true_alpha():
     assert "Relecture Maker/Taker des archives RN1" in UI
     assert "DU MÊME WALLET" in UI
     assert "ni sélection " in UI or "ni bénéfice réalisé" in UI
+
+def test_position_stratification_is_visible_with_denominators():
+    assert "Comparaison Maker : côté moins accumulé ou déjà dominant" in UI
+    assert 'row["maker|"+position]' in UI
+    assert "maker>0?fmt(100*reference15/maker,1)" in UI
+    assert "ne participent pas au prix moyen" in UI
+    assert "pas de performance d'ordres théoriques" in UI
