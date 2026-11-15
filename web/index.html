@@ -805,6 +805,33 @@ async function renderRN1(){
     "Même un intervalle positif n'établirait pas une rentabilité après frais "+
     "ni une possibilité réelle de reproduire les fills Maker.","foot"));
   }
+  const pairedEvents=ip.event_paired_differences||{};
+  const paired15=pairedEvents["900"]||{};
+  if(Number(paired15.events||0)>0){
+   const n=Number(paired15.events),difference=Number(paired15.mean_difference),
+    lo=Number(paired15.ci_low),hi=Number(paired15.ci_high);
+   c.append(node("h3","Comparaison à l'intérieur d'un même événement"));
+   c.append(node("p","À 15 minutes, "+fmt(n)+" événements comportent au moins "+
+    "un achat Maker sur le côté moins accumulé ET un autre sur le côté dominant "+
+    "avec prix futur observable. Moyenne des différences au sein du même événement "+
+    "(moins accumulé − dominant) : "+fmt(100*difference,3)+" centimes/part. "+
+    "Chaque événement compte une seule fois, quel que soit son nombre d'achats.","foot"));
+   const intervalValid=n>=30&&Number.isFinite(lo)&&Number.isFinite(hi)&&
+    paired15.ci_low!==null&&paired15.ci_high!==null;
+   c.append(node("p",intervalValid?
+    "Intervalle statistique approximatif (95 %) de la différence : "+
+    fmt(100*lo,3)+" à "+fmt(100*hi,3)+" centimes/part. "+
+    (lo>0?"Le groupe moins accumulé a un écart supérieur dans ce sous-échantillon.":
+     hi<0?"Le groupe dominant a un écart supérieur dans ce sous-échantillon.":
+     "L'intervalle inclut zéro : aucune différence fiable démontrée.") :
+    "Moins de 30 événements appariés : comparaison encore exploratoire, "+
+    "sans intervalle interprétable.","foot"));
+   c.append(node("p","Cette comparaison tient mieux compte des conditions propres "+
+    "à chaque match, mais ne corrige pas la chronologie des achats, la sélection "+
+    "des seuls ordres exécutés ni la disponibilité des prix futurs. "+
+    "Le portefeuille reste un inventaire reconstruit à partir des transactions, "+
+    "pas le solde vérifié du wallet.","foot"));
+  }
   const count15=Number(forwardPrices["900"]?.["maker|all"]?.n||0);
   c.append(node("p","Couverture Maker à 15 minutes : "+(makerBuys?fmt(100*count15/makerBuys,1)+" %":"non disponible")+
    " des achats Maker échantillonnés. Les tokens sont sélectionnés de manière "+
