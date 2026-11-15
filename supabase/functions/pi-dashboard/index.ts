@@ -356,6 +356,76 @@ async function temporalResearch(body:any){
   disclaimer:"Contrefactuel taker sur instantanés échantillonnés; aucune exécution confirmée, aucun gain réel, aucune capture maker validée. Les book snapshots séparés de 10 min ne prouvent pas les prix accessibles."};
 }
 
+
+const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+async function rn1Research(){
+ const stat=await db.unsafe(`
+  select wallet,status,pages_fetched,rows_seen,rows_stored,missing_required,sample_limit,
+  last_success_at::text,last_error,updated_at::text
+  from pi.rn1_trade_import_state where wallet=$1`,[RN1]);
+ const summary=await db.unsafe(`
+  select count(*)::int as trades,count(*) filter(where side='BUY')::int buys,
+  count(*) filter(where side='SELL')::int sells,
+  count(distinct market_key)::int markets,
+  count(distinct tx_hash)::int transaction_hashes,
+  sum(observed_notional_usdc)::double precision as traded_notional_usdc,
+  min(reported_at)::text as first_trade_at,max(reported_at)::text as last_trade_at
+  from pi.trades where wallet=$1`,[RN1]);
+ const two=await db.unsafe(`
+ with market_buys as(
+  select market_key,
+  sum(shares) filter(where side='BUY' and outcome_index=0) qty0,
+  sum(shares) filter(where side='BUY' and outcome_index=1) qty1,
+  sum(price*shares) filter(where side='BUY' and outcome_index=0) cost0,
+  sum(price*shares) filter(where side='BUY' and outcome_index=1) cost1,
+  count(*) filter(where side='BUY') buys,
+  count(*) filter(where side='SELL') sells,
+  min(reported_at) filter(where side='BUY' and outcome_index=0) first0,
+  min(reported_at) filter(where side='BUY' and outcome_index=1) first1
+  from pi.trades where wallet=$1
+  group by market_key
+ )
+ select count(*) filter(where qty0>0 and qty1>0)::int as both_issues_observed,
+ count(*) filter(where qty0>0 or qty1>0)::int as at_least_one,
+ percentile_cont(.5) within group(order by abs(extract(epoch from(first1-first0)))/60)
+  filter(where qty0>0 and qty1>0) as median_first_buy_lag_minutes
+ from market_buys`,[RN1]);
+ const markets=await db.unsafe(`
+ with groups as(
+  select market_key,
+   (array_agg(nullif(market_title,'') order by reported_at desc))[1] market_title,
+   (array_agg(nullif(event_slug,'') order by reported_at desc))[1] event_slug,
+   count(*)::int fills,
+   count(*) filter(where side='BUY')::int buys,
+   count(*) filter(where side='SELL')::int sells,
+   sum(shares) filter(where side='BUY' and outcome_index=0)::float8 qty0,
+   sum(shares) filter(where side='BUY' and outcome_index=1)::float8 qty1,
+   (sum(price*shares) filter(where side='BUY' and outcome_index=0)/
+      nullif(sum(shares) filter(where side='BUY' and outcome_index=0),0))::float8 as vwap0,
+   (sum(price*shares) filter(where side='BUY' and outcome_index=1)/
+      nullif(sum(shares) filter(where side='BUY' and outcome_index=1),0))::float8 as vwap1,
+   min(reported_at) filter(where side='BUY' and outcome_index=0) as first0,
+   min(reported_at) filter(where side='BUY' and outcome_index=1) as first1
+  from pi.trades where wallet=$1 group by market_key
+ )
+ select market_key,market_title,event_slug,fills,buys,sells,qty0,qty1,vwap0,vwap1,
+  case when first0 is not null and first1 is not null then
+    abs(extract(epoch from(first1-first0)))/60 else null end::float8 as first_buy_lag_minutes,
+  (qty0>0 and qty1>0) as both_issues
+ from groups order by fills desc,market_key limit 30`,[RN1]);
+ const recent=await db.unsafe(`
+ select reported_at::text as at,market_title,event_slug,side,outcome_label,
+ outcome_index,price::float8,shares::float8,observed_notional_usdc::float8,tx_hash
+ from pi.trades where wallet=$1 order by reported_at desc,trade_key desc limit 25`,[RN1]);
+ return {wallet:RN1,import_state:stat[0]||null,summary:summary[0]||{},both_issues:two[0]||{},
+   markets,recent,scope:"Latest-first sample of observed public trades, not complete trading history.",
+   limitations:["Individual maker/taker role unavailable in the public V2 trade feed.",
+    "An on-chain transaction hash can contain multiple fills; page and row identity is preserved in private raw archives.",
+    "Opposing BUYs do not prove a locked hedge: positions may be sold, redeemed, merged, transferred, or partially filled.",
+    "No realized PnL, fees, incentives, trade profitability, or verified matched-pair economics are computed from these trades.",
+    "First-observed BUY lag is NOT the trader's true hedge latency if earlier trades are outside the sample."]};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -383,6 +453,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="arbitrage")return send(await arbitrage(body));
   if(body?.action==="arb_temporal")return send(await temporalResearch(body));
   if(body?.action==="arb_observatory")return send(await arbObservatory());
+  if(body?.action==="rn1_research")return send(await rn1Research());
   return send({error:"Action inconnue"},400);
  }catch(e){
   console.error("pi-dashboard",e instanceof Error?e.message.slice(0,160):"unknown");
