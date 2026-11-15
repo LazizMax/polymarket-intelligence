@@ -459,6 +459,56 @@ async function rn1QuoteForensics(){
  avg(abs(bid_offset_ticks-1))::float8 one_tick_above_mae_ticks
  from grouped group by period order by period`);
 
+ const markouts=await db.unsafe(`
+ -- Observational, fill-conditional mark-to-mid, NOT realized PnL.
+ -- Each post-trade book is recorded after the fill; books stale by their own
+ -- timestamps are rejected. Later horizons may include different fills.
+ with fills as(
+  select fingerprint,market_key,token_id,trade_at,fill_price,pre_mid,shares
+  from pi.rn1_quote_probe_fills
+  where role='maker_inferred' and side='BUY'
+ ), horizons as(
+  select 'short' horizon,30 lo,120 hi
+  union all select 'medium',180,420
+  union all select 'long',600,1200
+ ), matched as(
+  select f.*,h.horizon,r.received_at post_at,
+   (j->>'mid')::numeric post_mid,
+   row_number() over(
+    partition by f.fingerprint,h.horizon order by r.received_at
+   ) rn
+  from fills f cross join horizons h
+  join pi.rn1_quote_probe_runs r
+   on r.received_at between f.trade_at+h.lo*interval '1 second'
+    and f.trade_at+h.hi*interval '1 second'
+  cross join lateral jsonb_array_elements(r.quotes) j
+  where j->>'asset_id'=f.token_id and j->>'book_valid'='true'
+   and j->>'mid' is not null
+   and (j->>'book_at')::numeric>=extract(epoch from f.trade_at)*1000
+ ), first_post as(
+  select * from matched where rn=1
+ ), common as(
+  select fingerprint from first_post
+  group by fingerprint having count(distinct horizon)=3
+ )
+ select horizon,count(*)::int matched_fills,
+  count(distinct market_key)::int markets,
+  count(distinct trade_at::date)::int days,
+  count(*) filter(where post_mid<fill_price)::int negative_markouts,
+  avg(post_mid-fill_price)::float8 mean_markout_per_share,
+  (sum(shares*(post_mid-fill_price))/nullif(sum(shares),0))::float8
+   quantity_weighted_markout_per_share,
+  avg(post_mid-pre_mid)::float8 mean_mid_change,
+  count(*) filter(where fingerprint in(select fingerprint from common))::int
+   same_fills_all_horizons,
+  (sum(shares*(post_mid-fill_price)) filter(
+    where fingerprint in(select fingerprint from common)
+   )/nullif(sum(shares) filter(
+    where fingerprint in(select fingerprint from common)
+   ),0))::float8 same_fills_weighted_markout
+ from first_post group by horizon order by horizon
+ `);
+
  const inventoryCoverage=await db.unsafe(`
  select count(*)::int total_runs,
  count(*) filter(where position_status='complete'
@@ -500,6 +550,53 @@ async function rn1QuoteForensics(){
   (1-fill_price-other_avg)) filter(where other>own and other_avg is not null),0)::float8
   indicative_incremental_pair_margin
  from prior group by 1 order by 1`);
+ const inventoryTransitions=await db.unsafe(`
+ -- Snapshot-to-snapshot change is observational, not a causal effect of a
+ -- single fill: other trades, redeems or transfers may occur between captures.
+ with before as(
+  select f.fingerprint,f.market_key,f.token_id,f.trade_at,
+   p.current_size own,opp.current_size other,
+   abs(p.current_size-opp.current_size) imbalance_before
+  from pi.rn1_quote_probe_fills f
+  join pi.rn1_quote_probe_runs r on r.id=f.run_id
+  cross join lateral jsonb_to_recordset(r.positions)
+   as p(market_key text,token_id text,outcome_index int,current_size numeric)
+  join lateral jsonb_to_recordset(r.positions)
+   as opp(market_key text,token_id text,outcome_index int,current_size numeric)
+   on opp.market_key=p.market_key and opp.outcome_index<>p.outcome_index
+  where f.role='maker_inferred' and f.side='BUY'
+   and r.position_status='complete'
+   and r.position_observed_at<=r.requested_at
+   and p.market_key=f.market_key and p.token_id=f.token_id
+ ), later as(
+  select b.*,r.position_observed_at as later_observed_at,
+   p.current_size own_after,opp.current_size other_after,
+   row_number() over(partition by b.fingerprint
+    order by r.position_observed_at,r.id) rn
+  from before b
+  join pi.rn1_quote_probe_runs r on r.position_status='complete'
+   and r.position_observed_at>b.trade_at
+   and r.position_observed_at<=b.trade_at+interval '5 minutes'
+  cross join lateral jsonb_to_recordset(r.positions)
+   as p(market_key text,token_id text,outcome_index int,current_size numeric)
+  join lateral jsonb_to_recordset(r.positions)
+   as opp(market_key text,token_id text,outcome_index int,current_size numeric)
+   on opp.market_key=p.market_key and opp.outcome_index<>p.outcome_index
+  where p.market_key=b.market_key and p.token_id=b.token_id
+ )
+ select count(*)::int comparable_fills,
+  count(distinct market_key)::int markets,
+  count(distinct trade_at::date)::int days,
+  count(*) filter(where abs(own_after-other_after)<imbalance_before)::int
+   less_imbalanced,
+  count(*) filter(where abs(own_after-other_after)>imbalance_before)::int
+   more_imbalanced,
+  count(*) filter(where abs(own_after-other_after)=imbalance_before)::int
+   unchanged,
+  avg(abs(own_after-other_after)-imbalance_before)::float8
+   avg_imbalance_change_shares
+ from later where rn=1
+ `);
  const inventoryModels=await db.unsafe(`
  with pos as(
   select r.id run_id,p.market_key,p.token_id,p.outcome_index,
@@ -548,9 +645,19 @@ async function rn1QuoteForensics(){
     model_pair_ceiling_2pct,
    pre_ask
   from ranked
+ ), eligible as(
+  -- Every pricing rule must be evaluated on exactly the same executions.
+  -- A per-model validity filter would select easier fills for some rules.
+  select * from candidates
+  where least(model_best_bid,model_one_tick_below,model_two_ticks_below,
+    model_inventory_one_tick,model_inventory_two_ticks,
+    model_pair_ceiling_1pct,model_pair_ceiling_2pct)>=tick
+   and greatest(model_best_bid,model_one_tick_below,model_two_ticks_below,
+    model_inventory_one_tick,model_inventory_two_ticks,
+    model_pair_ceiling_1pct,model_pair_ceiling_2pct)<pre_ask
  ), expanded as(
   select period,market_key,event_slug,fill_price,tick,model_name,model_price
-  from candidates
+  from eligible
   cross join lateral (values
     ('best_bid',model_best_bid),
     ('one_tick_below',model_one_tick_below),
@@ -560,7 +667,6 @@ async function rn1QuoteForensics(){
     ('pair_ceiling_1pct',model_pair_ceiling_1pct),
     ('pair_ceiling_2pct',model_pair_ceiling_2pct)
   ) v(model_name,model_price)
-  where model_price>=tick and model_price<pre_ask
  )
  select period,model_name,count(*)::int fills,
   count(distinct market_key)::int markets,
@@ -569,8 +675,8 @@ async function rn1QuoteForensics(){
  from expanded group by period,model_name order by period,model_name`);
  const latest=current[0]||null;
  return {
-  state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,
-  inventory:{coverage:inventoryCoverage[0]||{},by_side:inventoryObserved,models:inventoryModels},
+  state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,markouts,
+  inventory:{coverage:inventoryCoverage[0]||{},by_side:inventoryObserved,models:inventoryModels,transitions:inventoryTransitions[0]||{}},
   latest:latest?{
    received_at:latest.received_at,market_count:latest.market_count,
    book_count:latest.book_count,rn1_market_count:latest.rn1_market_count,
@@ -648,6 +754,27 @@ async function rn1EconomicAttribution(){
   sum(gross-paired_gross)::float8 residual_gross
  from checked where reconciled
  group by 1 order by 1`);
+ const skewImpact=await db.unsafe(base+`
+ , skewed as(
+  select *,greatest(buy0_shares,buy1_shares)/
+   nullif(least(buy0_shares,buy1_shares),0) as ratio,
+   case when buy0_shares>0 and buy1_shares>0
+    then gross-paired_gross end as residual_gross
+  from checked where reconciled
+ ), bands as(
+  select case when ratio<1.1 then 'below_1_1'
+   when ratio<1.5 then 'between_1_1_and_1_5'
+   when ratio<2 then 'between_1_5_and_2'
+   else 'at_least_2' end as imbalance_band,*
+  from skewed
+ )
+ select imbalance_band,count(*)::int markets,
+ count(distinct event_slug)::int events,
+ sum(gross)::float8 gross,sum(paired_gross)::float8 paired_gross,
+ sum(residual_gross)::float8 residual_gross,
+ count(*) filter(where gross>0)::int gross_positive_markets
+ from bands group by 1 order by 1
+ `);
  const official=await db.unsafe(`
  with official as(
   select c.market_key,
@@ -677,7 +804,7 @@ async function rn1EconomicAttribution(){
   scope:"conditional_reconciled_two_sided_gross_before_fees",
   fixed_first_trade_cutoff:"2026-09-21T00:00:00Z",
   fixed_last_trade_cutoff:"2026-11-12T00:00:00Z",
-  summary:total,weekly:weeks,official:official[0]||{},
+  summary:total,weekly:weeks,by_skew:skewImpact,official:official[0]||{},
   caveats:[
    "Only 2-sided markets with REDEEM and a payout matching one observed outcome's share count within 1 USD are counted. Single-sided markets, unresolved positions and nonreconciled markets are excluded.",
    "Gross economic result excludes exchange fees, rebates, rewards, transfers and any buy/sell flow not present in the public sources.",
@@ -784,6 +911,19 @@ async function rn1ReverseEngineering(){
  from bins group by rollup(sample_half),skew_bin
  order by sample_half,skew_bin`);
 
+ const fullReplay=await db.unsafe(`
+ select status,frozen_last_page::float8 as frozen_last_page,
+ pages_done::float8 as pages_done,fills_done::float8 as fills_done,
+ maker_fills::float8 as maker_fills,taker_fills::float8 as taker_fills,
+ unknown_fills::float8 as unknown_fills,
+ summary->'inventory'->'maker' as maker_inventory,
+ summary->'pair'->'maker' as maker_pair,
+ summary->'forward' as maker_forward_proxy,
+ summary->'coverage' as proxy_missing_coverage,
+ last_success_at::text as last_success_at,last_error
+ from pi.rn1_replay_jobs where job_key='rn1_full_chronology_v1'
+ `);
+
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
@@ -791,7 +931,7 @@ async function rn1ReverseEngineering(){
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
