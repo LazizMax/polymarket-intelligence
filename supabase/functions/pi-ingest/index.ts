@@ -1,6 +1,7 @@
 // Bounded Polymarket ingestion. Admin API needs service role; scheduled route requires a private Vault-backed token.
 // Backend writes private pi schema, with no credentials exposed in the browser.
 import postgres from "npm:postgres@3.4.3";
+import { closedRoi } from "./roi-math.ts";
 
 const connectionString = Deno.env.get("SUPABASE_DB_URL");
 if (!connectionString) throw new Error("SUPABASE_DB_URL is not configured");
@@ -175,6 +176,78 @@ async function scheduled(limit: number) {
   }
   return {attempted:report.length,ok:report.filter((r)=>r.status==="done").length,errors:report.filter((r)=>r.status==="failed").length,report};
 }
+// Each page contains positions, NOT individual order fills. No ROI for still-held shares.
+async function refreshClosedPositions(wallet:string,maxPages=1){
+ if(!ADDRESS.test(wallet))throw new Error("Invalid wallet");
+ await db.unsafe("insert into pi.roi_import_state(wallet,request_priority) values ($1,true) on conflict(wallet) do nothing",[wallet]);
+ let pages=0,rows=0,done=false;
+ for(let n=0;n<maxPages;n++){
+  const states=await db.unsafe("select generation,next_cursor,exhausted from pi.roi_import_state where wallet=$1",[wallet]);
+  if(!states.length||states[0].exhausted){done=true;break;}
+  const generation=Number(states[0].generation),oldCursor=states[0].next_cursor as string|null;
+  const args:Record<string,string>={user:wallet,status:"CLOSED",sort_by:"TIMESTAMP",sort_direction:"DESC",limit:"200"};
+  if(oldCursor)args.cursor=oldCursor;
+  const response=await get("/v2/positions",args);
+  if(!Array.isArray(response?.data)||typeof response?.pagination!=="object")throw new Error("Invalid closed-positions API envelope");
+  const hasMore=response.pagination.has_more===true;
+  const next=typeof response.pagination.next_cursor==="string"&&response.pagination.next_cursor.length>0 ? response.pagination.next_cursor:null;
+  if(hasMore&&!next)throw new Error("Missing next_cursor: cannot mark complete");
+  if(hasMore&&next===oldCursor)throw new Error("Cursor did not advance");
+  const nowRows:any[]=[];
+  for(const raw of response.data){
+   const token=String(raw.token_id??"");
+   if(String(raw.proxy_wallet??"").toLowerCase()!==wallet||!(/^[0-9]+$/).test(token))throw new Error("Invalid closed-position identity");
+   const x=closedRoi(raw);
+   const numeric=(value:unknown)=>number(value);
+   const epoch=(value:unknown)=>{
+     const ts=numeric(value);return ts!==null&&ts>=946684800&&ts<4102444800?new Date(ts*1000).toISOString():null;
+   };
+   nowRows.push({
+    token_id:token,condition_id:String(raw.condition_id??"").slice(0,100),
+    title:String(raw.title??"").slice(0,500),
+    outcome:String(raw.outcome??"").slice(0,80),
+    market_slug:String(raw.slug??"").slice(0,240),
+    first_entry_at:epoch(raw.first_entry_at),last_event_at:epoch(raw.last_event_at),
+    lifetime_shares:numeric(raw.total_size),avg_entry_price:numeric(raw.avg_price),
+    estimated_entry_cost_usdc:x.cost,realized_pnl_usdc:x.pnl,
+    estimated_roi_pct:x.roi,valid_cost:x.valid,quality_reason:x.reason,
+    source_percent_realized_pnl:numeric(raw.percent_realized_pnl)
+   });
+  }
+  await db.begin(async(tx)=>{
+   if(nowRows.length)await tx.unsafe(
+    "insert into pi.closed_position_roi(wallet,token_id,generation,condition_id,title,outcome,market_slug,first_entry_at,last_event_at,lifetime_shares,avg_entry_price,estimated_entry_cost_usdc,realized_pnl_usdc,estimated_roi_pct,valid_cost,quality_reason,source_percent_realized_pnl,collected_at) select $1,x.token_id,$3,x.condition_id,x.title,x.outcome,x.market_slug,x.first_entry_at,x.last_event_at,x.lifetime_shares,x.avg_entry_price,x.estimated_entry_cost_usdc,x.realized_pnl_usdc,x.estimated_roi_pct,x.valid_cost,x.quality_reason,x.source_percent_realized_pnl,now() from jsonb_to_recordset(($2::text)::jsonb) as x(token_id text,condition_id text,title text,outcome text,market_slug text,first_entry_at timestamptz,last_event_at timestamptz,lifetime_shares numeric,avg_entry_price numeric,estimated_entry_cost_usdc numeric,realized_pnl_usdc numeric,estimated_roi_pct numeric,valid_cost boolean,quality_reason text,source_percent_realized_pnl numeric) on conflict(wallet,token_id) do update set generation=excluded.generation,condition_id=excluded.condition_id,title=excluded.title,outcome=excluded.outcome,market_slug=excluded.market_slug,first_entry_at=excluded.first_entry_at,last_event_at=excluded.last_event_at,lifetime_shares=excluded.lifetime_shares,avg_entry_price=excluded.avg_entry_price,estimated_entry_cost_usdc=excluded.estimated_entry_cost_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,estimated_roi_pct=excluded.estimated_roi_pct,valid_cost=excluded.valid_cost,quality_reason=excluded.quality_reason,source_percent_realized_pnl=excluded.source_percent_realized_pnl,collected_at=now()",
+    [wallet,JSON.stringify(nowRows),generation]);
+   const advance=await tx.unsafe(
+    "update pi.roi_import_state set next_cursor=$3,exhausted=$4,request_priority=case when $4 then false else request_priority end,pages_fetched=pages_fetched+1,rows_seen=rows_seen+$5,last_attempt_at=now(),last_success_at=now(),last_error=null,last_complete_at=case when $4 then now() else last_complete_at end,updated_at=now() where wallet=$1 and generation=$2 and next_cursor is not distinct from $6 returning wallet",
+    [wallet,generation,next,!hasMore,nowRows.length,oldCursor]);
+   if(!advance.length)throw new Error("Concurrent snapshot scan detected");
+   if(!hasMore)await tx.unsafe("delete from pi.closed_position_roi where wallet=$1 and generation<>$2",[wallet,generation]);
+  });
+  pages++;rows+=nowRows.length;done=!hasMore;
+  if(done)break;
+ }
+ return {wallet,pages,rows,complete:done};
+}
+async function syncQueuedRoi(){
+ const next=await db.unsafe(
+  "select wallet from pi.roi_import_state where exhausted=false and (last_attempt_at is null or last_attempt_at<now()-interval '90 seconds') order by request_priority desc,last_attempt_at asc nulls first limit 1"
+ );
+ if(!next.length)return {status:"idle"};
+ const wallet=String(next[0].wallet);
+ const job=await db.unsafe(
+   "insert into pi.ingestion_jobs(wallet,stream,status,started_at) values ($1,'closed_position_roi','running',now()) returning id",[wallet]);
+ try{
+  const result=await refreshClosedPositions(wallet,1);
+  await db.unsafe("update pi.ingestion_jobs set status='done',finished_at=now(),updated_at=now(),pages_fetched=$2,rows_fetched=$3 where id=$1",[job[0].id,result.pages,result.rows]);
+  return result;
+ }catch(e){
+  const message=e instanceof Error?e.message.slice(0,180):"Unknown position feed failure";
+  await db.unsafe("update pi.roi_import_state set last_error=$2,last_attempt_at=now(),updated_at=now() where wallet=$1",[wallet,message]);
+  await db.unsafe("update pi.ingestion_jobs set status='failed',error_message=$2,finished_at=now(),updated_at=now() where id=$1",[job[0].id,message]);
+  return {wallet,error:message};
+ }
+}
 async function schedulerAllowed(req: Request): Promise<boolean> {
   const token = req.headers.get("x-pi-scheduler-token") ?? "";
   if (!/^[0-9a-f]{64}$/.test(token)) return false;
@@ -188,6 +261,17 @@ Deno.serve(async (req: Request) => {
   if (Number(req.headers.get("content-length") ?? 0)>5000) return json({error:"Payload too large"},413);
   try {
     const body = await req.json();
+    if (body?.action === "roi_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      return json(await syncQueuedRoi());
+    }
+    if (body?.action === "roi_manual") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      const wallet=String(body.wallet??"").toLowerCase(),pages=Number(body.pages??1);
+      if(!ADDRESS.test(wallet)||!Number.isInteger(pages)||pages<1||pages>4)
+        return json({error:"Invalid wallet or pages"},400);
+      return json(await refreshClosedPositions(wallet,pages));
+    }
     if (body?.action === "scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       const requested = Number(body.limit ?? 5);

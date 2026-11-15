@@ -48,7 +48,9 @@ jobs:
         with:
           deno-version: v2.x
       - name: Typecheck protected Supabase ingestion function
-        run: deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts
+        run: |
+          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts
+          deno test supabase/functions/pi-ingest/roi-math_test.ts
       - name: Check embedded browser JavaScript syntax
         run: |
           python - <<'PY'
@@ -80,14 +82,15 @@ jobs:
                   # The dashboard reads fields introduced by subsequent migrations.
                   for migration in ("002_pi_ingestion_wallet_idx.sql",
                                     "003_pi_observed_pnl_metrics.sql",
-                                    "004_pi_pnl_concentration_metrics.sql"):
+                                    "004_pi_pnl_concentration_metrics.sql",
+                                    "012_closed_position_roi.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 12, f"Expected RLS on all 12 tables, got {secured}"
+                  assert secured == 14, f"Expected RLS on all 14 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
@@ -110,5 +113,26 @@ jobs:
                       query = found.group(1).replace("$1", "%s").replace("$2", "%s")
                       cur.execute(query, params)
                       assert cur.fetchall(), "Wallet endpoint SQL returned no rows for fixture"
+                  # Test SQL from the real API handler, not a handwritten approximation.
+                  cur.execute("insert into pi.roi_import_state(wallet,exhausted) values (%s,true)", (wallet,))
+                  cur.execute(
+                      "insert into pi.closed_position_roi(wallet,token_id,generation,valid_cost,"
+                      "estimated_entry_cost_usdc,realized_pnl_usdc,estimated_roi_pct,last_event_at)"
+                      " values(%s,'1',1,true,40,10,25,now()),(%s,'2',1,true,100,-20,-20,now())",
+                      (wallet,wallet)
+                  )
+                  for pattern,params in (
+                      (r"const summaryRows=await db\.unsafe\(`([\s\S]*?)`,\[address,state\.generation\]\);", (wallet,1)),
+                      (r"const rows=await db\.unsafe\(`([\s\S]*?)`,\[address,state\.generation,per,\(page-1\)\*per\]\);", (wallet,1,30,0))
+                  ):
+                      match=re.search(pattern,source)
+                      assert match, "ROI SQL not found in published Edge Function"
+                      query=re.sub(r"\$(\d+)",lambda m:"%s",match.group(1))
+                      cur.execute(query,params)
+                      result=cur.fetchall()
+                      assert result,"ROI query returned no rows"
+                      if "roi_total_weighted" in query:
+                          assert abs(result[0][5] - (-1000/140)) < .00001,result[0]
+                          assert abs(result[0][6] - 2.5) < .00001,result[0]
           con.close()
           PY

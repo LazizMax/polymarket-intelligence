@@ -55,7 +55,7 @@ const $=(id)=>document.getElementById(id);
 const fmt=(n,d=0)=>n!==null&&n!==undefined&&n!==""&&Number.isFinite(Number(n))?new Intl.NumberFormat("fr-FR",{maximumFractionDigits:d,minimumFractionDigits:d}).format(Number(n)):"—";
 const money=(n)=>n===null||n===undefined?"—":(Number(n)>=0?"+":"−")+"$"+fmt(Math.abs(Number(n)),0);
 const short=(s)=>s?String(s).slice(0,7)+"…"+String(s).slice(-5):"—";
-let session=null,tab="ranking",page=1,currentWallet="",period="365d",rankFilter={days:90,max_day:30,positive:true,sort:"regularity",q:""};
+let session=null,tab="ranking",page=1,roiPage=1,currentWallet="",period="365d",rankFilter={days:90,max_day:30,positive:true,sort:"regularity",q:""};
 function node(tag,txt,cls){const e=document.createElement(tag);if(txt!==undefined&&txt!==null)e.textContent=String(txt);if(cls)e.className=cls;return e;}
 function toast(msg){const t=$("toast");t.textContent=msg;t.style.display="block";setTimeout(()=>t.style.display="none",3300);}
 function loginScreen(message){session=null;sessionStorage.removeItem(STORE);$("app").style.display="none";$("loginWrap").style.display="flex";if(message)$("loginError").textContent=message;}
@@ -108,7 +108,7 @@ async function renderRank(){
  data.rows.forEach((r)=>{
   const row=node("tr");const one=node("td");one.append(node("div",r.name,"name"));one.append(node("div",short(r.wallet),"mono"));row.append(one);
   row.append(node("td",fmt(r.days)),node("td",money(r.pnl),Number(r.pnl)>=0?"green":"red"),node("td","$"+fmt(r.dd)),node("td",fmt(r.recovery,2)),node("td",fmt(r.r2,3)),node("td",fmt(r.positive_active,1)+" %"),node("td",fmt(r.concentration,1)+" %"));
-  row.addEventListener("click",()=>{currentWallet=r.wallet;setTab("wallet")});tb.append(row);
+  row.addEventListener("click",()=>{currentWallet=r.wallet;roiPage=1;setTab("wallet")});tb.append(row);
  });table.append(tb);wrap.append(table);c.append(wrap);
  const footer=node("div",null,"row spread");footer.style.marginTop="16px";footer.append(node("div","Page "+page+" / "+Math.max(1,Math.ceil(data.total/20)),"small"));
  const buttons=node("div",null,"row");buttons.append(button("Précédent",()=>{page=Math.max(1,page-1);renderRank().catch(showError)},"secondary"),button("Suivant",()=>{page++;renderRank().catch(showError)},"secondary"));footer.append(buttons);c.append(footer);target.append(c);
@@ -131,20 +131,80 @@ function graph(points,key,title,color,isDd=false){
  const valueLabel=document.createElementNS("http://www.w3.org/2000/svg","text");valueLabel.setAttribute("x",String(L));valueLabel.setAttribute("y",String(T+12));valueLabel.setAttribute("font-size","16");valueLabel.setAttribute("fill",color);valueLabel.textContent="Dernier : $"+fmt(Math.abs(Number(points[points.length-1][key])),0);svg.append(valueLabel);
  holder.append(svg);box.append(holder);return box;
 }
+const pct=(n,d=2)=>n===null||n===undefined||!Number.isFinite(Number(n))?"—":(Number(n)>0?"+":"")+fmt(Number(n),d)+" %";
+async function renderClosedPositionRoi(target){
+ const response=await api("roi",{wallet:currentWallet,page:roiPage});
+ const state=response.state,summary=response.summary;
+ const section=node("section",null,"card");
+ const h=node("div",null,"cardhead");const hd=node("div");hd.append(node("h2","ROI des positions clôturées"));
+ hd.append(node("div","Une position = un marché et une issue (plusieurs achats/ventes possibles). Ce n'est PAS le ROI par exécution.","small"));h.append(hd);
+ const buttons=node("div",null,"row");
+ if(!state){buttons.append(button("Collecter les ROI",async()=>{
+  try{await api("roi_request",{wallet:currentWallet});toast("Import demandé. Les données s'afficheront au fil des synchronisations.");roiPage=1;await renderWallet()}catch(e){showError(e)}
+ }));}
+ else if(state.exhausted){buttons.append(button("Rafraîchir l'historique",async()=>{
+  try{await api("roi_request",{wallet:currentWallet,force:true});roiPage=1;toast("Actualisation demandée");await renderWallet()}catch(e){showError(e)}
+ },"secondary"))}
+ else{buttons.append(button("Actualiser l'affichage",()=>renderWallet().catch(showError),"secondary"))}
+ h.append(buttons);section.append(h);
+ if(!state){
+  section.append(banner("Les ROI ne sont pas encore collectés pour ce wallet. Lance l'import ; l'historique sera stocké dans Supabase et la pagination reprendra automatiquement."));
+  target.append(section);return;
+ }
+ const complete=state.exhausted===true,canGlobal=complete && summary && summary.valid>0 && summary.invalid===0;
+ section.append(banner(complete
+  ?(summary?.invalid>0?"Historique de positions clôturées importé, mais certains coûts sont inconnus : ROI global complet non calculable.":"Historique des positions clôturées importé. Estimations basées sur le coût d'entrée reconstitué, frais non rapprochés.")
+  :"COLLECTE PARTIELLE — "+fmt(state.pages_fetched)+" page(s), "+fmt(state.rows_seen)+" position(s) récupérée(s). Les ROI présentés concernent uniquement l'échantillon importé ; les performances globales restent indisponibles."));
+ if(state.last_error)section.append(node("p","Dernière erreur de collecte : "+state.last_error,"red"));
+ const blocks=node("div",null,"metrics");
+ blocks.append(metric(canGlobal?"ROI total des positions closes":"ROI pondéré observé (partiel)",summary?.valid?pct(summary.roi_total_weighted):"—",Number(summary?.roi_total_weighted)>=0?"green":"red"));
+ blocks.append(metric("ROI moyen (non pondéré)",summary?.valid?pct(summary.roi_mean):"—"));
+ blocks.append(metric("ROI médian",summary?.valid?pct(summary.roi_median):"—"));
+ blocks.append(metric("PnL réalisé des positions incluses",summary?.valid?money(summary.realized_pnl):"—",Number(summary?.realized_pnl)>=0?"green":"red"));
+ section.append(blocks);
+ section.append(node("p",fmt(summary?.valid||0)+" positions avec ROI calculable sur "+fmt(summary?.total||0)+" enregistrées · "+fmt(summary?.invalid||0)+" sans coût valide · Mise estimée cumulée : $"+fmt(summary?.capital_estimated||0)+" · "+fmt(summary?.winners||0)+" gagnantes / "+fmt(summary?.losers||0)+" perdantes.","foot"));
+ section.append(node("p","ROI total pondéré = somme des PnL réalisés ÷ somme des coûts d'entrée estimés. ROI moyen = moyenne arithmétique des ROI de chaque position. La médiane limite l'effet des gains extrêmes.","foot"));
+ section.append(node("p","IMPORTANT : estimation sur positions clôturées uniquement, hors frais/transferts non réconciliés. Les positions encore ouvertes, les combos et le rendement du capital du wallet ne sont pas inclus.","foot"));
+ const wrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),tr=node("tr");
+ ["Marché / position","Dernière activité","Mise estimée","PnL réalisé","ROI estimé"].forEach(x=>tr.append(node("th",x)));
+ thead.append(tr);table.append(thead);
+ const tb=node("tbody");
+ for(const p of response.rows){
+  const row=node("tr");row.style.cursor="default";
+  const name=node("td");name.append(node("div",p.title||short(p.condition_id)||"Marché sans titre","name"));
+  name.append(node("div",p.outcome||"Issue non renseignée","small"));row.append(name);
+  row.append(node("td",p.last_event_at?p.last_event_at.slice(0,10):"—"),
+             node("td",p.cost===null?"—":"$"+fmt(p.cost,2)),
+             node("td",p.pnl===null?"—":money(p.pnl),Number(p.pnl)>=0?"green":"red"),
+             node("td",p.roi===null?"Non calculable":pct(p.roi),p.roi===null?"muted":Number(p.roi)>=0?"green":"red"));
+  tb.append(row);
+ }
+ if(!response.rows.length){const tr=node("tr"),td=node("td","Aucune position encore stockée pour ce wallet.","muted");td.colSpan=5;tr.append(td);tb.append(tr)}
+ table.append(tb);wrap.append(table);section.append(wrap);
+ const footer=node("div",null,"row spread");footer.style.marginTop="15px";
+ footer.append(node("span","Page "+roiPage+" / "+Math.max(1,Math.ceil((summary?.total||0)/response.per)),"small"));
+ const controls=node("div",null,"row");
+ const prev=button("Précédent",()=>{roiPage=Math.max(1,roiPage-1);renderWallet().catch(showError)},"secondary");
+ const next=button("Suivant",()=>{roiPage++;renderWallet().catch(showError)},"secondary");
+ prev.disabled=roiPage<=1;next.disabled=roiPage>=Math.max(1,Math.ceil((summary?.total||0)/response.per));
+ controls.append(prev,next);footer.append(controls);section.append(footer);
+ target.append(section);
+}
 async function renderWallet(){
  const target=$("content");target.replaceChildren(heading("Analyse wallet","PnL, stabilité, drawdowns et couverture des observations."));
  const search=node("section",null,"card");const line=node("div",null,"row");
- const inp=node("input");inp.style.flex="1";inp.style.minWidth="260px";inp.placeholder="Adresse 0x...";inp.value=currentWallet;line.append(inp,button("Ouvrir",()=>{currentWallet=inp.value.trim().toLowerCase();renderWallet().catch(showError)}));
+ const inp=node("input");inp.style.flex="1";inp.style.minWidth="260px";inp.placeholder="Adresse 0x...";inp.value=currentWallet;line.append(inp,button("Ouvrir",()=>{currentWallet=inp.value.trim().toLowerCase();roiPage=1;renderWallet().catch(showError)}));
  search.append(line);target.append(search);
  if(!currentWallet){target.append(banner("Sélectionne un trader depuis le classement ou saisis son adresse pour afficher ses courbes."));return;}
  const data=await api("wallet",{wallet:currentWallet,period});
  const c=node("section",null,"card");const h=node("div",null,"cardhead");
  const names=node("div");names.append(node("h2",data.info.name));names.append(node("div",data.info.wallet,"mono"));h.append(names);
  const periods=node("div",null,"row");[["90d","90 j"],["365d","1 an"],["all","Tout"]].forEach(([id,l])=>periods.append(button(l,()=>{period=id;renderWallet().catch(showError)},id===period?"active":"secondary")));h.append(periods);c.append(h);
- const facts=node("div",null,"metrics");facts.append(metric("Progression PnL observée",money(data.info.pnl),Number(data.info.pnl)>=0?"green":"red"));facts.append(metric("Max drawdown PnL","$"+fmt(data.info.dd)));facts.append(metric("Facteur PnL / DD",fmt(data.info.recovery,2)));facts.append(metric("Régularité R²",fmt(data.info.r2,3)));c.append(facts);
+ const facts=node("div",null,"metrics");facts.append(metric("Progression PnL · historique complet",money(data.info.pnl),Number(data.info.pnl)>=0?"green":"red"));facts.append(metric("Max DD PnL · historique complet","$"+fmt(data.info.dd)));facts.append(metric("Facteur PnL / DD",fmt(data.info.recovery,2)));facts.append(metric("Régularité R²",fmt(data.info.r2,3)));c.append(facts);
  c.append(node("div","Jours observés : "+fmt(data.info.days)+" · Progressions positives parmi les jours actifs : "+fmt(data.info.positive_active,1)+" % · Plus grosse journée : "+fmt(data.info.concentration,1)+" % des gains journaliers positifs","foot"));
  target.append(c);
  const cards=node("div",null,"grid2");cards.append(graph(data.series,"pnl","PnL économique observé (USDC)","#4fe4c4"));cards.append(graph(data.series,"dd","Drawdown observé du PnL (USDC)","#ff8d8d",true));target.append(cards);
+ await renderClosedPositionRoi(target);
  target.append(banner("ROI sur capital : non calculable · Drawdown sur capital (%) : non calculable · Gains d'une stratégie copiée : non validés. Le drawdown des graphiques est recalculé sur la période choisie, indépendamment du drawdown total affiché."));
 }
 async function renderData(){

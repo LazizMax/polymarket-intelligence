@@ -122,6 +122,73 @@ async function wallet(body:any){
  `,[address,days]);
  return {info:info[0],series,warning:"Drawdown in USDC is the peak-to-trough of observed PnL within the selected window, not portfolio drawdown."};
 }
+// Each row is an outcome position, NOT an individual fill.
+async function positionRoi(body:any){
+ const address=s(body.wallet,50).toLowerCase();
+ if(!walletPattern.test(address))return send({error:"Wallet invalide"},400);
+ const page=Math.round(number(body.page,1,1,100000)),per=30;
+ const stateRows=await db.unsafe(
+  "select generation,exhausted,request_priority,pages_fetched,rows_seen,updated_at::text,last_complete_at::text,last_error from pi.roi_import_state where wallet=$1",[address]);
+ const state=stateRows[0]??null;
+ if(!state)return {state:null,summary:null,rows:[],page,per};
+ const summaryRows=await db.unsafe(`
+  select count(*)::integer AS total,
+   count(*) filter(where valid_cost)::integer AS valid,
+   count(*) filter(where not valid_cost)::integer AS invalid,
+   sum(realized_pnl_usdc) filter(where valid_cost)::double precision AS realized_pnl,
+   sum(estimated_entry_cost_usdc) filter(where valid_cost)::double precision AS capital_estimated,
+   (100*sum(realized_pnl_usdc) filter(where valid_cost)/
+       nullif(sum(estimated_entry_cost_usdc) filter(where valid_cost),0))::double precision AS roi_total_weighted,
+   avg(estimated_roi_pct) filter(where valid_cost)::double precision AS roi_mean,
+   percentile_cont(0.5) within group(order by estimated_roi_pct)
+       filter(where valid_cost)::double precision AS roi_median,
+   count(*) filter(where valid_cost and estimated_roi_pct>0)::integer winners,
+   count(*) filter(where valid_cost and estimated_roi_pct<0)::integer losers
+  from pi.closed_position_roi where wallet=$1 and generation=$2
+ `,[address,state.generation]);
+ const rows=await db.unsafe(`
+  select token_id,condition_id,title,outcome,market_slug,
+   first_entry_at::text,last_event_at::text,
+   lifetime_shares::double precision shares,avg_entry_price::double precision price,
+   estimated_entry_cost_usdc::double precision cost,
+   realized_pnl_usdc::double precision pnl,estimated_roi_pct::double precision roi,
+   valid_cost,quality_reason
+  from pi.closed_position_roi
+  where wallet=$1 and generation=$2
+  order by last_event_at desc nulls last,token_id
+  limit $3 offset $4
+ `,[address,state.generation,per,(page-1)*per]);
+ return {state,summary:summaryRows[0]??null,rows,page,per,
+  method:"Estimated closed outcome ROI: lifetime bought shares × average acquisition price. Fees/transfers not reconciled; not capital ROI or individual fill ROI."};
+}
+async function requestPositionRoi(body:any){
+ const wallet=s(body.wallet,50).toLowerCase();
+ if(!walletPattern.test(wallet))return send({error:"Wallet invalide"},400);
+ const known=await db.unsafe("select 1 from pi.wallets where wallet=$1",[wallet]);
+ if(!known.length)return send({error:"Wallet non suivi"},404);
+ const force=body.force===true;
+ const row=await db.unsafe(`
+  insert into pi.roi_import_state(wallet,request_priority)
+  values ($1,true)
+  on conflict(wallet) do update set
+   generation=case when $2::boolean and pi.roi_import_state.exhausted
+                    then pi.roi_import_state.generation+1
+                    else pi.roi_import_state.generation end,
+   exhausted=case when $2::boolean and pi.roi_import_state.exhausted
+                  then false else pi.roi_import_state.exhausted end,
+   next_cursor=case when $2::boolean and pi.roi_import_state.exhausted
+                    then null else pi.roi_import_state.next_cursor end,
+   pages_fetched=case when $2::boolean and pi.roi_import_state.exhausted
+                      then 0 else pi.roi_import_state.pages_fetched end,
+   rows_seen=case when $2::boolean and pi.roi_import_state.exhausted
+                 then 0 else pi.roi_import_state.rows_seen end,
+   request_priority=case when pi.roi_import_state.exhausted and not $2::boolean
+                         then false else true end,
+   last_error=null,updated_at=now()
+  returning wallet,exhausted,pages_fetched
+ `,[wallet,force]);
+ return {queued:!row[0].exhausted,already_complete:row[0].exhausted};
+}
 async function health(){
  const r=await db.unsafe(`
  select
@@ -162,6 +229,8 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="overview")return send(await overview());
   if(body?.action==="leaderboard")return send(await leaderboard(body));
   if(body?.action==="wallet")return send(await wallet(body));
+  if(body?.action==="roi")return send(await positionRoi(body));
+  if(body?.action==="roi_request")return send(await requestPositionRoi(body));
   if(body?.action==="health")return send(await health());
   return send({error:"Action inconnue"},400);
  }catch(e){
