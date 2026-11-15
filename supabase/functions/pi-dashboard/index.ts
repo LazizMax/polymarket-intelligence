@@ -1,6 +1,7 @@
 // Authenticated Polymarket Intelligence web API, read-only analytics.
 import postgres from "npm:postgres@3.4.3";
 import {quotePair} from "./arb-math.ts";
+import {replayTemporal} from "./arb-temporal.ts";
 const url = Deno.env.get("SUPABASE_URL") || "";
 const pub = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
@@ -275,6 +276,34 @@ async function arbitrage(body:any){
   warning:"Instantaneous book snapshots only. Prices can disappear; no atomic two-leg execution, and the selected fee reserve is not a Polymarket fee quote. No live orders."};
 }
 
+
+async function temporalResearch(body:any){
+ const cfg={
+  entryCeiling:number(body.entry_ceiling,.47,.05,.49),
+  feeReservePct:number(body.fee_reserve_pct,2,0,10),
+  minNetRoiPct:number(body.min_roi_pct,.5,0,10),
+  maxHoldMinutes:Math.round(number(body.max_hold_minutes,120,10,1440))
+ };
+ // Read the newest bounded window. Older samples are never fabricated or extrapolated.
+ const rows=await db.unsafe(`
+  select observed_at::text,market_key,market_slug,question,yes_token_id,no_token_id,
+    quote_shares::double precision,yes_buy_avg::double precision,no_buy_avg::double precision,
+    yes_sell_avg::double precision,no_sell_avg::double precision
+  from pi.arb_temporal_snapshots
+  where observed_at>=now()-interval '48 hours' and quote_shares=50
+  order by observed_at desc,snapshot_id desc limit 3800
+ `);
+ const audit=await db.unsafe(`
+ select status,started_at::text,finished_at::text,rows_fetched,left(coalesce(error_message,''),120) error
+ from pi.ingestion_jobs where stream='arb_temporal' order by id desc limit 1
+ `);
+ const result=replayTemporal([...rows].reverse(),cfg);
+ return {config:cfg,quantity:50,poll_minutes:10,window_hours:48,
+  truncated:rows.length>=3800,last_observation_at:rows[0]?.observed_at??null,
+  last_job:audit[0]??null,...result,
+  disclaimer:"Contrefactuel taker sur instantanés échantillonnés; aucune exécution confirmée, aucun gain réel, aucune capture maker validée. Les book snapshots séparés de 10 min ne prouvent pas les prix accessibles."};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -300,6 +329,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="roi_request")return send(await requestPositionRoi(body));
   if(body?.action==="health")return send(await health());
   if(body?.action==="arbitrage")return send(await arbitrage(body));
+  if(body?.action==="arb_temporal")return send(await temporalResearch(body));
   return send({error:"Action inconnue"},400);
  }catch(e){
   console.error("pi-dashboard",e instanceof Error?e.message.slice(0,160):"unknown");
