@@ -27,7 +27,8 @@ export function normalizeV2Trade(raw:any,wallet=RN1):null|Record<string,unknown>
   outcome_index:index!==null&&Number.isInteger(index)&&index>=0&&index<=99?index:null,
   outcome_label:String(raw?.outcome??"").slice(0,90),
   market_slug:String(raw?.slug??"").slice(0,230),
-  event_slug:String(raw?.event_slug??"").slice(0,230)};
+  event_slug:String(raw?.event_slug??"").slice(0,230),
+  market_title:String(raw?.title??"").slice(0,350)};
 }
 export function pageEnvelope(payload:unknown){
  const p=payload as any;
