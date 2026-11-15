@@ -38,8 +38,8 @@ export function bookQuotes(books:any[],targets:Target[]):Quote[]{
   const id=str(book?.asset_id),mapped=mapping.get(id);
   if(!mapped||seen.has(id)||str(book?.market).toLowerCase()!==mapped.t.market_key)continue;
   seen.add(id);
-  const bids=(Array.isArray(book?.bids)?book.bids:[]).map(level).filter(x=>x.p>=0&&x.p<=1&&x.s>0);
-  const asks=(Array.isArray(book?.asks)?book.asks:[]).map(level).filter(x=>x.p>=0&&x.p<=1&&x.s>0);
+  const bids:{p:number,s:number}[]=((Array.isArray(book?.bids)?book.bids:[]) as any[]).map(level).filter(x=>x.p>=0&&x.p<=1&&x.s>0);
+  const asks:{p:number,s:number}[]=((Array.isArray(book?.asks)?book.asks:[]) as any[]).map(level).filter(x=>x.p>=0&&x.p<=1&&x.s>0);
   // The public API currently sorts worst-to-best in both arrays. Max/min rather
   // than indexing keeps this correct if the provider changes ordering.
   bids.sort((a,b)=>b.p-a.p);
