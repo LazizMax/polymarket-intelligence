@@ -40,7 +40,7 @@ Deno.test("multiset signature varies by price token and size",()=>{
 
 Deno.test("filtered OPEN position response creates valid true prefill inventory",()=>{
  const payload={data:[{proxy_wallet:"0x"+"c".repeat(40),condition_id:key,
- token_id:target.assets[1],current_size:12,avg_price:.45,entry_cost_usdc:5.4,
+ token_id:target.assets[1],outcome_index:1,current_size:12,avg_price:.45,entry_cost_usdc:5.4,
  last_event_at:1794760000}],pagination:{has_more:false,next_cursor:null}};
  const h=normalizeCurrentHoldings(payload,[target],"0x"+"c".repeat(40));
  assertEquals(h.length,2);assertEquals(h[0].current_size,0);
