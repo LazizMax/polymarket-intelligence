@@ -42,7 +42,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Recherche</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -262,6 +262,76 @@ async function renderTemporal(target){
  card.append(node("p","Interprétation : la somme ASK représente le coût indicatif d'une paire achetée immédiatement, à la quantité testée de 50 shares. Les spreads et leurs variations n'impliquent aucune possibilité de capture maker. Il faut des exécutions publiques et des données fines d'ordre pour tester RN1. Aucun ordre réel.","foot"));
 }
 
+
+async function renderRN1(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Recherche stratégique","Transactions publiques réelles, achats des deux issues et transparence de couverture. Aucun signal de profit encore validé."));
+ const intro=node("section",null,"card");intro.append(node("h2","Wallet étudié"));
+ intro.append(node("p","0x2005d16a84ceefa912d4e380cd32e7ff827875ea","mono"));
+ intro.append(banner("Échantillon historique incomplet, collecté du plus récent vers le plus ancien. Deux achats opposés ne constituent PAS une paire couverte ou un PnL réalisé. La source publique ne révèle pas directement le rôle maker/taker."));
+ target.append(intro);
+ const data=await api("rn1_research"),st=data.import_state||{},sum=data.summary||{},two=data.both_issues||{};
+ const status=node("section",null,"card"),headingRow=node("div",null,"cardhead");
+ headingRow.append(node("h2","Progression de l'import des transactions"));
+ headingRow.append(node("span",st.status||"pas démarré","badge"));status.append(headingRow);
+ const fraction=Math.min(100,st.sample_limit?100*(Number(st.rows_seen||0)/Number(st.sample_limit)):0);
+ const gauge=node("div",null);
+ gauge.style.cssText="background:#182c3a;border-radius:6px;height:10px;overflow:hidden;margin:12px 0";
+ const fill=node("div");fill.style.cssText="height:100%;width:"+fraction.toFixed(2)+"%;background:var(--brand)";gauge.append(fill);status.append(gauge);
+ status.append(node("p",fmt(st.rows_seen||0)+" / "+fmt(st.sample_limit||4000)+" lignes consultées · "+fmt(st.pages_fetched||0)
+    +" pages · "+fmt(st.missing_required||0)+" rejetées pour données obligatoires manquantes.","foot"));
+ status.append(node("p","La limite représente le PILOTE, et non l'historique complet du wallet. Les données brutes et la position de chaque ligne dans sa page sont conservées.","foot"));
+ if(st.last_error)status.append(node("p","Dernière erreur : "+String(st.last_error),"red"));
+ status.append(button("Actualiser l'analyse",()=>renderRN1().catch(showError),"secondary"));
+ target.append(status);
+ const metrics=node("div",null,"metrics");
+ metrics.append(metric("Transactions observées",fmt(sum.trades||0)),
+  metric("Achats / ventes",fmt(sum.buys||0)+" / "+fmt(sum.sells||0)),
+  metric("Marchés distincts",fmt(sum.markets||0)),
+  metric("Marchés avec achats sur 2 issues",fmt(two.both_issues_observed||0)));
+ target.append(metrics);
+ const context=node("section",null,"card");context.append(node("h2","Interprétation des résultats"));
+ context.append(node("p","Fenêtre observée : "+(sum.first_trade_at||"—")+" → "+(sum.last_trade_at||"—")
+  +" · Volume notionnel enregistré : "+(sum.traded_notional_usdc===null?"—":"$"+fmt(sum.traded_notional_usdc,2)),"foot"));
+ context.append(node("p","Délai médian entre les PREMIERS achats observés de chaque issue sur un même marché : "+
+  (two.median_first_buy_lag_minutes===null?"indisponible":fmt(two.median_first_buy_lag_minutes,1)+" min")+
+  ". Ce n'est pas le délai réel de couverture d'une position.","foot"));
+ context.append(banner("La rentabilité, les rebates, les coûts maker/taker et les couvertures effectivement verrouillées ne sont pas calculables à partir de ce seul flux. Nous analysons des comportements constatés, pas une promesse d'arbitrage."));
+ target.append(context);
+ const markets=node("section",null,"card"),mh=node("div",null,"cardhead");
+ mh.append(node("h2","Marchés les plus tradés par RN1"));mh.append(node("span","Nombre de lignes dans l'échantillon","small"));markets.append(mh);
+ const wrap=node("div",null,"tablewrap"),table=node("table"),hdr=node("tr");
+ ["Marché","Lignes","BUY","SELL","Achat issue 0","Achat issue 1","Prix moyen 0 / 1","1er achat opposé"].forEach(x=>hdr.append(node("th",x)));
+ const th=node("thead");th.append(hdr);table.append(th);const tb=node("tbody");
+ for(const m of (data.markets||[])){
+  const row=node("tr"),name=node("td");name.append(node("div",m.market_title||m.market_key,"name"));
+  if(m.event_slug){const link=node("a","Voir sur Polymarket ↗","small");link.href="https://polymarket.com/event/"+encodeURIComponent(m.event_slug);link.target="_blank";link.rel="noopener noreferrer";name.append(link);}
+  row.append(name,node("td",fmt(m.fills)),node("td",fmt(m.buys)),node("td",fmt(m.sells)),
+   node("td",m.qty0===null?"—":fmt(m.qty0,1)+" shares"),
+   node("td",m.qty1===null?"—":fmt(m.qty1,1)+" shares"),
+   node("td",(m.vwap0===null?"—":fmt(m.vwap0,4))+" / "+(m.vwap1===null?"—":fmt(m.vwap1,4))),
+   node("td",m.first_buy_lag_minutes===null?"—":fmt(m.first_buy_lag_minutes,1)+" min"));
+  tb.append(row);
+ }
+ if(!data.markets?.length){const r=node("tr"),td=node("td","Collecte pas encore disponible.","small");td.colSpan=8;r.append(td);tb.append(r)}
+ table.append(tb);wrap.append(table);markets.append(wrap);target.append(markets);
+ const recent=node("section",null,"card");recent.append(node("h2","Dernières transactions importées"));
+ const tw=node("div",null,"tablewrap"),t=node("table"),thead=node("thead"),tr=node("tr");
+ ["Date UTC","Marché","Action","Issue","Prix","Shares","Montant observé"].forEach(x=>tr.append(node("th",x)));
+ thead.append(tr);t.append(thead);const body=node("tbody");
+ for(const x of (data.recent||[])){
+  const row=node("tr"),name=node("td");name.append(node("div",x.market_title||"Marché","name"));
+  if(x.event_slug){const link=node("a","Événement ↗","small");link.href="https://polymarket.com/event/"+encodeURIComponent(x.event_slug);link.target="_blank";link.rel="noopener noreferrer";name.append(link);}
+  row.append(node("td",String(x.at||"").replace("T"," ").slice(0,19)),
+    name,node("td",x.side||"—"),node("td",x.outcome_label||x.outcome_index||"—"),
+    node("td",fmt(x.price,4)),node("td",fmt(x.shares,2)),
+    node("td",x.observed_notional_usdc===null?"—":"$"+fmt(x.observed_notional_usdc,2)));
+  body.append(row);
+ }
+ t.append(body);tw.append(t);recent.append(tw);target.append(recent);
+ target.append(node("p","Fiabilité : la source de transactions v2 est publique mais peut manquer des migrations, transferts, fusions, remboursements et récompenses. Des événements à la même transaction peuvent former plusieurs lignes. La fenêtre actuelle est un échantillon orienté vers les échanges récents, non un historique réconcilié.","foot"));
+}
+
 async function renderArb(){
  const target=$("content");
  target.replaceChildren(heading("Arbitrage Lab","Observations de marché et recherche de spreads — aucune stratégie validée."));
@@ -320,7 +390,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
