@@ -7,6 +7,7 @@ Les variations de prix sont disponibles sur Polymarket via l'API CLOB `/prices-h
 
 ### I. Prix avant exécution : base déjà collectée
 
+- **Avertissement de provenance** : les prix et les 1 373 achats ci-dessous sont tirés du **pilote historique Taker-only de 4 000 trades**, car les requêtes /v2/trades des 20 pages d'origine ne spécifiaient pas `taker_only=false`. Ne PAS généraliser les chiffres de timing ou de variation aux fills Maker, majoritaires dans le lot de 756 000.
 - `pi.rn1_fill_price_benchmark`: **1 373 achats**, **159 tokens**, **26 événements** (1 326 achats NBA, 47 tennis), du 12 au 14 novembre. Attention : ce sous-ensemble n'est pas un tirage représentatif des 756 000 fills, et ne possède **pas** un rôle Maker/Taker vérifié ligne par ligne dans cette table.
 - `pi.rn1_historical_price_points`: 21 680 points sur 159 tokens, dont 21 407 à une minute et 273 points de résolution zéro.
 - L'horodatage `reference_epoch` de la cote de référence est **60 à 119 secondes avant le fill**, jamais après. La variable `prior_5m_price` mesure un prix plus ancien : la variation étudiée est la différence sur les cinq minutes **avant la référence**, PAS exactement [fill−5m, fill].
