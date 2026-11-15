@@ -434,6 +434,27 @@ async function renderRN1(){
    metric("Contribution directionnelle résiduelle",usd(direction))
   );
   c.append(boxes);
+  const skewBands=Array.isArray(econ.by_skew)?econ.by_skew:[],
+   severe=skewBands.find(x=>x.imbalance_band==="at_least_2"),
+   balanced=skewBands.find(x=>x.imbalance_band==="below_1_1");
+  if(severe&&balanced){
+   c.append(node("h3","Pourquoi le déséquilibre YES/NO compte"));
+   const skewBoxes=node("div",null,"metrics");
+   const severePairs=Number(severe.paired_gross||0),
+    severeResidual=Number(severe.residual_gross||0);
+   skewBoxes.append(
+    metric("Marchés avec un côté au moins 2× plus gros",fmt(severe.markets)),
+    metric("Marge brute des paires sur ces marchés",usd(severePairs)),
+    metric("Résultat directionnel résiduel",usd(severeResidual)),
+    metric("Marchés presque équilibrés (<1,1×)",fmt(balanced.markets))
+   );
+   c.append(skewBoxes);
+   c.append(node("p","Quand une issue est achetée au moins deux fois plus que l'autre, "+
+    "les paires peuvent être avantageuses mais l'exposition non couverte "+
+    "absorbe parfois presque tout le gain. Échantillon : "+fmt(severe.markets)+
+    " marchés, "+fmt(severe.events)+" événements. Décomposition économique brute "+
+    "a posteriori, non attribuable à un ordre individuel et avant frais.","foot"));
+  }
   c.append(node("p","Sur "+fmt(proof.reconciled_markets||0)+" marchés où les deux issues ont été achetées et où les flux de remboursement correspondent aux shares acquises : "+
    "$"+fmt(Number(proof.paired_invested||0),0)+" de capital apparié, pour "+
    (paircost>0?(matched>=0?"+":"")+fmt(100*matched/paircost,2)+" %":"—")+
