@@ -40,8 +40,14 @@ def test_auth_read_only_and_ui_provenance():
     assert "last_play_at" in API
     assert "quarter_rank" in API
     assert "lead_change" in API
-    assert "Rôle Maker/Taker non établi" in API
+    assert "Les 4 000 exécutions proviennent d'un feed Taker-only implicite" in API
     assert 'api("rn1_sports_impact"' in FRONT
     assert 'data-tab="sports"' in FRONT
     assert 'async function renderRN1Sports()' in FRONT
-    assert "PAS quand RN1 a déposé" in FRONT
+    assert "donc du flux Taker-only implicite" in FRONT
+
+
+def test_legacy_pilot_not_mistaken_for_maker_universe():
+    assert "taker_only=false" in API
+    assert "Taker-only" in FRONT
+    assert "89,2 % sont Maker" in API
