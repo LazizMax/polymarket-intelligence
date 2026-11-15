@@ -81,12 +81,12 @@ async function scoreboard(date:string){
  const rows=await db.unsafe("select games,fetched_at from pi.rn1_nba_espn_scoreboards where game_day=$1::date",[date]);
  const recent=date>=new Date(Date.now()-86400000).toISOString().slice(0,10);
  if(rows.length&&(!recent||Date.now()-new Date(rows[0].fetched_at).getTime()<900000))
-  return rows[0].games as any[];
+  return (typeof rows[0].games==="string"?JSON.parse(rows[0].games):rows[0].games) as any[];
  const url="https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates="+date.replaceAll("-","");
  const {data}=await getJSON(url);
  if(!Array.isArray(data?.events))throw Error("ESPN scoreboard events missing");
  const games=data.events as any[];
- await db.unsafe("insert into pi.rn1_nba_espn_scoreboards(game_day,games) values($1::date,$2::jsonb) on conflict(game_day) do update set games=excluded.games,fetched_at=now()",[date,JSON.stringify(games)]);
+ await db.unsafe("insert into pi.rn1_nba_espn_scoreboards(game_day,games) values($1::date,($2::jsonb #>> '{}')::jsonb) on conflict(game_day) do update set games=excluded.games,fetched_at=now()",[date,JSON.stringify(games)]);
  return games;
 }
 async function queueRecent(){
@@ -141,7 +141,7 @@ async function processGame(r:any){
    select x.event_slug,x.play_id,x.espn_event_id,x.play_at,x.sequence_number,
     x.period_number,x.clock_text,x.home_score,x.away_score,x.points,x.is_scoring,
     x.play_type,x.play_text
-   from jsonb_to_recordset($1::jsonb) as x(
+   from jsonb_to_recordset(($1::jsonb #>> '{}')::jsonb) as x(
     event_slug text,play_id text,espn_event_id text,play_at timestamptz,
     sequence_number bigint,period_number smallint,clock_text text,
     home_score smallint,away_score smallint,points smallint,is_scoring boolean,
