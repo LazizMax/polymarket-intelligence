@@ -933,6 +933,7 @@ async function rn1ReverseEngineering(){
  sampled_unknown_fills::float8 as sampled_unknown_fills,
  summary->'market_price' as market_price,
  summary->'coverage' as price_history_coverage,
+ summary->'event_cluster_evidence' as event_cluster_evidence,
  last_success_at::text as last_success_at,last_error
  from pi.rn1_independent_price_jobs
  where job_key='rn1_independent_price_v1'
