@@ -905,6 +905,18 @@ async function renderRN1(){
    metric("Volumes appariés reconstitués",fmt(pair.new_pair_shares||0))
   );
   c.append(metrics);
+  const increasing=Number(inv.increases_gap||0),
+    pairShares=Number(pair.new_pair_shares||0),
+    pairProxy=Number(pair.paired_gross_proxy||0);
+  c.append(node("p","Parmi les achats Maker avec déséquilibre mesurable, "+
+   (comparable?fmt(100*increasing/comparable,1)+" %":"—")+
+   " augmentent l'écart de quantités entre YES et NO : RN1 ne cherche donc pas "+
+   "à rééquilibrer chaque achat. Sur les volumes nouvellement appariés, "+
+   "l'excédent théorique attribué à ces achats Maker est de "+
+   (pairShares>0?fmt(100*pairProxy/pairShares,3)+" ¢ par paire":"—")+
+   ". Ce proxy dépend du coût moyen reconstitué du côté opposé et ne tient "+
+   "pas lieu de PnL réalisé : ventes, transferts, règlement, frais, rebates "+
+   "et inventaire résiduel ne sont pas tous réconciliés.","foot"));
   const forward=replay.maker_forward_proxy||{};
   const windows=[["60","1 min"],["300","5 min"],["900","15 min"],
    ["1800","30 min"],["3600","60 min"]];
