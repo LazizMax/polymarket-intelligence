@@ -127,6 +127,7 @@ export function normalizeCurrentHoldings(
   if(!mappedToken||str(row.condition_id).toLowerCase()!==mappedToken.target.market_key)
    throw Error("Filtered position response included an unrelated token");
   if(found.has(id))throw Error("Position token occurred twice in response");
+  if(num(row.outcome_index)!==mappedToken.index)throw Error("Public position outcome index disagrees with token mapping");
   const size=num(row.current_size),price=num(row.avg_price),cost=num(row.entry_cost_usdc);
   if(!Number.isFinite(size)||size<0)throw Error("Public position has invalid current size");
   if(Number.isFinite(price)&&(price<0||price>1))throw Error("Public position average price out of range");
@@ -156,4 +157,39 @@ export function signedInventoryImbalance(
  const total=a+b;
  const signed=total>0?(a-b)/total:0;
  return {signed_skew:side===0?signed:-signed,absolute_skew:Math.abs(signed),size0:a,size1:b};
+}
+
+/** Predicts an illustrative passive BUY limit price from PRETRADE data only.
+ * This does NOT model queue placement, fill odds or adverse selection.
+ * price strategies with absent opposite holdings are unavailable (null).
+ */
+export type MakerQuoteCandidate="best_bid"|"one_below"|"two_below"|
+ "skew_discount_1"|"skew_discount_2"|"pair_ceiling_0"|"pair_ceiling_1pct"|"pair_ceiling_2pct";
+export function makerQuoteCandidate(
+ model:MakerQuoteCandidate,bid:number,ask:number,tick:number,
+ ownShares:number,oppositeShares:number,oppositeAvg:number|null
+):number|null{
+ if(![bid,ask,tick,ownShares,oppositeShares].every(Number.isFinite)||
+  bid<=0||ask<=bid||tick<=0||ownShares<0||oppositeShares<0)return null;
+ let raw=bid;
+ const skew=(ownShares+oppositeShares)>0?
+  (ownShares-oppositeShares)/(ownShares+oppositeShares):0;
+ switch(model){
+ case "best_bid":break;
+ case "one_below":raw-=tick;break;
+ case "two_below":raw-=2*tick;break;
+ case "skew_discount_1":raw-=tick*Math.max(0,skew);break;
+ case "skew_discount_2":raw-=2*tick*Math.max(0,skew);break;
+ case "pair_ceiling_0":
+ case "pair_ceiling_1pct":
+ case "pair_ceiling_2pct":{
+  if(oppositeShares<=0||oppositeAvg===null||!Number.isFinite(oppositeAvg)||
+   oppositeAvg<0||oppositeAvg>1)return null;
+  const desired=model==="pair_ceiling_2pct"?.02:model==="pair_ceiling_1pct"?.01:0;
+  raw=Math.min(bid,1-oppositeAvg-desired);
+  break;
+ }}
+ // Round down to exchange tick, avoid crossing spread, and reject negative bids.
+ const p=Math.floor((Math.min(raw,ask-tick)+1e-10)/tick)*tick;
+ return p>=tick&&p<ask?Number(p.toFixed(8)):null;
 }
