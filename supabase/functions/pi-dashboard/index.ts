@@ -940,12 +940,13 @@ async function rn1ReverseEngineering(){
  const independentCoverage=await db.unsafe(`
  select count(*)::int pages,
  count(distinct date_trunc('week',p.min_trade_at))::int weeks,
- count(distinct e.event_slug)::int events,
+ (select count(distinct e.event_slug)::int
+  from pi.rn1_independent_price_pages epage
+  cross join lateral jsonb_array_elements_text(epage.sample_event_slugs)
+   as e(event_slug)) as events,
  sum(p.history_requests)::int requested_tokens,
  sum(p.history_success)::int histories_with_prices
  from pi.rn1_independent_price_pages p
- left join lateral jsonb_array_elements_text(p.sample_event_slugs)
-  as e(event_slug) on true
  `);
 
  const bytes=await db.unsafe(`
