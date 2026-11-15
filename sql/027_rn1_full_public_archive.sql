@@ -101,6 +101,8 @@ grant select,insert,update,delete on
  pi.rn1_full_streams,pi.rn1_full_archive_pages,pi.rn1_full_market_metrics,pi.rn1_full_activity_metrics
  to service_role;
 
+insert into pi.wallets(wallet) values('0x2005d16a84ceefa912d4e380cd32e7ff827875ea') on conflict(wallet) do nothing;
+
 insert into pi.rn1_full_streams(stream,wallet,source_path,source_params)
 values
  ('trades_all','0x2005d16a84ceefa912d4e380cd32e7ff827875ea','/v2/trades',
