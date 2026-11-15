@@ -113,3 +113,13 @@ Une fois ces autorisations obtenues, créer la destination, provisionner les sec
 - Les secrets et Edge Functions de pont de migration doivent être **révoqués/désactivés après la mise en production**, sans supprimer les journaux et sauvegardes conservés pour rollback.
 
 Le présent document inclut volontairement les états intermédiaires précédents pour la traçabilité. Les sections antérieures disant « pas encore créée » / « pas encore basculé » décrivent uniquement les étapes historiques ; **la présente section finale fait foi**.
+
+### Vérification post-basculement et fermeture des ponts (15 novembre 2026)
+
+Après la publication du frontend : **12/12** tâches cron héritées de l'ancien projet désactivées, **10/10** tâches métier du nouveau projet actives. Les dernières sondes ont confirmé **247 000 fills chronologiques** (219 860 Maker, 27 140 Taker, zéro inconnu), **134 000 transactions sources** parcourues pour les prix indépendants (5 585 achats Maker échantillonnés, zéro inconnu), **936 000 lignes d'archives par flux** et **209 sessions de cotation**, tous traitements concernés sans erreur. Les 100 wallets et leurs ~190 700 positions ROI sont disponibles sur la destination.
+
+La page Github Pages sert effectivement la nouvelle API dédiée (HTTP 200) et les deux domaines nécessaires pour l'authentification historique. La connexion réelle de l'utilisateur doit être confirmée dans son navigateur ; aucun mot de passe n'a été utilisé. Le workflow GitHub Pages de migration est **terminé avec succès**.
+
+Le jeton de migration n'est plus accepté par la destination (empreinte d'autorisation remplacée). Les trois fonctions Edge temporaires `pi-migration-export`, `pi-migration-sql-export` et `pi-migration-receiver` sont fermées et renvoient **HTTP 410**, vérifié pour chacune. Leur code reste versionné dans GitHub pour pouvoir organiser une éventuelle récupération, et aucune table ni archive source n'a été supprimée.
+
+La source SQL/Storage dans Fit Tracker constitue une copie de rollback **figée au moment du cutover** ; elle ne doit plus être présentée comme une base alimentée en direct. Seul le projet dédié poursuit désormais la recherche RN1 et les actualisations de ROI.
