@@ -856,6 +856,25 @@ async function renderRN1(){
     "Le portefeuille reste un inventaire reconstruit à partir des transactions, "+
     "pas le solde vérifié du wallet.","foot"));
   }
+  const roleContrast=ip.event_maker_taker_contrast?.["900"]||{};
+  const roleEvents=Number(roleContrast.events||0);
+  if(roleEvents>0){
+   const diff=Number(roleContrast.mean_difference),
+     lo=Number(roleContrast.ci_low),hi=Number(roleContrast.ci_high),
+     reliable=roleEvents>=30&&roleContrast.ci_low!==null&&
+      roleContrast.ci_high!==null&&Number.isFinite(lo)&&Number.isFinite(hi);
+   c.append(node("h3","Maker contre Taker : uniquement au sein du même événement"));
+   c.append(node("p",fmt(roleEvents)+" événements ont des achats Maker et Taker "+
+    "ayant un prix public historique observable 15 minutes après l'achat. "+
+    "Différence moyenne Maker − Taker : "+fmt(100*diff,3)+" ¢/part. "+
+    (reliable?"Intervalle indicatif à 95 % : "+fmt(100*lo,3)+" à "+
+     fmt(100*hi,3)+" ¢/part. ":"Échantillon encore insuffisant pour interpréter un intervalle. ")+
+    "Chaque événement compte une fois.","foot"));
+   c.append(node("p","Même au sein du même événement, Maker et Taker ne sont pas interchangeables "+
+    "à cause des moments d'entrée, du prix, de la sélection des exécutions et "+
+    "de la liquidité disponible. Ceci ne mesure pas la valeur des ordres non exécutés "+
+    "ni la rentabilité nette après frais ou rebates.","foot"));
+  }
   const count15=Number(forwardPrices["900"]?.["maker|all"]?.n||0);
   c.append(node("p","Couverture Maker à 15 minutes : "+(makerBuys?fmt(100*count15/makerBuys,1)+" %":"non disponible")+
    " des achats Maker échantillonnés. Les tokens sont sélectionnés de manière "+
