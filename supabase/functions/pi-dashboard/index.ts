@@ -128,7 +128,7 @@ async function positionRoi(body:any){
  if(!walletPattern.test(address))return send({error:"Wallet invalide"},400);
  const page=Math.round(number(body.page,1,1,100000)),per=30;
  const stateRows=await db.unsafe(
-  "select generation,exhausted,request_priority,pages_fetched,rows_seen,updated_at::text,last_complete_at::text,last_error from pi.roi_import_state where wallet=$1",[address]);
+  "select generation,exhausted,sync_mode,request_priority,pages_fetched,rows_seen,updated_at::text,last_complete_at::text,last_recent_at::text,last_full_audit_at::text,last_error,consecutive_failures from pi.roi_import_state where wallet=$1",[address]);
  const state=stateRows[0]??null;
  if(!state)return {state:null,summary:null,rows:[],page,per};
  const summaryRows=await db.unsafe(`
@@ -166,28 +166,33 @@ async function requestPositionRoi(body:any){
  if(!walletPattern.test(wallet))return send({error:"Wallet invalide"},400);
  const known=await db.unsafe("select 1 from pi.wallets where wallet=$1",[wallet]);
  if(!known.length)return send({error:"Wallet non suivi"},404);
- const force=body.force===true;
+ const audit=body.force===true;
  const row=await db.unsafe(`
   insert into pi.roi_import_state(wallet,request_priority)
   values ($1,true)
   on conflict(wallet) do update set
-   generation=case when $2::boolean and pi.roi_import_state.exhausted
-                    then pi.roi_import_state.generation+1
-                    else pi.roi_import_state.generation end,
-   exhausted=case when $2::boolean and pi.roi_import_state.exhausted
+   sync_mode=case when pi.roi_import_state.sync_mode='idle'
+                  then case when $2::boolean then 'full' else 'recent' end
+                  else pi.roi_import_state.sync_mode end,
+   exhausted=case when pi.roi_import_state.sync_mode='idle'
                   then false else pi.roi_import_state.exhausted end,
-   next_cursor=case when $2::boolean and pi.roi_import_state.exhausted
+   next_cursor=case when pi.roi_import_state.sync_mode='idle'
                     then null else pi.roi_import_state.next_cursor end,
-   pages_fetched=case when $2::boolean and pi.roi_import_state.exhausted
-                      then 0 else pi.roi_import_state.pages_fetched end,
-   rows_seen=case when $2::boolean and pi.roi_import_state.exhausted
-                 then 0 else pi.roi_import_state.rows_seen end,
-   request_priority=case when pi.roi_import_state.exhausted and not $2::boolean
-                         then false else true end,
-   last_error=null,updated_at=now()
-  returning wallet,exhausted,pages_fetched
- `,[wallet,force]);
- return {queued:!row[0].exhausted,already_complete:row[0].exhausted};
+   scan_started_at=case when pi.roi_import_state.sync_mode='idle'
+                        then now() else pi.roi_import_state.scan_started_at end,
+   checkpoint_at=case when pi.roi_import_state.sync_mode='idle'
+                      then now()-interval '14 days' else pi.roi_import_state.checkpoint_at end,
+   pages_fetched=case when pi.roi_import_state.sync_mode='idle' then 0
+                      else pi.roi_import_state.pages_fetched end,
+   rows_seen=case when pi.roi_import_state.sync_mode='idle' then 0
+                  else pi.roi_import_state.rows_seen end,
+   request_priority=true,
+   last_attempt_at=case when pi.roi_import_state.sync_mode='idle'
+                        then null else pi.roi_import_state.last_attempt_at end,
+   consecutive_failures=0,last_error=null,updated_at=now()
+  returning wallet,sync_mode,pages_fetched
+ `,[wallet,audit]);
+ return {queued:true,mode:row[0].sync_mode,pages_fetched:row[0].pages_fetched};
 }
 async function health(){
  const r=await db.unsafe(`
@@ -198,6 +203,9 @@ async function health(){
  (select count(*)::integer from pi.position_snapshots) positions,
  (select count(*)::integer from pi.wallet_activity) activities,
  (select count(*)::integer from pi.wallet_equity_daily) equity,
+ (select count(*)::integer from pi.closed_position_roi) roi_positions,
+ (select count(*)::integer from pi.roi_import_state where last_complete_at is not null) roi_with_full_baseline,
+ (select count(*)::integer from pi.roi_import_state where sync_mode<>'idle') roi_syncing,
  (select count(*)::integer from pi.wallet_metrics_daily where missing_pnl_days>0) gapped,
  (select max(collected_at)::text from pi.wallet_pnl_daily) last_collection
  `);
