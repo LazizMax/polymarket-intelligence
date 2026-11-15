@@ -101,3 +101,29 @@ Every interval **includes zero**, and the 60m interval is not actionable due to 
 ### Operational incident at 107 pages
 
 The shared database passed **298 MB**; both `rn1_full_chronology_v1` and `rn1_independent_price_v1` workers correctly transitioned to `paused_quota` at 211,000 chronological fills and 107,000 scanned independent-price fills respectively. Three further safe concurrent index rebuilds reduced the footprint to approximately **295.7 MB**, but not to a sustainable headroom for both workers. **Do not simply raise caps or indefinitely reindex hot tables.** Private archive ingestion and the CLOB quote collector were still independently active at the last confirmed check. A durable capacity change, likely isolating Polymarket analytical storage from the shared project, is still required; existing data and checkpoints are preserved.
+
+## Addendum: weekly fragility, within-event role control and pairing mechanism (dedicated project)
+
+**Deployment:** live Supabase dedicated project `qamdvfakwclkuswrdckp`, with automatic archived source, chronological role-verified replay and independent public CLOB-price sample. Existing old-project snapshot preserved for rollback; no old pages rescanned.
+
+At an intermediate dated snapshot (168 independent sampled pages, sourced from **168,000** archived executions; cohort pages from 756 backward), the token-inclusion / filled-quantity weighted **15-minute historical public price changes per purchased share** were:
+
+| Archived week starting | Maker sampled buys with future quote | Maker 15m (cents/share) | Taker sampled buys | Taker 15m (cents/share) |
+|---|---:|---:|---:|---:|
+| 2026-08-24 | 1,944 | −0.193 | 200 | +6.119 |
+| 2026-08-31 | 2,609 | +0.402 | 245 | +3.472 |
+| 2026-09-07 | 2,957 | −3.838 | 344 | −6.741 |
+
+**Leave-one-week-out check (as of 152 pages):** remove 2026-08-24: −1.032 cents/share; remove 2026-08-31: −1.926 cents/share; remove 2026-09-07: **+0.191 cents/share**. The sign changes when the most negative week is removed. The 15m Maker aggregate is not robust to historical window selection. These three weeks are not a formal out-of-sample test, and the replay remains incomplete.
+
+The dashboard now displays weekly Maker/Taker independent-price movements and three leave-one-week-out values, recalculated *automatically* as the price-history worker extends its sample, with a warning if the mean's sign flips. The persistent event-level data are accumulated in the private checkpoint only from chronological archive **page 677 onward**, so event-cluster confidence intervals may use fewer weeks than the weekly IPW aggregates. Do NOT combine their uncertainty and exposure as if they were one homogeneous cohort.
+
+**New event-matched role analysis:** each sporting event with observable Maker and Taker buys contributes a single quantity/IPW-adjusted Maker-minus-Taker price-change difference. At 168 sampled pages and **135 matched events**, 15-minute difference approximately **−1.875 cents/share**; approximate 95% interval **[−4.936, +1.186] cents/share**. Interval includes zero. Maker/Taker are endogenous trade-execution cohorts; different times, selection of fills, underlying sports outcomes and prices can confound this even *within the same event*. This cannot identify the causal benefit of a passive limit order or maker rebate.
+
+**Complementary inventory/paired-position evidence:** at around 295,000 chronological fills, about **41.09%** of classifiable Maker buys *reduced* the binary YES/NO share imbalance and the remainder predominantly increased it. Thus a universal “always rebalance” decision rule is **contradicted by observed executed fills**. The chronology's gross paired-cost proxy for Maker-created incremental paired shares was approximately **+0.9642 cents per newly paired share**; for Taker approximately **−0.2680 cents**. The proxy is computed as `newPairs * (1 - buy_price - reconstructed_opposing_side_average_cost)`; the counterfactual is a binary pair held/converted at total unit payoff, not an actual confirmed redemption. It omits execution fees, maker rebates, position transfers, realized sales and final inventory reconciliation; repeated inventory recycling and asymmetric fill selection may affect attribution. Neither proxy equals total strategy ROI.
+
+The working hypotheses remain **passive two-sided accumulation with selective creation of complementary cheap binary pairs**, possibly alongside directional exposure; versus alternatives such as market-making inventory recycling and sports-event momentum. These are *candidate explanations only*. They require a fully time-aligned real-book/quote dataset and actual settled cash flows, and must be tested on independent dates/markets before considering execution.
+
+The new role-matched event contrast is derived incrementally from the same private event aggregation already used for Maker inventory pairing. It does not require a new SQL fill table, extra archive reads, or recomputing previously finished source pages.
+
+**CI status:** the corrected RN1 smoke workflow was run on GitHub main, and the dashboard Pages deploy succeeded. The analysis UI explicitly distinguishes independent public CLOB markouts, RN1's own future trade prices, matched-event associations and unrealized pair-cost proxies.
