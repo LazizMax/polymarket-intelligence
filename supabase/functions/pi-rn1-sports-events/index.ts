@@ -107,10 +107,10 @@ async function claim(max:number){
  return await db.unsafe(`
  with picked as (
   select event_slug from pi.rn1_nba_espn_links
-  where ((status='pending' or (status='error' and attempts<3))
+  where ((status='pending' or (status='error' and attempts<3) or (status='partial' and updated_at<now()-interval '15 minutes' and game_day>=current_date-1))
   and game_day<=current_date)
   or (status='working' and lease_until<now())
-  order by case when game_day>=current_date-5 then 0 else 1 end, game_day desc, event_slug
+  order by case when game_day<current_date then 0 else 1 end,game_day desc,event_slug
   for update skip locked limit $1
  )
  update pi.rn1_nba_espn_links l set status='working',
@@ -148,8 +148,9 @@ async function processGame(r:any){
     play_type text,play_text text)
    on conflict(event_slug,play_id) do nothing`,[JSON.stringify(sub)]);
   }
+  const finalized=game?.status?.type?.completed===true;
   await db.unsafe(`update pi.rn1_nba_espn_links
-   set status='complete',lease_until=null,espn_event_id=$2,event_name=$3,
+   set status=$11,lease_until=null,espn_event_id=$2,event_name=$3,
     scoreboard_at=$4::timestamptz,summary_sha256=$5,
     first_play_at=$6::timestamptz,last_play_at=$7::timestamptz,
     plays_seen=$8,plays_timed=$9,scoring_plays=$10,
@@ -157,8 +158,8 @@ async function processGame(r:any){
    where event_slug=$1`,[slug,id,String(game.name||"").slice(0,120),
     scoreboardAt===null?null:new Date(scoreboardAt).toISOString(),digest,
     rows.map(x=>x.play_at).sort()[0],rows.map(x=>x.play_at).sort().at(-1),
-    data.plays.length,rows.length,rows.filter(x=>x.is_scoring).length]);
-  return {slug,status:"complete",plays:rows.length,scoring:rows.filter(x=>x.is_scoring).length};
+    data.plays.length,rows.length,rows.filter(x=>x.is_scoring).length,finalized?'complete':'partial']);
+  return {slug,status:finalized?'complete':'partial',plays:rows.length,scoring:rows.filter(x=>x.is_scoring).length};
  }catch(e){
   const message=String(e instanceof Error?e.message:e).slice(0,160);
   const exhausted=Number(r.attempts)>=3;
