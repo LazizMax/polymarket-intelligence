@@ -453,8 +453,17 @@ async function renderRN1(){
   c.append(totals);
   c.append(node("p","Ces données décrivent uniquement les transactions réellement récupérées. Les achats sur les deux issues ne prouvent pas un arbitrage verrouillé : ventes, fusions et remboursements doivent également être comptabilisés.","foot"));
  }
- c.append(node("h3","Hypothèses à départager par la rétro-ingénierie"));
- c.append(node("p","1. **Prix d'exécution** : RN1 gagne-t-il surtout en étant fournisseur de liquidité ?\n2. **Couverture temporelle** : comment décide-t-il du moment et du coût de la seconde issue ?\n3. **Prise de risque directionnelle** : comment choisit-il ses quantités par rapport au résultat probable ?\n4. **Gains économiques** : quels profits proviennent réellement des matchs, des fusions et des récompenses ?"));
+ c.append(node("h3","Diagnostic automatique — fondé sur les données recueillies"));
+ const mk=Number(market.observed_markets||0),two=Number(market.markets_bought_both_sides||0);
+ const skew=Number(market.two_sided_skew_over_2x||0);
+ const cheap=Number(market.two_sided_vwap_cost_below_one||0);
+ const proportion=(n,d)=>d>0?fmt(100*n/d,1)+" %":"—";
+ if(mk>0){
+  c.append(node("p",proportion(two,mk)+" des marchés étudiés présentent des achats des deux issues. Parmi ces marchés, "+
+   proportion(skew,two)+" possèdent au moins deux fois plus de shares achetées d'un côté que de l'autre. C'est un indice de positions directionnelles, pas d'une neutralité systématique."));
+  c.append(node("p",proportion(cheap,two)+" des marchés avec achats des deux issues présentent un coût moyen combiné inférieur à 1 $ sur les achats visibles. Ce critère ne prouve ni une paire effectivement verrouillée ni une rentabilité après les frais."));
+ }else c.append(node("p","Le diagnostic commencera dès que le collecteur aura accumulé ses premières données utilisables."));
+ c.append(node("p","Les mécanismes encore à isoler sont : les prix limites réellement acceptés, la politique de couverture dans le temps, les rôles maker/taker et la rentabilité économique nette. Le diagnostic sera réévalué à chaque progression de la collecte.","foot"));
  c.append(banner("Nous ne connaissons pas encore les ordres non exécutés, son algorithme privé ou ses probabilités sportives internes. Le but est de déduire des règles falsifiables à partir des données, pas d'inventer son code."));
  target.append(c);
  const storage=data.storage||{};
