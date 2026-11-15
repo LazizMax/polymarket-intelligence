@@ -27,4 +27,5 @@ jobs:
         run: python -m pip install pytest
       - name: Verify replay source, evidence and UI caveats
         run: |
-          pytest -q             tests/test_rn1_private_large_replay.py             tests/test_rn1_large_cohort_evidence.py             tests/test_rn1_identical_model_cohort.py             tests/test_rn1_postfill_markouts.py             tests/test_rn1_inventory_transitions.py
+          pytest -q             tests/test_rn1_private_large_replay.py             tests/test_rn1_large_cohort_evidence.py             tests/test_rn1_identical_model_cohort.py             tests/test_rn1_postfill_markouts.py             tests/test_rn1_inventory_transitions.py \
+            tests/test_rn1_independent_prices.py
