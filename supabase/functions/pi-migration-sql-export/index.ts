@@ -53,7 +53,10 @@ async function migrateBatch(){
   }
   const rows=entries.map(x=>x.row_data),last=rows.at(-1);
   const nextCursor=pk.map(x=>last[x]);
-  const keySeed=new TextEncoder().encode(JSON.stringify({table,previous:cursor,next:nextCursor}));
+  // A final delta sweep may revisit the same PK range after source rows changed.
+  // Include row contents in batch identity so changed data gets a new verified
+  // idempotent upsert instead of conflicting with the original immutable batch.
+  const keySeed=new TextEncoder().encode(JSON.stringify({table,previous:cursor,next:nextCursor,rows}));
   const batchKey=await sha(keySeed);
   const body=new TextEncoder().encode(JSON.stringify({table,batch_key:batchKey,rows}));
   if(body.length>4400000)throw Error("Migration row batch too large");
