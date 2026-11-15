@@ -459,6 +459,56 @@ async function rn1QuoteForensics(){
  avg(abs(bid_offset_ticks-1))::float8 one_tick_above_mae_ticks
  from grouped group by period order by period`);
 
+ const markouts=await db.unsafe(`
+ -- Observational, fill-conditional mark-to-mid, NOT realized PnL.
+ -- Each post-trade book is recorded after the fill; books stale by their own
+ -- timestamps are rejected. Later horizons may include different fills.
+ with fills as(
+  select fingerprint,market_key,token_id,trade_at,fill_price,pre_mid,shares
+  from pi.rn1_quote_probe_fills
+  where role='maker_inferred' and side='BUY'
+ ), horizons as(
+  select 'short' horizon,30 lo,120 hi
+  union all select 'medium',180,420
+  union all select 'long',600,1200
+ ), matched as(
+  select f.*,h.horizon,r.received_at post_at,
+   (j->>'mid')::numeric post_mid,
+   row_number() over(
+    partition by f.fingerprint,h.horizon order by r.received_at
+   ) rn
+  from fills f cross join horizons h
+  join pi.rn1_quote_probe_runs r
+   on r.received_at between f.trade_at+h.lo*interval '1 second'
+    and f.trade_at+h.hi*interval '1 second'
+  cross join lateral jsonb_array_elements(r.quotes) j
+  where j->>'asset_id'=f.token_id and j->>'book_valid'='true'
+   and j->>'mid' is not null
+   and (j->>'book_at')::numeric>=extract(epoch from f.trade_at)*1000
+ ), first_post as(
+  select * from matched where rn=1
+ ), common as(
+  select fingerprint from first_post
+  group by fingerprint having count(distinct horizon)=3
+ )
+ select horizon,count(*)::int matched_fills,
+  count(distinct market_key)::int markets,
+  count(distinct trade_at::date)::int days,
+  count(*) filter(where post_mid<fill_price)::int negative_markouts,
+  avg(post_mid-fill_price)::float8 mean_markout_per_share,
+  (sum(shares*(post_mid-fill_price))/nullif(sum(shares),0))::float8
+   quantity_weighted_markout_per_share,
+  avg(post_mid-pre_mid)::float8 mean_mid_change,
+  count(*) filter(where fingerprint in(select fingerprint from common))::int
+   same_fills_all_horizons,
+  (sum(shares*(post_mid-fill_price)) filter(
+    where fingerprint in(select fingerprint from common)
+   )/nullif(sum(shares) filter(
+    where fingerprint in(select fingerprint from common)
+   ),0))::float8 same_fills_weighted_markout
+ from first_post group by horizon order by horizon
+ `);
+
  const inventoryCoverage=await db.unsafe(`
  select count(*)::int total_runs,
  count(*) filter(where position_status='complete'
@@ -578,7 +628,7 @@ async function rn1QuoteForensics(){
  from expanded group by period,model_name order by period,model_name`);
  const latest=current[0]||null;
  return {
-  state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,
+  state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,markouts,
   inventory:{coverage:inventoryCoverage[0]||{},by_side:inventoryObserved,models:inventoryModels},
   latest:latest?{
    received_at:latest.received_at,market_count:latest.market_count,
