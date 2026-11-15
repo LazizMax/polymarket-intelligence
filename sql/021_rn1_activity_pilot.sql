@@ -42,6 +42,11 @@ create table if not exists pi.rn1_activity_import_state(
  last_error text,
  updated_at timestamptz not null default now()
 );
+-- Reconciliation joins on transaction hash and token, not just the market.
+create index if not exists idx_pi_rn1_trade_matching
+ on pi.trades(wallet,tx_hash,token_id,side)
+ where wallet='0x2005d16a84ceefa912d4e380cd32e7ff827875ea';
+
 create index if not exists idx_pi_rn1_activity_source
  on pi.wallet_activity(wallet,market_key,occurred_at)
  where wallet='0x2005d16a84ceefa912d4e380cd32e7ff827875ea';
