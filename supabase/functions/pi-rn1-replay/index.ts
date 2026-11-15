@@ -185,12 +185,12 @@ async function tick(){
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(page_no) DO NOTHING RETURNING page_no`,
     [pageNo,page.sha256,counts.maker,counts.taker,counts.unknown,counts.valid,counts.unknown?"partial_unknown":"complete",nextKey]);
    if(!recorded.length)throw Error("Replay page was already committed");
-   const saved=await tx.unsafe(`UPDATE pi.rn1_replay_jobs SET next_page=$2,
+   const saved=await tx.unsafe(`UPDATE pi.rn1_replay_jobs SET next_page=$2::bigint,
     pages_done=pages_done+1,fills_done=fills_done+$3,
     maker_fills=maker_fills+$4,taker_fills=taker_fills+$5,unknown_fills=unknown_fills+$6,
     snapshot_key=$7,summary=($8::text)::jsonb,lease_until=null,last_success_at=now(),
-    status=CASE WHEN $2=0 THEN 'complete' ELSE 'running' END,
-    completed_at=CASE WHEN $2=0 THEN now() ELSE completed_at END,
+    status=CASE WHEN $2::bigint=0 THEN 'complete' ELSE 'running' END,
+    completed_at=CASE WHEN $2::bigint=0 THEN now() ELSE completed_at END,
     last_error=null,error_attempts=0,updated_at=now()
     WHERE job_key=$1 AND next_page=$9 AND status='running' RETURNING next_page`,
     [JOB,pageNo-1,counts.valid,counts.maker,counts.taker,counts.unknown,nextKey,JSON.stringify(state.totals),pageNo]);
