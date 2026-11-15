@@ -71,6 +71,9 @@ async function copyRows(req:Request){
  JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
  WHERE n.nspname='pi' AND c.relname=$1 AND i.indisprimary ORDER BY k.ord`,[table]);
  if(!pks.length||!columns.length)return send({error:"missing_primary_key_or_columns"},400);
+ const check=await sql.unsafe("select jsonb_typeof($1::jsonb) as kind, jsonb_array_length($1::jsonb) as n",[JSON.stringify(rows)]).catch(e=>[{error:String(e).slice(0,100)}]);
+ if(check[0]?.kind!=="array")return send({error:"receiver_json_param_nonarray",server_kind:check[0]?.kind,server_error:check[0]?.error,
+  js_array:Array.isArray(rows),length:rows.length},400);
  const quote=(x:string)=>'"'+x.replaceAll('"','""')+'"';
  const primary=pks.map(x=>x.name);
  const nonprimary=columns.map(x=>x.name).filter(x=>!primary.includes(x));
