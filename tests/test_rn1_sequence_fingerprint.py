@@ -24,7 +24,7 @@ def test_source_checks_before_cursor_advancement():
 
 def test_not_misleading_pnl_or_portfolio():
     assert 'The signed buy/sell shares are NOT actual wallet inventory' in SEQ
-    assert 'Les règlements, fusions et inventaires antérieurs manquent' in UI
+    assert 'les règlements, fusions et inventaires antérieurs manquent' in UI
     assert "comparable_buy_fills" in API
     assert "overcorrects_buys" in SEQ
     assert "status in('running','complete','paused_quota','paused_error')" in SQL
