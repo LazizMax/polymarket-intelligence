@@ -996,8 +996,18 @@ async function rn1ReverseEngineering(){
   maker_overweight_fills,
  (sum((summary->'market_price'->'900'->'maker|overweight'->>'weighted')::numeric)
   /nullif(sum((summary->'market_price'->'900'->'maker|overweight'->>'shares')::numeric),0))::float8
-  maker_overweight_markout
- from pi.rn1_independent_price_pages group by 1 order by 1
+  maker_overweight_markout,
+ (sum((summary->'market_price'->'900'->'maker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
+  /nullif(sum((summary->'market_price'->'900'->'maker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8
+  maker_adjusted_markout,
+ (sum((summary->'market_price'->'900'->'maker|underweight'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
+  /nullif(sum((summary->'market_price'->'900'->'maker|underweight'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8
+  maker_under_adjusted,
+ (sum((summary->'market_price'->'900'->'maker|overweight'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
+  /nullif(sum((summary->'market_price'->'900'->'maker|overweight'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8
+  maker_over_adjusted
+ from pi.rn1_independent_price_pages where source_tokens is not null
+ group by 1 order by 1
  `);
 
  const bytes=await db.unsafe(`
