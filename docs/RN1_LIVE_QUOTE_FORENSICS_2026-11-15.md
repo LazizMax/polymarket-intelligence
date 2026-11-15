@@ -89,3 +89,21 @@ Cette divergence impose de **présenter séparément les fenêtres 10–30s et 3
 Sur 546 paires de carnets observées, **546/546** avaient `bid_yes+bid_no<1` et **0/546** avaient `ask_yes+ask_no<1`. Écart moyen `1 - (bid_yes+bid_no)` = **0,0206 $ par paire**. Cela correspond à une **marge maker passive théorique conditionnée aux DEUX remplissages**, pas à un arbitrage immédiat acheté aux asks. La distribution de futures exécutions et la sélection adverse restent indispensables pour valider un signal économiquement exploitable.
 
 Ces observations sont uniquement les premières ~60 minutes, sur un faible nombre d'événements potentiellement corrélés, et **ne remplacent pas** la future validation hors échantillon sur des jours/événements indépendants.
+
+## Audit post-fill — 15 novembre (lecture seule, résultats préliminaires)
+
+Le module `rn1_quote_forensics` reçoit maintenant des **markouts** : comparaison entre le prix de chaque achat RN1 classé `maker_inferred` et le premier prix moyen d'un carnet public enregistré **après** cet achat, aux horizons 30–120 secondes, 3–7 minutes et 10–20 minutes. Les livres sont joints par **token exact**, leur timestamp propre doit être postérieur au fill, et un seul relevé est retenu par fill/horizon.
+
+Sur la première journée observée (à la vérification du 15/11) :
+- 30–120 s : 55 fills, 18 marchés, variation pondérée des prix moyens après achat de −0,00749 $ par part ;
+- 3–7 min : 40 fills, 11 marchés, +0,00807 $ par part ;
+- 10–20 min : 36 fills, 6 marchés, +0,05806 $ par part ;
+- sous-échantillon **identique aux trois horizons** : seulement 13 fills, 4 marchés, respectivement +0,00446 / +0,01303 / +0,04104 $ par part.
+
+Les groupes de fills **diffèrent** entre horizons : le profil croissant ne peut pas être interprété comme une trajectoire représentative de tous les achats. Les quotes futures ne sont pas des prix de liquidation garantis ; ce n'est pas du PnL réalisé, un ROI, ni un résultat de paper trading. Les fills au sein d'un même événement sont fortement corrélés. Une période de collecte d'un seul jour et l'absence des ordres non exécutés empêchent une validation de sélection adverse ou d'avantage reproductible.
+
+**Inventaire public observé avant/après** : 17 fills ont deux photos vérifiées de positions de 5 marchés sous cinq minutes ; 0 mouvements vers l'équilibre, 17 vers un déséquilibre plus grand. Les snapshots ne donnent pas l'effet causal d'un fill précis car plusieurs achats, ventes, merges ou transferts peuvent intervenir entre les deux relevés. Les ratios sont descriptifs et leur échantillon peut être biaisé par le calendrier de capture.
+
+**Garde-fous** : le modèle n'utilise aucune quote postérieure pour choisir un prix antérieur. Les calculs post-trade sont utilisés uniquement comme résultats. Aucune exécution réelle, frais effectifs, remplissage d'ordre simulé ni profit après frais n'est déduit de ces diagnostics.
+
+Les requêtes SQL des deux modules ont été exécutées en lecture seule contre la base active. Le déploiement de la branche reste distinct de ces vérifications, et la validation globale CI doit encore être confirmée.
