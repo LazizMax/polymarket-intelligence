@@ -86,7 +86,7 @@ Deno.serve(async req=>{
  if(!await authorised(req))return respond({error:"forbidden"},403);
  let data:any={};try{data=await req.json()}catch(_){}
  if(data.action!=="transfer_sql")return respond({error:"invalid_action"},400);
- const count=Math.min(12,Math.max(1,Number.isInteger(data.count)?data.count:5));
+ const count=Math.min(30,Math.max(1,Number.isInteger(data.count)?data.count:5));
  const results:any[]=[];
  for(let i=0;i<count;i++){
   const current=await migrateBatch();results.push(current);
