@@ -718,6 +718,44 @@ async function renderRN1(){
  }else c.append(node("p","Le diagnostic commencera dès que le collecteur aura accumulé ses premières données utilisables."));
  c.append(node("p","Les mécanismes encore à isoler sont : les prix limites réellement acceptés, la politique de couverture dans le temps, les rôles maker/taker et la rentabilité économique nette. Le diagnostic sera réévalué à chaque progression de la collecte.","foot"));
 
+ const replay=data.full_replay||null;
+ if(replay){
+  c.append(node("h3","Relecture Maker/Taker des archives RN1"));
+  const done=Number(replay.pages_done||0),total=Number(replay.frozen_last_page||0);
+  const maker=Number(replay.maker_fills||0),unknown=Number(replay.unknown_fills||0);
+  const inv=replay.maker_inventory||{},pair=replay.maker_pair||{};
+  const comparable=Number(inv.comparable||0),reducing=Number(inv.reduces_gap||0);
+  const metrics=node("div",null,"metrics");
+  metrics.append(
+   metric("Progression de la relecture",fmt(done)+" / "+fmt(total)+" pages"),
+   metric("Exécutions Maker vérifiées",fmt(maker)),
+   metric("Maker diminuant l'écart YES/NO",comparable?fmt(100*reducing/comparable,1)+" %":"—"),
+   metric("Volumes appariés reconstitués",fmt(pair.new_pair_shares||0))
+  );
+  c.append(metrics);
+  const forward=replay.maker_forward_proxy||{};
+  const windows=[["60","1 min"],["300","5 min"],["900","15 min"],
+   ["1800","30 min"],["3600","60 min"]];
+  const summary=windows.map(([key,label])=>{
+   const x=forward[key]?.["maker|all"]||{};
+   const n=Number(x.n||0),shares=Number(x.shares||0),weighted=Number(x.weighted||0);
+   return label+" : "+fmt(n)+" achats comparables"+
+    (shares>0?", écart "+fmt(100*weighted/shares,2)+" centimes/part":"");
+  });
+  c.append(node("p","Prix des exécutions RN1 ultérieures, par rapport à ses achats Maker : "+
+   summary.join(" ; ")+". Ces références proviennent des autres exécutions DU MÊME WALLET, "+
+   "pas de cotations de marché indépendantes. Elles ne prouvent donc ni sélection "+
+   "adverse réelle, ni bénéfice réalisé.","foot"));
+  c.append(node("p","Échantillon chronologique figé : "+fmt(replay.frozen_last_page||0)+
+   " pages. "+fmt(unknown)+" exécutions à rôle indéterminé. "+
+   "Inventaire reconstruit uniquement avec les transactions exécutées ; les merges, "+
+   "remboursements et transferts peuvent modifier les avoirs réels. "+
+   (replay.status==="complete"?"Relecture de cette cohorte achevée.":
+    "Relecture automatique : "+String(replay.status||"inconnu")+".")+
+   " Les résultats restent descriptifs avant contrôle hors événements.","foot"));
+  if(replay.last_error)c.append(node("p","Contrôle collecte : "+String(replay.last_error),"foot"));
+ }
+
  const seq=data.sequence||{},job=seq.job||{},ss=Array.isArray(seq.stats)?seq.stats:[];
  const total=ss.find(x=>x.sample_half==="total")||{};
  const newer=ss.find(x=>x.sample_half==="newer")||{};
