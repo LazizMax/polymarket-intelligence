@@ -355,14 +355,15 @@ async function scheduledRN1Trades(){
   for(let j=0;j<2;j++){
    const params:Record<string,string>={user:RN1,limit:"200",start:"1"};
    if(cursor)params.cursor=cursor;
-   const response=pageEnvelope(await get("/v2/trades",params));
+   const sourcePayload=await get("/v2/trades",params);
+   const response=pageEnvelope(sourcePayload);
    if(!response)throw Error("Unexpected V2 trades envelope");
    const {data,hasMore,nextCursor}=response;
    if(hasMore&&nextCursor===cursor)throw Error("V2 cursor failed to advance");
    if(seen+Number(claim[0].rows_seen)+data.length>Number(claim[0].sample_limit))
      throw Error("Pilot page exceeds configured cap");
    // Archive before any aggregation. The raw envelope and row order are preserved for forensic audit.
-   const raw={data,pagination:{has_more:hasMore,next_cursor:nextCursor},params:{user:RN1,start:1,limit:200,requested_cursor:cursor}};
+   const raw={source_response:sourcePayload,request:{user:RN1,start:1,limit:200,requested_cursor:cursor}};
    const pageSHA=await sha256(JSON.stringify(raw));
    const normalized=[];
    for(let i=0;i<data.length;i++){
