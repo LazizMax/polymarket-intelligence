@@ -459,7 +459,7 @@ function fullEnvelope(payload:unknown){
  if(p.pagination.has_more&&(!next||typeof next!=="string"))return null;
  return {rows:p.data as any[],hasMore:p.pagination.has_more,nextCursor:typeof next==="string"&&next?next:null};
 }
-function recordRN1Aggregates(stream:RN1ArchiveStream,rows:any[]){
+function recordRN1Aggregates(stream:RN1ArchiveStream,rows:any[],materializeMetrics:boolean){
  const markets=new Map<string,MarketRollup>();
  const activities=new Map<string,ActivityRollup>();
  let valid=0,invalid=0,minAt:string|null=null,maxAt:string|null=null;
@@ -470,6 +470,7 @@ function recordRN1Aggregates(stream:RN1ArchiveStream,rows:any[]){
   const at=String(stream==="trades_all"?normalized.reported_at:normalized.occurred_at);
   minAt= !minAt||at<minAt?at:minAt;
   maxAt= !maxAt||at>maxAt?at:maxAt;
+  if(!materializeMetrics)continue;
   if(stream==="trades_all"){
    const r=normalized,market_key=String(r.market_key);
    let m=markets.get(market_key);
@@ -537,8 +538,7 @@ async function runRN1FullStream(stream:RN1ArchiveStream){
  const job=state[0],status={stream,pages:0,rows:0,valid:0,invalid:0};
  const limits=await db.unsafe(`select pg_database_size(current_database())::bigint db_bytes,
     coalesce((select sum(raw_gzip_bytes) from pi.rn1_full_streams),0)::bigint all_raw_bytes`);
- if(Number(limits[0].db_bytes)>=Number(job.max_db_bytes)
-  ||Number(limits[0].all_raw_bytes)>=Number(job.max_raw_bytes)){
+ if(Number(limits[0].all_raw_bytes)>=Number(job.max_raw_bytes)){
   await db.unsafe(`update pi.rn1_full_streams set status='paused_quota',lease_until=null,
    last_error='Collection paused before shared DB/storage safety budget',
    updated_at=now() where stream=$1`,[stream]);
@@ -557,13 +557,14 @@ async function runRN1FullStream(stream:RN1ArchiveStream){
    if(envelope.hasMore&&envelope.nextCursor===cursor)throw Error("Source cursor did not advance");
    const oldCursor=cursor;
    const pageNo=Number(job.pages_fetched)+status.pages+1;
-   const rollup=recordRN1Aggregates(stream,envelope.rows);
+   const materializeMetrics=Number(limits[0].db_bytes)<Number(job.max_db_bytes);
+   const rollup=recordRN1Aggregates(stream,envelope.rows,materializeMetrics);
    const raw=JSON.stringify({source_response:response,request:params});
    const digest=await sha256(raw);
    const key=stream+"/page-"+String(pageNo).padStart(8,"0")+"-"+digest.slice(0,16)+".json.gz";
    const payload=await gzipRN1Data(raw);
    if(payload.byteLength>20000000)throw Error("Compressed page exceeded bucket file cap");
-   if(Number(limits[0].all_raw_bytes)+payload.byteLength+Number(job.raw_gzip_bytes)*0
+   if(Number(limits[0].all_raw_bytes)+payload.byteLength
       >Number(job.max_raw_bytes)){
     await db.unsafe(`update pi.rn1_full_streams set status='paused_quota',
       lease_until=null,last_error='Private source archives reached safety budget',
@@ -643,11 +644,14 @@ async function runRN1FullStream(stream:RN1ArchiveStream){
       last_success_at=now(),updated_at=now(),last_error=null,
       status=case when $9::boolean then 'source_exhausted' else 'collecting' end,
       source_exhausted_at=case when $9::boolean then now() else source_exhausted_at end,
-      lease_until=case when $9::boolean then null else lease_until end
+      lease_until=case when $9::boolean then null else lease_until end,
+      metrics_rows=metrics_rows+$12,
+      metrics_paused_at=case when $13::boolean then coalesce(metrics_paused_at,now()) else metrics_paused_at end
      where stream=$1 and pages_fetched=$10 and next_cursor is not distinct from $11
        and status='collecting' returning stream`,
      [stream,envelope.nextCursor,envelope.rows.length,rollup.valid,rollup.invalid,
-      payload.byteLength,rollup.minAt,rollup.maxAt,finished,pageNo-1,oldCursor]);
+      payload.byteLength,rollup.minAt,rollup.maxAt,finished,pageNo-1,oldCursor,
+      materializeMetrics?rollup.valid:0,!materializeMetrics]);
     if(!advanced.length)throw Error("Concurrent full archive cursor update");
    });
    status.pages++;status.rows+=envelope.rows.length;status.valid+=rollup.valid;status.invalid+=rollup.invalid;
