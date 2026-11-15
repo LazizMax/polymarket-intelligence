@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -407,6 +407,85 @@ async function renderRN1Activity(target){
  card.append(node("p","État analytique : non réconcilié. L'historique est partiel et les coûts d'acquisition des parts remboursées sont inconnus ; aucune rentabilité nette validée.","foot"));
 }
 
+
+
+async function renderRN1Triggers(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Déclencheurs observés",
+  "Quel mouvement de cote précède un fill RN1 ? Comparaison avec les fenêtres sans exécution, à partir des sondes CLOB live."));
+ const warn=node("section",null,"card");
+ warn.append(banner("EXPÉRIMENTAL : ces fréquences décrivent des fills observés, PAS des décisions de déposer un ordre Maker. Aucune causalité ni stratégie copiable démontrée."));
+ warn.append(node("p","Les quotes sont enregistrées avant les transactions. L'analyse utilise un écart maximum de 60 secondes après la quote ; les prix des carnets doivent être frais (≤15 s), les spreads ≤10 centimes et le mouvement calculé avec une quote précédente du même token à 10–180 secondes.","foot"));
+ target.append(warn);
+ const options=node("section",null,"card");
+ options.append(node("h2","Filtrer les observations"));
+ const filterWrap=node("div",null,"filters");
+ function select(label,items,current,cb){
+  const wrap=node("label",label),el=node("select");
+  for(const [v,t] of items){const opt=node("option",t);opt.value=v;el.append(opt)}
+  el.value=current;el.addEventListener("change",()=>cb(el.value));wrap.append(el);return wrap;
+ }
+ let origin="rn1_recent",runs=600,cache=null;
+ const result=node("div");
+ filterWrap.append(
+  select("Groupe de marchés",[["rn1_recent","Marchés récents RN1"],["sports_control","Autres marchés sportifs (non appariés)"]],origin,v=>{origin=v;draw()}),
+  select("Derniers sondages",[["200","200 cycles"],["600","600 cycles"],["1500","1 500 cycles"]],String(runs),v=>{runs=Number(v);cache=null;load()})
+ );
+ options.append(filterWrap);target.append(options,result);
+ const classes=[
+  ["stable","Stabilité (<1 centime)"],
+  ["up_1_3c","Hausse 1–3 centimes"],
+  ["down_1_3c","Baisse 1–3 centimes"],
+  ["big_up","Hausse ≥3 centimes"],
+  ["big_down","Baisse ≥3 centimes"]
+ ];
+ function draw(){
+  if(!cache)return;
+  result.replaceChildren();
+  const rows=(cache.rows||[]).filter(x=>x.origin===origin);
+  const total=rows.reduce((a,x)=>a+Number(x.samples||0),0);
+  const filled=rows.reduce((a,x)=>a+Number(x.filled_slots||0),0);
+  const maker=rows.reduce((a,x)=>a+Number(x.maker_fills||0),0);
+  const taker=rows.reduce((a,x)=>a+Number(x.taker_fills||0),0);
+  const k=node("div",null,"metrics");
+  k.append(metric("Fenêtres utilisables",fmt(total)),
+   metric("Fenêtres avec fill RN1",fmt(filled)+" ("+(total?fmt(100*filled/total,2):"—")+" %)"),
+   metric("Fills Maker inférés",fmt(maker)),
+   metric("Fills Taker vérifiés",fmt(taker)));
+  result.append(k);
+  const card=node("section",null,"card");
+  const hd=node("div",null,"cardhead");
+  hd.append(node("h2","Taux de fill dans les 60 s selon le mouvement préalable"));
+  hd.append(node("span","Dernière sonde : "+String(cache.coverage?.last_success_at||"—").slice(0,16).replace("T"," ")+" UTC","small"));
+  card.append(hd);
+  const wrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),h=node("tr");
+  ["Mouvement de cote","Fenêtres","Tokens distincts","Fenêtres avec fill","Taux de fill","Maker (fills)","Taker (fills)"].forEach(v=>h.append(node("th",v)));
+  thead.append(h);table.append(thead);
+  const tbody=node("tbody");
+  for(const [k,label] of classes){
+   const v=rows.find(x=>x.price_move===k),tr=node("tr");
+   tr.append(node("td",label,"name"),node("td",fmt(v?.samples||0)),
+    node("td",fmt(v?.tokens||0)),node("td",fmt(v?.filled_slots||0)),
+    node("td",v?fmt(v.fill_rate_pct,2)+" %":"—","name"),
+    node("td",fmt(v?.maker_fills||0)),node("td",fmt(v?.taker_fills||0)));
+   tbody.append(tr);
+  }
+  table.append(tbody);wrap.append(table);card.append(wrap);
+  card.append(node("p","Un fill est une exécution réellement observée. Une fenêtre est un relevé de carnet pour un token ; plusieurs fenêtres du même marché sont corrélées. Les Maker sont inférés par comparaison à la source taker_only, pas prouvés comme ordres actifs à cette heure.","foot"));
+  result.append(card);
+  const caveat=node("section",null,"card");
+  caveat.append(node("h2","Limites de preuve et prochaine validation"));
+  for(const txt of cache.warnings||[])caveat.append(node("p","• "+txt,"foot"));
+  caveat.append(node("p","Le groupe « autres marchés sportifs » n'est pas un témoin randomisé : ne pas comparer les pourcentages des deux groupes comme un effet causal. Pour conclure, il faudra apparier sport, match, phase de jeu, liquidité et tester sur de nouveaux événements.","foot"));
+  result.append(caveat);
+ }
+ async function load(){
+  result.replaceChildren(node("p","Calcul des fenêtres de carnet…","foot"));
+  try{cache=await api("rn1_trigger_windows",{runs});draw()}
+  catch(e){result.replaceChildren(node("p","Analyse indisponible : "+String(e?.message||e),"red"))}
+ }
+ await load();
+}
 
 async function renderRN1Patterns(){
  const target=$("content");
@@ -1400,7 +1479,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
