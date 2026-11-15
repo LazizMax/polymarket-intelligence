@@ -537,12 +537,12 @@ async function renderRN1(){
    if(hold&&train&&Number(hold.fills)>=100&&Number(hold.markets)>=10){
     const names=[["best_bid_mae_ticks","Au meilleur bid"],["one_tick_below_mae_ticks","Un tick sous le bid"],
      ["two_ticks_below_mae_ticks","Deux ticks sous le bid"],["one_tick_above_mae_ticks","Un tick au-dessus du bid"]];
-    const ordered=names.map(([key,label])=>({label,mae:Number(hold[key])}))
-     .filter(x=>Number.isFinite(x.mae)).sort((a,b)=>a.mae-b.mae);
-    if(ordered.length)quotesCard.append(node("p","Validation sur la période la plus récente ("+
-     fmt(hold.fills)+" fills) : la meilleure règle simple pour PRÉDIRE le prix d'exécution est « "+
-     ordered[0].label+" » (erreur moyenne "+fmt(ordered[0].mae,2)+
-     " ticks). Il ne s'agit pas d'une stratégie rentable validée.","foot"));
+    const ordered=names.map(([key,label])=>({key,label,trainingError:Number(train[key])}))
+     .filter(x=>Number.isFinite(x.trainingError)).sort((a,b)=>a.trainingError-b.trainingError);
+    if(ordered.length)quotesCard.append(node("p","Règle simple choisie UNIQUEMENT sur la période ancienne : « "+
+     ordered[0].label+" ». Sur les "+fmt(hold.fills)+" fills ultérieurs, erreur moyenne "+
+     fmt(hold[ordered[0].key],2)+" ticks (meilleur bid seul : "+
+     fmt(hold.best_bid_mae_ticks,2)+" ticks). Cela teste la prédiction du prix exécuté, pas la rentabilité.","foot"));
    }else{
     quotesCard.append(node("p","Les modèles de cotation (meilleur bid, 1 ou 2 ticks en dessous, 1 tick au-dessus) seront comparés sur une période ultérieure dès que nous aurons au moins 100 exécutions et 10 marchés distincts hors entraînement.","foot"));
    }
