@@ -262,6 +262,8 @@ async function arbitrage(body:any){
  for(const m of selected){
   const yes=books.get(m.tokens[0]),no=books.get(m.tokens[1]);
   if(!yes||!no)continue;
+  const minSize=Math.max(Number(yes.min_order_size||0),Number(no.min_order_size||0));
+  if(!Number.isFinite(minSize)||shares<minSize)continue;
   const q=quotePair(yes.asks,no.asks,shares,feeReservePct);
   if(!q)continue; // liquidity to fill both legs is mandatory
   rows.push({...q,question:m.question,slug:m.slug,condition_id:m.condition_id,volume_24h:m.volume_24h,
