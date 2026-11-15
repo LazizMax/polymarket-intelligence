@@ -4,6 +4,7 @@ import postgres from "npm:postgres@3.4.3";
 import {captureTemporalBooks} from "./arb-capture.ts";
 import {RN1,normalizeV2Trade,pageEnvelope,sha256} from "./rn1-trade-utils.ts";
 import {normalizeActivity,envelopeActivity,sha256Activity} from "./rn1-activity-utils.ts";
+import {matchMakerTaker} from "./rn1-maker-match.ts";
 import { closedRoi } from "./roi-math.ts";
 import { closesPageComplete } from "./roi-sync.ts";
 
@@ -671,6 +672,84 @@ async function runRN1FullStream(stream:RN1ArchiveStream){
  }
 }
 
+
+async function auditRN1MakerRoles(){
+ const result={checked:0,maker:0,taker:0,failures:0};
+ const service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
+ const origin=Deno.env.get("SUPABASE_URL")||"";
+ if(!service||!/^https:\/\/[^/]+\.supabase\.co$/.test(origin))
+  return {status:"failed",error:"Private Storage environment missing"};
+ for(let batch=0;batch<4;batch++){
+  const claimed=await db.unsafe(`
+   with candidate as(
+    select stream,page_no from pi.rn1_full_archive_pages
+    where stream='trades_all'
+      and role_status in('pending','error') and role_attempts<5
+      and (role_lease_until is null or role_lease_until<now())
+    order by page_no limit 1 for update skip locked
+   )
+   update pi.rn1_full_archive_pages p
+   set role_lease_until=now()+interval '90 seconds',role_attempts=p.role_attempts+1
+   from candidate c where p.stream=c.stream and p.page_no=c.page_no
+   returning p.page_no,p.storage_key,p.sha256,p.row_count,p.valid_count,
+    p.min_reported_at::text as first_at,p.max_reported_at::text as last_at`);
+  if(!claimed.length)break;
+  const p=claimed[0];
+  try{
+   const response=await fetch(origin+"/storage/v1/object/"+RN1_FULL_BUCKET+"/"+String(p.storage_key),{
+    headers:{"Authorization":"Bearer "+service,"apikey":service},
+    signal:AbortSignal.timeout(15000)});
+   if(!response.ok||!response.body)throw Error("Private archive GET "+response.status);
+   const unzipped=await new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).text();
+   if(await sha256(unzipped)!==p.sha256)throw Error("Archived page SHA mismatch");
+   const payload=JSON.parse(unzipped);
+   const full=payload?.source_response?.data;
+   if(!Array.isArray(full)||full.length!==Number(p.row_count))
+    throw Error("Archived source row count mismatch");
+   // IMPORTANT: source page is by seek cursor; boundary timestamps may include
+   // extra taker rows from adjacent pages. Compare by multiset, not raw counts.
+   const start=Math.floor(Date.parse(String(p.first_at))/1000);
+   const end=Math.floor(Date.parse(String(p.last_at))/1000);
+   if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>end)
+    throw Error("Invalid source time interval");
+   const taker:any[]=[];
+   let cursor:string|null=null,complete=false;
+   for(let j=0;j<12;j++){
+    const params:Record<string,string>={user:RN1,start:String(start),end:String(end),
+     limit:"1000",taker_only:"true"};
+    if(cursor)params.cursor=cursor;
+    const data=fullEnvelope(await get("/v2/trades",params));
+    if(!data)throw Error("Bad taker-only source envelope");
+    taker.push(...data.rows);
+    if(!data.hasMore){complete=true;break}
+    if(!data.nextCursor||data.nextCursor===cursor)throw Error("Taker cursor did not advance");
+    cursor=data.nextCursor;
+   }
+   if(!complete)throw Error("Taker window too large for safe audit page budget");
+   const roles=matchMakerTaker(full,taker);
+   if(roles.maker+roles.taker!==Number(p.valid_count)){
+    // For completeness, a page with invalid original rows cannot infer their roles.
+    throw Error("Role audit includes invalid wallet fill rows");
+   }
+   await db.unsafe(`update pi.rn1_full_archive_pages
+    set maker_fills=$2,taker_fills=$3,role_status='verified',
+     role_checked_at=now(),role_lease_until=null,role_error=null
+    where stream='trades_all' and page_no=$1`,
+    [p.page_no,roles.maker,roles.taker]);
+   result.checked++;result.maker+=roles.maker;result.taker+=roles.taker;
+  }catch(e){
+   const error=e instanceof Error?e.message.slice(0,170):"RN1 maker audit failed";
+   console.error("rn1_maker_audit",p.page_no,error);
+   await db.unsafe(`update pi.rn1_full_archive_pages
+    set role_status=case when role_attempts>=5 then 'partial' else 'error' end,
+     role_lease_until=null,role_error=$2
+    where stream='trades_all' and page_no=$1`,[p.page_no,error]);
+   result.failures++;
+  }
+ }
+ return {status:result.failures?"partial":"ok",...result};
+}
+
 async function scheduledRN1Trades(){
  // Bounded 4,000-row study: not a complete historical backfill. No orders and no claims of maker identity.
  await db.unsafe("insert into pi.rn1_trade_import_state(wallet) values($1) on conflict do nothing",[RN1]);
@@ -772,6 +851,10 @@ Deno.serve(async (req: Request) => {
     if (body?.action === "rn1_activity_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       return json(await scheduledRN1Activity());
+    }
+    if (body?.action === "rn1_maker_audit_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      return json(await auditRN1MakerRoles());
     }
     if (body?.action === "rn1_full_archive_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
