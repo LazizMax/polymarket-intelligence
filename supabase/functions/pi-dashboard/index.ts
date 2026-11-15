@@ -1,5 +1,6 @@
 // Authenticated Polymarket Intelligence web API, read-only analytics.
 import postgres from "npm:postgres@3.4.3";
+import {quotePair} from "./arb-math.ts";
 const url = Deno.env.get("SUPABASE_URL") || "";
 const pub = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
@@ -216,6 +217,62 @@ async function health(){
  `);
  return {stats:r[0]??{},jobs};
 }
+
+// Read-only live scanner. Gross paired costs are snapshots, NOT executable promises.
+// Maker rebates are intentionally ignored; fee reserve is user-supplied, not actual fees.
+function asArray(x:unknown):unknown[]{
+ if(Array.isArray(x))return x;
+ if(typeof x==="string"){try{const a=JSON.parse(x);return Array.isArray(a)?a:[]}catch{return []}}
+ return [];
+}
+async function arbitrage(body:any){
+ const shares=number(body.shares,50,1,1000),feeReservePct=number(body.fee_reserve_pct,4,0,15);
+ const limit=Math.round(number(body.limit,30,5,50));
+ const g=new URL("https://gamma-api.polymarket.com/markets");
+ for(const [k,v] of Object.entries({active:"true",closed:"false",limit:String(limit),order:"volume_24hr",ascending:"false"}))
+  g.searchParams.set(k,v);
+ const response=await fetch(g,{headers:{accept:"application/json"},signal:AbortSignal.timeout(11000),cache:"no-store"});
+ if(!response.ok)throw Error("Gamma HTTP "+response.status);
+ const markets=await response.json();
+ if(!Array.isArray(markets))throw Error("Unexpected Gamma response");
+ const selected:any[]=[];
+ for(const m of markets){
+  if(!m||m.closed===true||m.active===false||m.enableOrderBook===false)continue;
+  const names=asArray(m.outcomes).map(x=>String(x).toLowerCase());
+  const tokens=asArray(m.clobTokenIds).map(x=>String(x));
+  if(tokens.length!==2||names.length!==2||names[0]!=="yes"||names[1]!=="no"||tokens[0]===tokens[1])continue;
+  if(!tokens.every(x=>/^\\d{20,90}$/.test(x)))continue;
+  selected.push({tokens,question:String(m.question||"").slice(0,220),slug:String(m.slug||"").slice(0,140),
+    condition_id:String(m.conditionId||"").slice(0,100),volume_24h:Number(m.volume24hr||0)});
+ }
+ const params=selected.flatMap(m=>m.tokens.map((token_id:string)=>({token_id})));
+ if(!params.length)return {rows:[],markets_seen:markets.length,binary_scanned:0,
+  fully_quoted:0,shares,fee_reserve_pct:feeReservePct,asof:new Date().toISOString(),
+  warning:"Aucun marché binaire YES/NO trouvé dans ce lot. Aucune conclusion sur la présence d'arbitrages."};
+ const bookResponse=await fetch("https://clob.polymarket.com/books",{
+  method:"POST",headers:{accept:"application/json","content-type":"application/json"},
+  body:JSON.stringify({params}),signal:AbortSignal.timeout(12000),cache:"no-store"
+ });
+ if(!bookResponse.ok)throw Error("CLOB HTTP "+bookResponse.status);
+ const bookList=await bookResponse.json();
+ if(!Array.isArray(bookList))throw Error("Unexpected CLOB books response");
+ const books=new Map<string,any>();
+ for(const book of bookList)if(book&&typeof book.asset_id==="string")books.set(book.asset_id,book);
+ const rows=[];
+ for(const m of selected){
+  const yes=books.get(m.tokens[0]),no=books.get(m.tokens[1]);
+  if(!yes||!no)continue;
+  const q=quotePair(yes.asks,no.asks,shares,feeReservePct);
+  if(!q)continue; // liquidity to fill both legs is mandatory
+  rows.push({...q,question:m.question,slug:m.slug,condition_id:m.condition_id,volume_24h:m.volume_24h,
+    yes_book_time:yes.timestamp||null,no_book_time:no.timestamp||null});
+ }
+ rows.sort((a,b)=>b.indicative_roi_pct-a.indicative_roi_pct);
+ return {rows,markets_seen:markets.length,binary_scanned:selected.length,fully_quoted:rows.length,
+  shares,fee_reserve_pct:feeReservePct,asof:new Date().toISOString(),
+  warning:"Instantaneous book snapshots only. Prices can disappear; no atomic two-leg execution, and the selected fee reserve is not a Polymarket fee quote. No live orders."};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -240,6 +297,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="roi")return send(await positionRoi(body));
   if(body?.action==="roi_request")return send(await requestPositionRoi(body));
   if(body?.action==="health")return send(await health());
+  if(body?.action==="arbitrage")return send(await arbitrage(body));
   return send({error:"Action inconnue"},400);
  }catch(e){
   console.error("pi-dashboard",e instanceof Error?e.message.slice(0,160):"unknown");
