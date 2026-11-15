@@ -415,6 +415,94 @@ async function renderRN1(){
  }
 
  const econ=data.economics||{},proof=econ.summary||{},oracle=econ.official||{};
+ const official=data.official_verdict||{},native=official.summary||{},
+  dailyRisk=official.observed_risk||{},
+  eventRisk=econ.event_risk||{},singles=econ.one_sided||{};
+ if(native.economic_delta!==undefined&&native.economic_delta!==null){
+  const card=node("section",null,"card");
+  const head=node("div",null,"cardhead");
+  head.append(node("h2","Verdict RN1 : rentabilité passée confirmée"));
+  head.append(node("span","Copie automatique non encore validée","small"));
+  card.append(head);
+  const signed=x=>(Number(x)<0?"−":"+")+"$"+fmt(Math.abs(Number(x||0)),0);
+  const ww=Array.isArray(official.weekly)?official.weekly:[],
+   wwPositive=ww.filter(x=>Number(x.economic_delta)>0).length,
+   turnover=Number(native.trading_turnover||0),
+   economy=Number(native.economic_delta||0);
+  const summary=node("div",null,"metrics");
+  summary.append(
+   metric("PnL économique publié · 21/09–12/11",signed(economy)),
+   metric("Périodes positives · 8 semaines",wwPositive+"/"+ww.length),
+   metric("Journées positives / pertes",fmt(dailyRisk.profitable_days||0)+
+    " / "+fmt(dailyRisk.losing_days||0)),
+   metric("PnL / volume négocié (pas ROI capital)",
+    turnover>0?fmt(100*economy/turnover,3)+" %":"—")
+  );
+  card.append(summary);
+  const income=node("div",null,"metrics");
+  income.append(
+   metric("PnL réalisé des marchés",signed(native.market_delta)),
+   metric("Rebates Maker",signed(native.maker_rebates)),
+   metric("Rebates Taker",signed(native.taker_rebates)),
+   metric("Rewards",signed(native.reward_delta)),
+   metric("Pire journée observée",signed(dailyRisk.worst_day)),
+   metric("Recul max. des points journaliers",
+    "−$"+fmt(Math.abs(Number(dailyRisk.max_observed_drawdown||0)),0))
+  );
+  card.append(income);
+  card.append(node("p","Données : PnL natif cumulatif de Polymarket, capturé depuis l'API "+
+   "publique et historisé avec ses blocs sources. Les deux bornes sont "+String(native.start_at||"")+
+   " et "+String(native.end_at||"")+". Les frais, rebates et rewards sont "+
+   "des composantes qui peuvent déjà figurer dans les agrégats : NE PAS les "+
+   "additionner au PnL économique. La perte maximale est mesurée uniquement "+
+   "sur les observations quotidiennes, pas en temps réel.","foot"));
+  if(ww.length){
+   card.append(node("h3","Stabilité hebdomadaire du PnL économique"));
+   for(const w of ww){
+    const pnl=Number(w.economic_delta||0);
+    card.append(node("p","Semaine du "+String(w.week||"")+" : "+
+     signed(pnl)+" · "+fmt(w.turnover||0,0)+" $ de volume. "+
+     (pnl>=0?"Bilan positif.":"Bilan négatif.")+
+     (String(w.week)==="2026-11-09"?" Période tronquée au 12/11.":""),"foot"));
+   }
+  }
+  card.append(banner("Deux conclusions distinctes : (1) le wallet RN1 a réellement "+
+   "gagné dans la période analysée selon le PnL économique natif ; "+
+   "(2) reproduire ses exécutions Maker, ses appariements YES/NO et ses "+
+   "rebates via copy trading n'est PAS démontré. Le ROI sur capital immobilisé "+
+   "est inconnu. Ne pas confondre volume brassé et bankroll."));
+  if(Number(eventRisk.events||0)>0){
+   const headRisk=node("h3","Concentration du risque par événement sportif");
+   card.append(headRisk);
+   card.append(node("p",fmt(eventRisk.events)+" événements réconciliés. "+
+    "Gain brut moyen par événement : "+signed(eventRisk.mean_gross_per_event)+
+    " ; intervalle indicatif regroupé à 95 % : "+
+    signed(eventRisk.approx_gross_event_mean_95_low)+" à "+
+    signed(eventRisk.approx_gross_event_mean_95_high)+
+    ". La composante « paire » moyenne a un intervalle de "+
+    signed(eventRisk.approx_pair_event_mean_95_low)+" à "+
+    signed(eventRisk.approx_pair_event_mean_95_high)+
+    " par événement.","foot"));
+   card.append(node("p","Risque de queue élevé : le 1 % des événements les plus rentables "+
+    "totalise "+signed(eventRisk.top_1pct_gross)+
+    " de gain brut, tandis que les 1 % les plus déficitaires totalisent "+
+    signed(eventRisk.bottom_1pct_gross)+
+    ". Ces intervalles normaux sont approximatifs : les événements sont "+
+    "corrélés dans le temps et les performances extrêmes rendent "+
+    "les extrapolations fragiles.","foot"));
+  }
+  if(Number(singles.markets||0)>0){
+   card.append(node("h3","Contrôle des marchés exclus du calcul des paires"));
+   card.append(node("p",fmt(singles.markets)+" marchés avec achat d'une seule issue, dont "+
+    fmt(singles.markets_with_redemption)+" avec remboursement identifié et "+
+    fmt(singles.markets_without_redemption)+" sans remboursement observé "+
+    "("+fmt(singles.cost_without_observed_redemption||0,0)+" $ de coût d'achat). "+
+    "Ne pas attribuer automatiquement une perte définitive à tous les "+
+    "marchés non remboursés sans connaître leur résolution et les transferts.","foot"));
+  }
+  target.append(card);
+ }
+
  if(Number(proof.reconciled_markets||0)>0){
   const c=node("section",null,"card");
   const head=node("div",null,"cardhead");
@@ -429,7 +517,7 @@ async function renderRN1(){
   const boxes=node("div",null,"metrics");
   boxes.append(
    metric("Résultat BRUT sur marchés réconciliés",usd(pl)),
-   metric("ROI brut (avant frais)",cash>0?(pl>=0?"+":"")+fmt(100*pl/cash,2)+" %":"—"),
+   metric("Marge brute / coût des achats (pas ROI capital)",cash>0?(pl>=0?"+":"")+fmt(100*pl/cash,2)+" %":"—"),
    metric("Contribution des paires YES/NO",usd(matched)),
    metric("Contribution directionnelle résiduelle",usd(direction))
   );
