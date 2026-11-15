@@ -305,18 +305,24 @@ async function scheduledTemporal(){
   if(!rows.length)throw Error("No compatible CTF binary books in Gamma sample");
   const inserted=await db.unsafe(
    `insert into pi.arb_temporal_snapshots
-    (batch_id,observed_at,market_key,market_slug,question,yes_token_id,no_token_id,quote_shares,
+    (batch_id,observed_at,market_key,market_slug,event_slug,question,yes_token_id,no_token_id,quote_shares,
      yes_buy_avg,no_buy_avg,yes_sell_avg,no_sell_avg,yes_best_bid,no_best_bid,yes_best_ask,no_best_ask)
-    select x.batch_id,x.observed_at,x.market_key,x.market_slug,x.question,
+    select x.batch_id,x.observed_at,x.market_key,x.market_slug,x.event_slug,x.question,
       x.yes_token_id,x.no_token_id,x.quote_shares,x.yes_buy_avg,x.no_buy_avg,x.yes_sell_avg,
       x.no_sell_avg,x.yes_best_bid,x.no_best_bid,x.yes_best_ask,x.no_best_ask
     from jsonb_to_recordset(($1::text)::jsonb) as x(
-      batch_id uuid,observed_at timestamptz,market_key text,market_slug text,question text,
+      batch_id uuid,observed_at timestamptz,market_key text,market_slug text,event_slug text,question text,
       yes_token_id text,no_token_id text,quote_shares numeric,
       yes_buy_avg numeric,no_buy_avg numeric,yes_sell_avg numeric,no_sell_avg numeric,
       yes_best_bid numeric,no_best_bid numeric,yes_best_ask numeric,no_best_ask numeric)
     on conflict(batch_id,market_key) do nothing returning snapshot_id`,
    [JSON.stringify(rows)]);
+  // Metadata-only backfill for older snapshots of the same condition ID.
+  // Never rewrite historical quotes or invent execution prices.
+  await db.unsafe(`update pi.arb_temporal_snapshots historical set event_slug=latest.event_slug
+    from (select distinct on(market_key) market_key,event_slug from pi.arb_temporal_snapshots
+          where event_slug is not null order by market_key,observed_at desc) latest
+    where historical.market_key=latest.market_key and historical.event_slug is null`);
   // Keep costs bounded in the pre-existing project shared with Fit Tracker.
   await db.unsafe("delete from pi.arb_temporal_snapshots where observed_at<now()-interval '14 days'");
   await db.unsafe("update pi.ingestion_jobs set status='done',pages_fetched=2,rows_fetched=$2,finished_at=now(),updated_at=now() where id=$1",
