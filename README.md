@@ -1,6 +1,14 @@
 # Polymarket Intelligence
 
-Application Windows locale pour analyser les transactions historiques publiques sur Polymarket.
+Projet de recherche Polymarket : **évaluer si la copie de traders possède une EV nette positive**, puis la tester prospectivement, avec une interface cloud privée et un ancien client Windows.
+
+## Feuille de route métier active — 15 novembre 2026
+
+[**Roadmap Cloud : de l'audit des trades au paper trading copiable**](docs/ROADMAP_COPY_TRADING_CLOUD_2026-11-15.md)
+
+**Prochaine étape :** [P0-A, collecter transactions individuelles et activités économiques avec provenance et identifiants robustes](https://github.com/LazizMax/polymarket-intelligence/issues/6). Les classements ROI actuels restent descriptifs ; ils ne prouvent pas la rentabilité d'une stratégie copiée. Les étapes P0-B, P1, P2 et P3/P4 sont suivies dans les [issues du dépôt](https://github.com/LazizMax/polymarket-intelligence/issues).
+
+### Ancienne application Windows (historique du projet)
 
 ## État actuel — v2.1.0
 
@@ -42,7 +50,7 @@ Dans l'application permanente, l'adresse du manifeste de mise à jour est :
 
 [Ouvrir l'interface Polymarket Intelligence Cloud](https://lazizmax.github.io/polymarket-intelligence/)
 
-**Activation initiale à effectuer :** ouvrir [Settings → Pages](https://github.com/LazizMax/polymarket-intelligence/settings/pages) et choisir **GitHub Actions** comme source. La première exécution du workflow `Deploy Polymarket Cloud frontend` échoue tant que Pages n'est pas activé ; relancer ensuite ce workflow. Le code frontend est déjà validé et prêt à être publié.
+GitHub Pages est activé : les modifications de l'interface `web/` sont publiées automatiquement à l'URL ci-dessus.
 
 Le dashboard en ligne utilise le schéma privé `pi` d'un projet Supabase existant. Il impose un compte Supabase Auth explicitement autorisé. L'import initial de 100 wallets, le PnL quotidien et les drawdowns observés sont opérationnels. Un job planifié rafraîchit 5 wallets toutes les 15 minutes. **Aucun ROI sur capital ni avantage de copy trading n'a encore été validé.** La documentation technique et la procédure de suspension sont dans [le runbook cloud](docs/CLOUD_RUNBOOK_V1.md).
 
