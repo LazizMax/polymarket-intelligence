@@ -434,6 +434,27 @@ async function renderRN1(){
    metric("Contribution directionnelle résiduelle",usd(direction))
   );
   c.append(boxes);
+  const skewBands=Array.isArray(econ.by_skew)?econ.by_skew:[],
+   severe=skewBands.find(x=>x.imbalance_band==="at_least_2"),
+   balanced=skewBands.find(x=>x.imbalance_band==="below_1_1");
+  if(severe&&balanced){
+   c.append(node("h3","Pourquoi le déséquilibre YES/NO compte"));
+   const skewBoxes=node("div",null,"metrics");
+   const severePairs=Number(severe.paired_gross||0),
+    severeResidual=Number(severe.residual_gross||0);
+   skewBoxes.append(
+    metric("Marchés avec un côté au moins 2× plus gros",fmt(severe.markets)),
+    metric("Marge brute des paires sur ces marchés",usd(severePairs)),
+    metric("Résultat directionnel résiduel",usd(severeResidual)),
+    metric("Marchés presque équilibrés (<1,1×)",fmt(balanced.markets))
+   );
+   c.append(skewBoxes);
+   c.append(node("p","Quand une issue est achetée au moins deux fois plus que l'autre, "+
+    "les paires peuvent être avantageuses mais l'exposition non couverte "+
+    "absorbe parfois presque tout le gain. Échantillon : "+fmt(severe.markets)+
+    " marchés, "+fmt(severe.events)+" événements. Décomposition économique brute "+
+    "a posteriori, non attribuable à un ordre individuel et avant frais.","foot"));
+  }
   c.append(node("p","Sur "+fmt(proof.reconciled_markets||0)+" marchés où les deux issues ont été achetées et où les flux de remboursement correspondent aux shares acquises : "+
    "$"+fmt(Number(proof.paired_invested||0),0)+" de capital apparié, pour "+
    (paircost>0?(matched>=0?"+":"")+fmt(100*matched/paircost,2)+" %":"—")+
@@ -495,6 +516,41 @@ async function renderRN1(){
     ". Un écart de bids ne garantit pas que les deux ordres seraient exécutés.","foot"));
   }
 
+  const marks=Array.isArray(q.markouts)?q.markouts:[],
+   markNames={short:"30–120 secondes",medium:"3–7 minutes",long:"10–20 minutes"};
+  if(marks.length){
+   quotesCard.append(node("h3","RN1 — évolution du prix après achat"));
+   const markPanel=node("div",null,"metrics");
+   for(const horizon of ["short","medium","long"]){
+    const m=marks.find(x=>x.horizon===horizon);
+    if(!m)continue;
+    const n=Number(m.matched_fills||0),
+     weighted=Number(m.quantity_weighted_markout_per_share);
+    markPanel.append(metric(markNames[horizon],
+     Number.isFinite(weighted)?fmt(weighted*100,2)+" ¢/part":"—"));
+    quotesCard.append(node("p",markNames[horizon]+" : "+fmt(n)+" achats Maker observés, "+
+     fmt(m.markets||0)+" marchés, "+fmt(m.days||0)+" jour(s). "+
+     fmt(m.negative_markouts||0)+" ont un prix moyen ultérieur sous leur prix d'achat.","foot"));
+   }
+   quotesCard.append(markPanel);
+   const common=marks.find(x=>x.horizon==="short");
+   if(common&&Number(common.same_fills_all_horizons||0)>0){
+    const n=Number(common.same_fills_all_horizons);
+    const textByHorizon=["short","medium","long"].map(h=>{
+     const m=marks.find(x=>x.horizon===h);
+     return m&&Number.isFinite(Number(m.same_fills_weighted_markout))?
+      markNames[h]+" : "+fmt(100*Number(m.same_fills_weighted_markout),2)+" ¢":"—";
+    }).join(" ; ");
+    quotesCard.append(node("p","Même groupe observable aux trois horizons ("+fmt(n)+
+     " achats) : "+textByHorizon+". Ce sous-groupe reste sélectionné par la présence "+
+     "de cotations futures, pas par une règle d'investissement.","foot"));
+   }
+   quotesCard.append(node("p","Variation du prix moyen du carnet après achat, pondérée par la quantité "+
+    "de parts ; ni vente exécutée, ni PnL, ni ROI. Les groupes changent selon le délai "+
+    "et les fills peuvent provenir des mêmes événements. Une seule journée observée "+
+    "ne valide pas l'avantage, les frais ou la sélection adverse à long terme.","foot"));
+  }
+
   const inv=q.inventory||{},coverage=inv.coverage||{},
    invStats=Array.isArray(inv.by_side)?inv.by_side:[],
    invModels=Array.isArray(inv.models)?inv.models:[];
@@ -518,6 +574,19 @@ async function renderRN1(){
      fmt(majority?.matched_fills||0)+". Les positions proviennent de l'API publique, "+
      "relevées avant les trades, et non du cumul approximatif des fills historiques.","foot"));
    }
+   const transitions=inv.transitions||{};
+   if(Number(transitions.comparable_fills||0)>0){
+    quotesCard.append(node("h3","Évolution de l'inventaire après les achats"));
+    quotesCard.append(node("p","Sur "+fmt(transitions.comparable_fills)+
+     " achats avec deux relevés de positions vérifiés (jusqu'à cinq minutes après), "+
+     fmt(transitions.less_imbalanced||0)+" relevés montrent un portefeuille YES/NO "+
+     "moins déséquilibré, "+fmt(transitions.more_imbalanced||0)+
+     " plus déséquilibré et "+fmt(transitions.unchanged||0)+
+     " inchangé, sur "+fmt(transitions.markets||0)+" marchés et "+
+     fmt(transitions.days||0)+" jour(s). Ce sont des changements entre photos "+
+     "du portefeuille, pas des effets attribuables à chaque achat : d'autres "+
+     "opérations peuvent avoir eu lieu entre les relevés.","foot"));
+   }
    const runs=[...new Set(invModels.map(x=>x.period))];
    if(runs.includes("train")&&runs.includes("holdout")){
     const train=invModels.filter(x=>x.period==="train"&&Number(x.fills)>=20&&Number.isFinite(Number(x.mae_ticks)));
@@ -532,8 +601,15 @@ async function renderRN1(){
       (titles[best.model_name]||best.model_name)+" ». Erreur moyenne hors période : "+
       fmt(check.mae_ticks,2)+" ticks, contre "+fmt(base.mae_ticks,2)+
       " ticks avec le meilleur bid seul (comparaison des prix exécutés, pas du profit).","foot"));
-    }else quotesCard.append(node("p","Les modèles conditionnés à l'inventaire sont en apprentissage. "+
-     "La comparaison hors période exige au moins 100 fills sur 10 événements sportifs différents.","foot"));
+    }else{
+     const h=invModels.find(x=>x.period==="holdout"&&x.model_name==="best_bid");
+     const t=invModels.find(x=>x.period==="train"&&x.model_name==="best_bid");
+     quotesCard.append(node("p","Modèles de prix sur la même cohorte : "+
+      fmt(t?.fills||0)+" fills d'entraînement, "+fmt(h?.fills||0)+
+      " fills hors période et "+fmt(h?.events||0)+
+      " événements hors période. Aucun modèle n'est validé : il faut au moins 100 fills hors période "+
+      "sur 10 événements, puis vérifier remplissage, sélection adverse et PnL net.","foot"));
+    }
    }
   }else{
    quotesCard.append(node("p","Positions publiques RN1 : capture synchronisée non encore validée. "+
@@ -641,6 +717,44 @@ async function renderRN1(){
   c.append(node("p",proportion(cheap,two)+" des marchés avec achats des deux issues présentent un coût moyen combiné inférieur à 1 $ sur les achats visibles. Ce critère ne prouve ni une paire effectivement verrouillée ni une rentabilité après les frais."));
  }else c.append(node("p","Le diagnostic commencera dès que le collecteur aura accumulé ses premières données utilisables."));
  c.append(node("p","Les mécanismes encore à isoler sont : les prix limites réellement acceptés, la politique de couverture dans le temps, les rôles maker/taker et la rentabilité économique nette. Le diagnostic sera réévalué à chaque progression de la collecte.","foot"));
+
+ const replay=data.full_replay||null;
+ if(replay){
+  c.append(node("h3","Relecture Maker/Taker des archives RN1"));
+  const done=Number(replay.pages_done||0),total=Number(replay.frozen_last_page||0);
+  const maker=Number(replay.maker_fills||0),unknown=Number(replay.unknown_fills||0);
+  const inv=replay.maker_inventory||{},pair=replay.maker_pair||{};
+  const comparable=Number(inv.comparable||0),reducing=Number(inv.reduces_gap||0);
+  const metrics=node("div",null,"metrics");
+  metrics.append(
+   metric("Progression de la relecture",fmt(done)+" / "+fmt(total)+" pages"),
+   metric("Exécutions Maker vérifiées",fmt(maker)),
+   metric("Maker diminuant l'écart YES/NO",comparable?fmt(100*reducing/comparable,1)+" %":"—"),
+   metric("Volumes appariés reconstitués",fmt(pair.new_pair_shares||0))
+  );
+  c.append(metrics);
+  const forward=replay.maker_forward_proxy||{};
+  const windows=[["60","1 min"],["300","5 min"],["900","15 min"],
+   ["1800","30 min"],["3600","60 min"]];
+  const summary=windows.map(([key,label])=>{
+   const x=forward[key]?.["maker|all"]||{};
+   const n=Number(x.n||0),shares=Number(x.shares||0),weighted=Number(x.weighted||0);
+   return label+" : "+fmt(n)+" achats comparables"+
+    (shares>0?", écart "+fmt(100*weighted/shares,2)+" centimes/part":"");
+  });
+  c.append(node("p","Prix des exécutions RN1 ultérieures, par rapport à ses achats Maker : "+
+   summary.join(" ; ")+". Ces références proviennent des autres exécutions DU MÊME WALLET, "+
+   "pas de cotations de marché indépendantes. Elles ne prouvent donc ni sélection "+
+   "adverse réelle, ni bénéfice réalisé.","foot"));
+  c.append(node("p","Échantillon chronologique figé : "+fmt(replay.frozen_last_page||0)+
+   " pages. "+fmt(unknown)+" exécutions à rôle indéterminé. "+
+   "Inventaire reconstruit uniquement avec les transactions exécutées ; les merges, "+
+   "remboursements et transferts peuvent modifier les avoirs réels. "+
+   (replay.status==="complete"?"Relecture de cette cohorte achevée.":
+    "Relecture automatique : "+String(replay.status||"inconnu")+".")+
+   " Les résultats restent descriptifs avant contrôle hors événements.","foot"));
+  if(replay.last_error)c.append(node("p","Contrôle collecte : "+String(replay.last_error),"foot"));
+ }
 
  const seq=data.sequence||{},job=seq.job||{},ss=Array.isArray(seq.stats)?seq.stats:[];
  const total=ss.find(x=>x.sample_half==="total")||{};
