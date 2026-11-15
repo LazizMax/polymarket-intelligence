@@ -362,6 +362,111 @@ const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 
 
 
+
+async function rn1QuoteForensics(){
+ const state=await db.unsafe(`
+ select status,completed_runs::float8 as completed_runs,
+ matched_fills::float8 as matched_fills,
+ archived_gzip_bytes::float8 as archived_gzip_bytes,
+ last_success_at::text as last_success_at,last_error,
+ max_db_bytes::float8 as max_db_bytes
+ from pi.rn1_quote_probe_state where singleton=true`);
+ const current=await db.unsafe(`
+ select id,received_at::text as received_at,market_count,book_count,rn1_market_count,
+ quotes from pi.rn1_quote_probe_runs order by received_at desc limit 1`);
+ const bookPairs=await db.unsafe(`
+ with per_side as(
+  select r.id,r.received_at,
+   x->>'market_key' as market_key,
+   (x->>'outcome_index')::int outcome,
+   (x->>'bid')::numeric as bid,(x->>'ask')::numeric as ask,
+   (x->>'bid_size')::numeric as bid_size,
+   (x->>'ask_size')::numeric as ask_size
+  from pi.rn1_quote_probe_runs r
+  cross join lateral jsonb_array_elements(r.quotes) x
+  where r.received_at>=now()-interval '14 days'
+   and (x->>'book_valid')::boolean=true
+ ), paired as(
+  select id,market_key,
+   max(bid) filter(where outcome=0) bid0,
+   max(bid) filter(where outcome=1) bid1,
+   max(ask) filter(where outcome=0) ask0,
+   max(ask) filter(where outcome=1) ask1,
+   max(ask_size) filter(where outcome=0) ask_size0,
+   max(ask_size) filter(where outcome=1) ask_size1
+  from per_side group by id,market_key
+ )
+ select count(*)::int total_book_pairs,
+ count(distinct market_key)::int markets,
+ count(*) filter(where bid0 is not null and bid1 is not null
+  and ask0 is not null and ask1 is not null)::int valid_book_pairs,
+ count(*) filter(where bid0+bid1<1)::int
+  resting_two_bid_sum_below_one,
+ count(*) filter(where ask0+ask1<1)::int
+  buying_two_asks_sum_below_one_before_fees,
+ count(*) filter(where ask0+ask1+
+  0.05*ask0*(1-ask0)+0.05*ask1*(1-ask1)<1
+  and least(ask_size0,ask_size1)>=5)::int
+  buying_two_asks_after_sports_fee_and_depth,
+ avg(1-(bid0+bid1))::float8 mean_unfilled_maker_pair_gap,
+ avg(1-(ask0+ask1))::float8 mean_crossing_ask_pair_gap
+ from paired`);
+ const fills=await db.unsafe(`
+ with verified as(
+  select f.*,r.quotes as matched_quotes
+  from pi.rn1_quote_probe_fills f join pi.rn1_quote_probe_runs r on r.id=f.run_id
+ )
+ select count(*)::int matched_fills,
+ count(distinct market_key)::int matched_markets,
+ count(distinct trade_at::date)::int matched_days,
+ count(*) filter(where role='maker_inferred')::int inferred_maker_fills,
+ count(*) filter(where role='taker_verified')::int verified_taker_fills,
+ count(*) filter(where role='unknown')::int unknown_role_fills,
+ count(*) filter(where lag_seconds<=30)::int matched_under_30s,
+ count(*) filter(where lag_seconds>30 and lag_seconds<=60)::int matched_30to60s,
+ count(*) filter(where lag_seconds>60)::int matched_over60s,
+ count(*) filter(where role='maker_inferred' and lag_seconds<=60
+  and abs(bid_offset_ticks)<=0.5)::int maker_fills_at_prior_bid,
+ count(*) filter(where role='maker_inferred' and lag_seconds<=60)::int
+  maker_fills_close_enough_to_compare,
+ avg(abs(bid_offset_ticks)) filter(where role='maker_inferred'
+  and lag_seconds<=60)::float8 avg_maker_offset_ticks_abs,
+ coalesce(sum(sports_taker_fee_estimate) filter(where role='taker_verified'),0)::float8
+  estimated_matched_taker_fees
+ from verified`);
+ const models=await db.unsafe(`
+ with classified as(
+  select *,
+   min(trade_at) over() as min_time,max(trade_at) over() as max_time
+  from pi.rn1_quote_probe_fills
+  where role='maker_inferred' and lag_seconds<=60
+ ), grouped as(
+  select case when trade_at >=
+   min_time+(max_time-min_time)*0.8 then 'holdout' else 'train' end period,
+   market_key,bid_offset_ticks from classified
+ )
+ select period,count(*)::int fills,count(distinct market_key)::int markets,
+ avg(abs(bid_offset_ticks))::float8 best_bid_mae_ticks,
+ avg(abs(bid_offset_ticks+1))::float8 one_tick_below_mae_ticks,
+ avg(abs(bid_offset_ticks+2))::float8 two_ticks_below_mae_ticks,
+ avg(abs(bid_offset_ticks-1))::float8 one_tick_above_mae_ticks
+ from grouped group by period order by period`);
+ const latest=current[0]||null;
+ return {
+  state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,
+  latest:latest?{
+   received_at:latest.received_at,market_count:latest.market_count,
+   book_count:latest.book_count,rn1_market_count:latest.rn1_market_count,
+   markets:[...new Map((latest.quotes||[]).map((q:any)=>[
+    q.market_key,{market_key:q.market_key,event_slug:q.event_slug,market_type:q.market_type,
+     source:q.origin}])).values()]
+  }:null,
+  quality:"live_pretrade_book_samples_not_original_unfilled_orders",
+  methodology:"CLOB REST /books, asset IDs from Gamma, authenticated private gzip archives. Only fills occurring 10–120 seconds AFTER a quote response are matched. Sports taker fees use the currently published public category formula. A quote match does not prove that RN1 posted that quote or that a simulated order would fill.",
+  training:"Model comparison is conditional on maker-inferred fills; train=earlier 80% by observed time, holdout=later 20%. This tests price-offset prediction only, not trading profitability. Require many independent events and temporal robustness before interpreting rankings."
+ };
+}
+
 async function rn1EconomicAttribution(){
  // Reconcile ONLY binary-like two-sided markets with on-chain-account settlement
  // flows whose reported USDC matches EITHER observed winning-side share count.
@@ -841,6 +946,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="arb_observatory")return send(await arbObservatory());
   if(body?.action==="rn1_research")return send(await rn1Research());
   if(body?.action==="rn1_reverse_engineering")return send(await rn1ReverseEngineering());
+  if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
   return send({error:"Action inconnue"},400);
