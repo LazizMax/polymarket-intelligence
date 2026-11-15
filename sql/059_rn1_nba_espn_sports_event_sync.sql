@@ -16,7 +16,7 @@ select cron.schedule(
  )
  where exists(
   select 1 from pi.rn1_nba_espn_links
-  where status in ('pending','error') or (status='working' and lease_until<now())
+  where status in ('pending','error') or (status='partial' and updated_at<now()-interval '15 minutes' and game_day>=current_date-1) or (status='working' and lease_until<now())
  );
  $job$
 );
