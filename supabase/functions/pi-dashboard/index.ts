@@ -451,9 +451,115 @@ async function rn1QuoteForensics(){
  avg(abs(bid_offset_ticks+2))::float8 two_ticks_below_mae_ticks,
  avg(abs(bid_offset_ticks-1))::float8 one_tick_above_mae_ticks
  from grouped group by period order by period`);
+
+ const inventoryCoverage=await db.unsafe(`
+ select count(*)::int total_runs,
+ count(*) filter(where position_status='complete'
+  and position_observed_at is not null
+  and position_observed_at<=requested_at)::int complete_position_runs,
+ count(*) filter(where position_status='unavailable')::int unavailable_runs,
+ coalesce(sum(jsonb_array_length(positions))
+  filter(where position_status='complete'),0)::int checked_outcome_positions
+ from pi.rn1_quote_probe_runs`);
+ const inventoryObserved=await db.unsafe(`
+ with holding as(
+  select r.id run_id,p.market_key,p.token_id,p.outcome_index,p.current_size,p.avg_price
+  from pi.rn1_quote_probe_runs r
+  cross join lateral jsonb_to_recordset(r.positions)
+  as p(market_key text,token_id text,outcome_index int,
+       current_size numeric,avg_price numeric)
+  where r.position_status='complete' and r.position_observed_at<=r.requested_at
+ ), prior as(
+  select f.market_key,f.role,f.fill_price,f.shares,f.lag_seconds,
+  my.current_size own,opp.current_size other,opp.avg_price other_avg,
+  (my.current_size-opp.current_size)/
+   nullif(my.current_size+opp.current_size,0) signed_skew
+  from pi.rn1_quote_probe_fills f
+  join holding my on my.run_id=f.run_id and my.token_id=f.token_id
+  join holding opp on opp.run_id=f.run_id and opp.market_key=my.market_key
+   and opp.outcome_index<>my.outcome_index
+  where f.role='maker_inferred' and f.side='BUY' and f.lag_seconds<=60
+ )
+ select case when own=0 and other=0 then 'empty'
+  when own<other then 'underweight'
+  when own>other then 'overweight'
+  else 'balanced' end as pretrade_inventory_side,
+ count(*)::int matched_fills,count(distinct market_key)::int markets,
+ round(avg(abs(signed_skew))::numeric,4)::float8 avg_abs_skew,
+ count(*) filter(where other>own and other_avg is not null
+  and fill_price+other_avg<1)::int
+  purchases_priced_below_previous_opposite_average,
+ coalesce(sum(least(shares,greatest(0,other-own))*
+  (1-fill_price-other_avg)) filter(where other>own and other_avg is not null),0)::float8
+  indicative_incremental_pair_margin
+ from prior group by 1 order by 1`);
+ const inventoryModels=await db.unsafe(`
+ with pos as(
+  select r.id run_id,p.market_key,p.token_id,p.outcome_index,
+   p.current_size,p.avg_price
+  from pi.rn1_quote_probe_runs r
+  cross join lateral jsonb_to_recordset(r.positions)
+  as p(market_key text,token_id text,outcome_index int,current_size numeric,avg_price numeric)
+  where r.position_status='complete' and r.position_observed_at<=r.requested_at
+ ), candidate as(
+  select f.fingerprint,f.trade_at,f.fill_price,f.pre_bid,f.pre_ask,f.market_key,
+   my.current_size own,opp.current_size other,opp.avg_price other_avg,
+   (my.current_size-opp.current_size)/
+    nullif(my.current_size+opp.current_size,0) signed_skew,
+   (q->>'tick')::numeric tick,q->>'event_slug' event_slug
+  from pi.rn1_quote_probe_fills f
+  join pi.rn1_quote_probe_runs r on r.id=f.run_id
+  join pos my on my.run_id=f.run_id and my.token_id=f.token_id
+  join pos opp on opp.run_id=f.run_id and opp.market_key=my.market_key
+   and opp.outcome_index<>my.outcome_index
+  cross join lateral jsonb_array_elements(r.quotes) q
+  where q->>'asset_id'=f.token_id and f.role='maker_inferred'
+   and f.side='BUY' and f.lag_seconds<=60
+   and opp.current_size>0 and opp.avg_price is not null
+   and (q->>'tick')::numeric>0 and f.pre_ask>f.pre_bid
+ ), ranked as(
+  select *,row_number() over(order by trade_at,fingerprint) rn,
+   count(*) over() n from candidate
+ ), candidates as(
+  select
+   case when rn<=floor(n*.8) then 'train' else 'holdout' end period,
+   market_key,event_slug,fill_price,tick,
+   pre_bid model_best_bid,
+   pre_bid-tick model_one_tick_below,
+   pre_bid-2*tick model_two_ticks_below,
+   floor((pre_bid-tick*greatest(0,coalesce(signed_skew,0)))/tick)*tick
+    model_inventory_one_tick,
+   floor((pre_bid-2*tick*greatest(0,coalesce(signed_skew,0)))/tick)*tick
+    model_inventory_two_ticks,
+   floor(least(pre_bid,1-other_avg-.01)/tick)*tick
+    model_pair_ceiling_1pct,
+   floor(least(pre_bid,1-other_avg-.02)/tick)*tick
+    model_pair_ceiling_2pct,
+   pre_ask
+  from ranked
+ ), expanded as(
+  select period,market_key,event_slug,fill_price,tick,model_name,model_price
+  from candidates
+  cross join lateral (values
+    ('best_bid',model_best_bid),
+    ('one_tick_below',model_one_tick_below),
+    ('two_ticks_below',model_two_ticks_below),
+    ('inventory_one_tick',model_inventory_one_tick),
+    ('inventory_two_ticks',model_inventory_two_ticks),
+    ('pair_ceiling_1pct',model_pair_ceiling_1pct),
+    ('pair_ceiling_2pct',model_pair_ceiling_2pct)
+  ) v(model_name,model_price)
+  where model_price>=tick and model_price<pre_ask
+ )
+ select period,model_name,count(*)::int fills,
+  count(distinct market_key)::int markets,
+  count(distinct event_slug)::int events,
+  avg(abs(fill_price-model_price)/tick)::float8 mae_ticks
+ from expanded group by period,model_name order by period,model_name`);
  const latest=current[0]||null;
  return {
   state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,
+  inventory:{coverage:inventoryCoverage[0]||{},by_side:inventoryObserved,models:inventoryModels},
   latest:latest?{
    received_at:latest.received_at,market_count:latest.market_count,
    book_count:latest.book_count,rn1_market_count:latest.rn1_market_count,
