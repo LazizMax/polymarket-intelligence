@@ -550,6 +550,53 @@ async function rn1QuoteForensics(){
   (1-fill_price-other_avg)) filter(where other>own and other_avg is not null),0)::float8
   indicative_incremental_pair_margin
  from prior group by 1 order by 1`);
+ const inventoryTransitions=await db.unsafe(`
+ -- Snapshot-to-snapshot change is observational, not a causal effect of a
+ -- single fill: other trades, redeems or transfers may occur between captures.
+ with before as(
+  select f.fingerprint,f.market_key,f.token_id,f.trade_at,
+   p.current_size own,opp.current_size other,
+   abs(p.current_size-opp.current_size) imbalance_before
+  from pi.rn1_quote_probe_fills f
+  join pi.rn1_quote_probe_runs r on r.id=f.run_id
+  cross join lateral jsonb_to_recordset(r.positions)
+   as p(market_key text,token_id text,outcome_index int,current_size numeric)
+  join lateral jsonb_to_recordset(r.positions)
+   as opp(market_key text,token_id text,outcome_index int,current_size numeric)
+   on opp.market_key=p.market_key and opp.outcome_index<>p.outcome_index
+  where f.role='maker_inferred' and f.side='BUY'
+   and r.position_status='complete'
+   and r.position_observed_at<=r.requested_at
+   and p.market_key=f.market_key and p.token_id=f.token_id
+ ), later as(
+  select b.*,r.position_observed_at as later_observed_at,
+   p.current_size own_after,opp.current_size other_after,
+   row_number() over(partition by b.fingerprint
+    order by r.position_observed_at,r.id) rn
+  from before b
+  join pi.rn1_quote_probe_runs r on r.position_status='complete'
+   and r.position_observed_at>b.trade_at
+   and r.position_observed_at<=b.trade_at+interval '5 minutes'
+  cross join lateral jsonb_to_recordset(r.positions)
+   as p(market_key text,token_id text,outcome_index int,current_size numeric)
+  join lateral jsonb_to_recordset(r.positions)
+   as opp(market_key text,token_id text,outcome_index int,current_size numeric)
+   on opp.market_key=p.market_key and opp.outcome_index<>p.outcome_index
+  where p.market_key=b.market_key and p.token_id=b.token_id
+ )
+ select count(*)::int comparable_fills,
+  count(distinct market_key)::int markets,
+  count(distinct trade_at::date)::int days,
+  count(*) filter(where abs(own_after-other_after)<imbalance_before)::int
+   less_imbalanced,
+  count(*) filter(where abs(own_after-other_after)>imbalance_before)::int
+   more_imbalanced,
+  count(*) filter(where abs(own_after-other_after)=imbalance_before)::int
+   unchanged,
+  avg(abs(own_after-other_after)-imbalance_before)::float8
+   avg_imbalance_change_shares
+ from later where rn=1
+ `);
  const inventoryModels=await db.unsafe(`
  with pos as(
   select r.id run_id,p.market_key,p.token_id,p.outcome_index,
@@ -629,7 +676,7 @@ async function rn1QuoteForensics(){
  const latest=current[0]||null;
  return {
   state:state[0]||{},summary:bookPairs[0]||{},matches:fills[0]||{},models,markouts,
-  inventory:{coverage:inventoryCoverage[0]||{},by_side:inventoryObserved,models:inventoryModels},
+  inventory:{coverage:inventoryCoverage[0]||{},by_side:inventoryObserved,models:inventoryModels,transitions:inventoryTransitions[0]||{}},
   latest:latest?{
    received_at:latest.received_at,market_count:latest.market_count,
    book_count:latest.book_count,rn1_market_count:latest.rn1_market_count,
