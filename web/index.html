@@ -450,6 +450,35 @@ async function renderRN1(){
     "−$"+fmt(Math.abs(Number(dailyRisk.max_observed_drawdown||0)),0))
   );
   card.append(income);
+  const tradingOnly=economy-Number(native.maker_rebates||0)-
+   Number(native.taker_rebates||0)-Number(native.reward_delta||0);
+  const breakeven=turnover>0?100*tradingOnly/turnover:null;
+  card.append(node("p","Sans les rebates Maker/Taker et les rewards, le PnL "+
+   "économique de la période serait de "+signed(tradingOnly)+
+   ". Le seuil arithmétique de coûts additionnels absorbables représente "+
+   (breakeven!==null?fmt(breakeven,3)+" % du volume négocié":"une quantité inconnue")+
+   ". Ce n'est PAS le rendement qu'obtiendrait une copie : les exécutions "+
+   "Maker et les positions seraient différentes.","foot"));
+  if(turnover>0){
+   card.append(node("h3","Sensibilité purement comptable aux frais et au slippage"));
+   const row=node("div",null,"controls");
+   const lab=node("label","Surcoût supplémentaire sur le volume négocié");
+   const slider=document.createElement("input");
+   slider.type="range";slider.min="0";slider.max="1.5";
+   slider.step="0.05";slider.value="0.5";
+   const result=node("p","","foot");
+   const refresh=()=>{
+    const extraPct=Number(slider.value),cost=turnover*extraPct/100,
+     remaining=tradingOnly-cost;
+    result.textContent="Hypothèse "+fmt(extraPct,2)+" % de surcoût : "+
+     signed(remaining)+" de résultat restant, APRÈS retrait des rebates "+
+     "et des rewards, et en supposant fictivement les mêmes autres "+
+     "flux de marché. Ce n'est pas une simulation des ordres réellement "+
+     "remplissables par un copieur.";
+   };
+   slider.addEventListener("input",refresh);refresh();
+   row.append(lab,slider);card.append(row,result);
+  }
   card.append(node("p","Données : PnL natif cumulatif de Polymarket, capturé depuis l'API "+
    "publique et historisé avec ses blocs sources. Les deux bornes sont "+String(native.start_at||"")+
    " et "+String(native.end_at||"")+". Les frais, rebates et rewards sont "+
