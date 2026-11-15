@@ -45,4 +45,15 @@ jobs:
             tests/test_rn1_pretrade_inventory.py \
             tests/test_rn1_live_quote_probe.py \
             tests/test_rn1_strategy_evidence.py \
-            tests/test_rn1_strategy_verdict.py
+            tests/test_rn1_strategy_verdict.py \
+            tests/test_rn1_trigger_dashboard.py
+
+      - name: Verify frontend JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          html = Path('web/index.html').read_text()
+          assert html.count('<script>') == 1
+          Path('/tmp/pi_frontend.js').write_text(html.split('<script>', 1)[1].split('</script>', 1)[0])
+          PY
+          node --check /tmp/pi_frontend.js
