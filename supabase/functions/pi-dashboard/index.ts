@@ -1794,6 +1794,57 @@ async function rn1SportsImpact(body:any){
    ]};
 }
 
+
+// Explicit on-demand sensitivity test; no prediction/backtest, no private Maker order times.
+async function rn1SportsRobustness(){
+ const rows=await db.unsafe("\nwith map as(\n select distinct b.token_id,e.event_slug,l.first_play_at,l.last_play_at\n from pi.rn1_fill_price_benchmark b\n join pi.rn1_pattern_market_entries e on e.market_key=b.market_key\n join pi.rn1_nba_espn_links l on e.event_slug=l.event_slug and l.status='complete'\n), prices as(\n select h.token_id,h.observed_epoch,h.price,\n lag(h.observed_epoch) over(partition by h.token_id order by h.observed_epoch) prev_epoch,\n lag(h.price) over(partition by h.token_id order by h.observed_epoch) prev_price\n from pi.rn1_historical_price_points h where h.resolution_seconds=60\n), observed as (\n select m.event_slug,m.first_play_at,p.token_id,p.observed_epoch,p.prev_epoch,\n p.price-p.prev_price delta,\n exists(select 1 from pi.rn1_nba_espn_plays a where a.event_slug=m.event_slug\n  and a.play_at>to_timestamp(p.prev_epoch) and a.play_at<=to_timestamp(p.observed_epoch)) has_play,\n exists(select 1 from pi.rn1_nba_espn_plays a where a.event_slug=m.event_slug and a.is_scoring\n  and a.play_at>to_timestamp(p.prev_epoch) and a.play_at<=to_timestamp(p.observed_epoch)) scored,\n exists(select 1 from pi.trades t where t.token_id=p.token_id\n  and t.reported_at>to_timestamp(p.observed_epoch)\n  and t.reported_at<=to_timestamp(p.observed_epoch)+interval '30 seconds') fill30,\n exists(select 1 from pi.trades t where t.token_id=p.token_id\n  and t.reported_at>to_timestamp(p.observed_epoch)\n  and t.reported_at<=to_timestamp(p.observed_epoch)+interval '60 seconds') fill60\n from map m join prices p on p.token_id=m.token_id\n where p.prev_price is not null and p.observed_epoch-p.prev_epoch between 60 and 180\n and to_timestamp(p.observed_epoch) between m.first_play_at and m.last_play_at\n), categories as(\n select o.*,v.seconds as phase_seconds,\n floor((observed_epoch-extract(epoch from first_play_at))/v.seconds)::int phase,\n case when abs(delta)<0.01 then 'stable' when abs(delta)<0.03 then 'medium' else 'large' end magnitude,\n case when delta>=0.01 then 'up' when delta<=-0.01 then 'down' else 'flat' end direction\n from observed o cross join (values(900),(1800),(3600)) v(seconds) where o.has_play\n), strata as (\n select event_slug,token_id,phase_seconds,phase,magnitude,direction,\n count(*) filter(where scored) ns,count(*) filter(where not scored) nn,\n count(*) filter(where scored and fill30) fs30,count(*) filter(where not scored and fill30) fn30,\n count(*) filter(where scored and fill60) fs60,count(*) filter(where not scored and fill60) fn60\n from categories group by 1,2,3,4,5,6\n), eligible as(select * from strata where ns>=2 and nn>=2)\nselect phase_seconds,event_slug,count(*)::int strata,\n sum(ns)::int scored_windows,sum(nn)::int control_windows,\n sum(fs30)::int scored_hits30,sum(fn30)::int control_hits30,\n sum(fs60)::int scored_hits60,sum(fn60)::int control_hits60,\n avg(100.0*fs30/ns-100.0*fn30/nn)::float8 avg_stratum_diff30,\n avg(100.0*fs60/ns-100.0*fn60/nn)::float8 avg_stratum_diff60\nfrom eligible group by 1,2 order by phase_seconds,event_slug");
+ const phaseSummaries=[900,1800,3600].map(seconds=>{
+  const r=rows.filter((x:any)=>Number(x.phase_seconds)===seconds);
+  const total=(k:string)=>r.reduce((acc:number,x:any)=>acc+Number(x[k]??0),0);
+  const games=r.length,ns=total("scored_windows"),nn=total("control_windows");
+  const diffFor=(x:any,k:number)=>100*Number(x["scored_hits"+k])/Math.max(1,Number(x.scored_windows))-
+      100*Number(x["control_hits"+k])/Math.max(1,Number(x.control_windows));
+  const mean=(items:number[])=>items.length?items.reduce((a,b)=>a+b,0)/items.length:null;
+  const d30=r.map((x:any)=>diffFor(x,30)),d60=r.map((x:any)=>diffFor(x,60));
+  const weightedStratum=(k:string)=>total("strata")?
+    r.reduce((acc:number,x:any)=>acc+Number(x.strata)*Number(x[k]??0),0)/total("strata"):null;
+  return {phase_seconds:seconds,comparison_games:games,strata:total("strata"),
+    scored_windows:ns,control_windows:nn,
+    scored_hits30:total("scored_hits30"),control_hits30:total("control_hits30"),
+    scored_hits60:total("scored_hits60"),control_hits60:total("control_hits60"),
+    scored_rate30_pct:ns?100*total("scored_hits30")/ns:null,
+    control_rate30_pct:nn?100*total("control_hits30")/nn:null,
+    scored_rate60_pct:ns?100*total("scored_hits60")/ns:null,
+    control_rate60_pct:nn?100*total("control_hits60")/nn:null,
+    equal_stratum_diff30_pp:weightedStratum("avg_stratum_diff30"),
+    equal_stratum_diff60_pp:weightedStratum("avg_stratum_diff60"),
+    equal_game_diff30_pp:mean(d30),equal_game_diff60_pp:mean(d60),
+    games_positive60:d60.filter(v=>v>0).length,games_negative60:d60.filter(v=>v<0).length,
+    games_equal60:d60.filter(v=>v===0).length
+  };
+ });
+ return {phase_summaries:phaseSummaries,
+  games:rows.filter((x:any)=>Number(x.phase_seconds)===1800).map((x:any)=>({
+    event_slug:x.event_slug,strata:x.strata,scored_windows:x.scored_windows,
+    control_windows:x.control_windows,
+    scored_hits60:x.scored_hits60,control_hits60:x.control_hits60,
+    game_diff60_pp:100*Number(x.scored_hits60)/Math.max(1,Number(x.scored_windows))-
+     100*Number(x.control_hits60)/Math.max(1,Number(x.control_windows))
+  })),
+  definitions:{
+   source:"Historical minute trade-price points selected around RN1 fills, ESPN timestamped plays, 4,000-trade pilot",
+   matching:"Same token, 15/30/60-minute elapsed-game interval, same magnitude <1c / 1–3c / >=3c and movement direction; >=2 windows for scoring and non-scoring within each stratum",
+   event:"At least one ESPN scoring play between two prior price observation timestamps",
+   outcome:"At least one RN1 fill strictly after second price timestamp, within 30 or 60 seconds",
+   constraints:["Price point selection was conditioned on past RN1 activity; sample is not a random universe.",
+   "Conditioning on price may block the causal pathway of a scoring play, and may induce selection bias.",
+   "Repeated token-minutes, overlapping game events, and fills are not independent observations.",
+   "The 4,000-trade pilot is incomplete relative to 756,000 archived fills, and has no verified historical Maker/Taker tags.",
+   "Negative adjusted association is neither proof of absence of a sporting-event effect nor a valid profitable contrarian signal.",
+   "This test is read-only. Historical book depth, private orders, unfilled orders, and actual order-submission timestamps remain unknown."]
+  }};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -1826,6 +1877,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_setup_patterns")return send(await rn1SetupPatterns());
   if(body?.action==="rn1_trigger_windows")return send(await rn1TriggerWindows(body));
   if(body?.action==="rn1_sports_impact")return send(await rn1SportsImpact(body));
+  if(body?.action==="rn1_sports_robustness")return send(await rn1SportsRobustness());
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
