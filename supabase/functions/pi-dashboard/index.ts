@@ -360,6 +360,58 @@ async function temporalResearch(body:any){
 const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 
 
+
+async function rn1ReverseEngineering(){
+ // Full public-source collection is distinct from the old 4k taker-only pilot.
+ // All percentages below describe observed fills, not trader's alpha or true current inventory.
+ const streams=await db.unsafe(`
+ select stream,status,pages_fetched::double precision as pages_fetched,
+ rows_seen::double precision as rows_seen,rows_valid::double precision as rows_valid,
+ rows_invalid::double precision as rows_invalid,raw_gzip_bytes::double precision as raw_gzip_bytes,
+ metrics_rows::double precision as metrics_rows,metrics_paused_at::text as metrics_paused_at,
+ first_seen_at::text as oldest_observed_at,last_seen_at::text as newest_observed_at,
+ last_success_at::text,last_error,
+ max_raw_bytes::double precision as max_raw_bytes,max_db_bytes::double precision as max_db_bytes
+ from pi.rn1_full_streams where wallet=$1 order by stream`,[RN1]);
+ const market=await db.unsafe(`
+ select count(*)::int as observed_markets,
+ coalesce(sum(fills),0)::double precision as fills,
+ coalesce(sum(buy_fills),0)::double precision as buy_fills,
+ coalesce(sum(sell_fills),0)::double precision as sell_fills,
+ count(*) filter(where buy0_shares>0 and buy1_shares>0)::int as markets_bought_both_sides,
+ count(*) filter(where buy0_shares>0 and buy1_shares>0
+   and greatest(buy0_shares,buy1_shares)>=2*least(buy0_shares,buy1_shares))::int as two_sided_skew_over_2x,
+ count(*) filter(where buy0_shares>0 and buy1_shares>0
+   and buy0_cost/nullif(buy0_shares,0)+buy1_cost/nullif(buy1_shares,0)<1)::int as two_sided_vwap_cost_below_one,
+ count(*) filter(where buy0_shares>0 and buy1_shares>0
+   and buy0_cost/nullif(buy0_shares,0)+buy1_cost/nullif(buy1_shares,0)>=1)::int as two_sided_vwap_cost_at_or_above_one,
+ coalesce(sum(buy0_cost+buy1_cost),0)::double precision as buy_notional,
+ coalesce(sum(sell0_proceeds+sell1_proceeds),0)::double precision as sell_notional,
+ coalesce(sum(unknown_outcome_fills),0)::double precision as unlabeled_outcomes
+ from pi.rn1_full_market_metrics where wallet=$1`,[RN1]);
+ const activity=await db.unsafe(`
+ select kind,sum(events)::double precision events,
+ sum(reported_usdc_size)::double precision reported_usdc_size,
+ sum(amount_present)::double precision events_with_reported_amount
+ from pi.rn1_full_activity_metrics where wallet=$1
+ group by kind order by sum(events) desc limit 20`,[RN1]);
+ const bytes=await db.unsafe(`
+ select pg_database_size(current_database())::double precision as project_database_bytes,
+ (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
+ const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
+ return {status:completed?"source_exhausted_verified":"collection_in_progress",
+  data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
+  streams,market:market[0]||{},activity,storage:bytes[0]||{},
+  inference:[
+   {name:"Part des achats effectués sur les deux issues",verification:"observed"},
+   {name:"Déséquilibre des quantités entre issues",verification:"observed"},
+   {name:"Règles exactes de prix, ordre maker/taker et annulations",verification:"not_identifiable_from_feed_only"},
+   {name:"Rentabilité nette et contribution des rebates",verification:"requires_full_inventory_and_cashflow_reconciliation"}
+  ],
+  limits:"Full source archiving continues after the shared SQL analysis budget is reached; market aggregates may become partial. Archiving pauses only at the private Storage safety budget. Completion is only verified when BOTH feeds return has_more=false. The Data API does not expose unfilled orders or hidden private models.",
+  legacy_notice:"Previous 4,000-trade analyses were based on Polymarket's default taker-only feed. Their strategic conclusions were preliminary and should not be treated as full-wallet findings."};
+}
+
 async function rn1StrategyEvidence(){
  // Strictly source-observed facts vs explicit buy-and-hold counterfactual.
  // A historical one-minute price point is NOT a contemporaneous executable bid/ask.
@@ -620,6 +672,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="arb_temporal")return send(await temporalResearch(body));
   if(body?.action==="arb_observatory")return send(await arbObservatory());
   if(body?.action==="rn1_research")return send(await rn1Research());
+  if(body?.action==="rn1_reverse_engineering")return send(await rn1ReverseEngineering());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
   return send({error:"Action inconnue"},400);

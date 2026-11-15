@@ -35,4 +35,5 @@ def test_first_choice_is_market_probability_baseline():
     assert "expected_winners_from_prices" in API
     assert "count(distinct t.event_slug)" in API
     assert "row_number() over(partition by b.market_key" in API
-    assert "await renderRN1StrategyEvidence(target)" in UI
+    assert "async function renderRN1StrategyEvidence(target)" in UI
+    assert "await renderRN1StrategyEvidence(target)" not in UI  # intentionally hidden from concise RN1 view
