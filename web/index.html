@@ -503,7 +503,7 @@ async function renderRN1Sports(){
   const filters=node("div",null,"filters");
   filters.append(select("Durée des fenêtres",[["30","30 secondes"],["60","60 secondes"]],String(windowSeconds),v=>{windowSeconds=Number(v);load()}));
   filters.append(select("Match pour explorer la chronologie",
-   [["","Tous les matchs"],...games.map(g=>[g.event_slug,g.event_slug.replace(/^nba-/,"").replace(/-2026-/," · 2026-")+" ("+fmt(g.observed_fills)+" fills pilote)")]],
+   [["","Tous les matchs"],...games.map(g=>[g.event_slug, g.event_slug+" ("+fmt(g.observed_fills)+" fills pilote)"])],
    slug,v=>{slug=v;load()}));
   params.append(filters);results.append(params);
   const study=node("section",null,"card");
