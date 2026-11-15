@@ -293,6 +293,14 @@ async function renderRN1Activity(target){
   metric("REDEEM liés à un token du flux trades",
    fmt(cov.redemptions_with_some_observed_buy_or_sell||0)+"/"+fmt(cov.redemptions||0)));
  card.append(metrics);
+ const w=result.windows||{};
+ const startTrade=Date.parse(w.trades_oldest||""),endTrade=Date.parse(w.trades_newest||"");
+ const startActivity=Date.parse(w.activity_oldest||""),endActivity=Date.parse(w.activity_newest||"");
+ const disjoint=[startTrade,endTrade,startActivity,endActivity].every(Number.isFinite)&&
+    (startActivity>endTrade||startTrade>endActivity);
+ card.append(node("p","Période des trades : "+(w.trades_oldest||"—")+" → "+(w.trades_newest||"—")+
+  " · Période des activités : "+(w.activity_oldest||"—")+" → "+(w.activity_newest||"—"),"foot"));
+ if(disjoint)card.append(banner("Attention : les périodes importées des deux flux ne se chevauchent pas encore. Un taux de correspondance nul est attendu ; il ne signifie ni erreur du trader ni absence de rapprochement possible."));
  const types=node("div",null,"tablewrap"),table=node("table"),headrow=node("tr"),thead=node("thead");
  ["Type source","Occurrences","Montant brut rapporté","Sans montant","Sans transaction hash"].forEach(x=>headrow.append(node("th",x)));
  thead.append(headrow);table.append(thead);const tbody=node("tbody");
