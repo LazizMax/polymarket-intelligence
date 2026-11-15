@@ -49,8 +49,8 @@ jobs:
           deno-version: v2.x
       - name: Typecheck protected Supabase ingestion function
         run: |
-          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/arb-math.ts
-          deno test supabase/functions/pi-ingest/roi-math_test.ts supabase/functions/pi-ingest/roi-sync_test.ts supabase/functions/pi-dashboard/arb-math_test.ts
+          deno check supabase/functions/pi-ingest/index.ts supabase/functions/pi-ingest/arb-capture.ts supabase/functions/pi-dashboard/index.ts supabase/functions/pi-dashboard/arb-math.ts supabase/functions/pi-dashboard/arb-temporal.ts
+          deno test supabase/functions/pi-ingest/roi-math_test.ts supabase/functions/pi-ingest/roi-sync_test.ts supabase/functions/pi-ingest/arb-capture_test.ts supabase/functions/pi-dashboard/arb-math_test.ts supabase/functions/pi-dashboard/arb-temporal_test.ts
       - name: Check embedded browser JavaScript syntax
         run: |
           python - <<'PY'
@@ -84,14 +84,15 @@ jobs:
                                     "003_pi_observed_pnl_metrics.sql",
                                     "004_pi_pnl_concentration_metrics.sql",
                                     "012_closed_position_roi.sql",
-                                    "014_pi_auto_roi_refresh.sql"):
+                                    "014_pi_auto_roi_refresh.sql",
+                                    "016_arb_temporal_snapshots.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 14, f"Expected RLS on all 14 tables, got {secured}"
+                  assert secured == 15, f"Expected RLS on all 15 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
