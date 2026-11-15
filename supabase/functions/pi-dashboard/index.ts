@@ -934,6 +934,7 @@ async function rn1ReverseEngineering(){
  summary->'market_price' as market_price,
  summary->'coverage' as price_history_coverage,
  summary->'event_cluster_evidence' as event_cluster_evidence,
+ summary->'event_paired_differences' as event_paired_differences,
  last_success_at::text as last_success_at,last_error
  from pi.rn1_independent_price_jobs
  where job_key='rn1_independent_price_v1'
