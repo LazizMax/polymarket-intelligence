@@ -517,6 +517,10 @@ async function rn1QuoteForensics(){
    and f.side='BUY' and f.lag_seconds<=60
    and opp.current_size>0 and opp.avg_price is not null
    and (q->>'tick')::numeric>0 and f.pre_ask>f.pre_bid
+   -- All candidates are scored on the SAME price-eligible fills.
+   -- Otherwise a model could appear better simply by excluding tough fills.
+   and f.pre_bid>=3*(q->>'tick')::numeric
+   and 1-opp.avg_price-.02 >= (q->>'tick')::numeric
  ), ranked as(
   select *,row_number() over(order by trade_at,fingerprint) rn,
    count(*) over() n from candidate
