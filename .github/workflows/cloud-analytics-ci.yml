@@ -80,6 +80,10 @@ jobs:
                   cur.execute("create role anon nologin; create role authenticated nologin; create role service_role nologin;")
                   cur.execute(Path("sql/001_cloud_private_schema.sql").read_text())
                   # The dashboard reads fields introduced by subsequent migrations.
+                  # Local Postgres CI omits the Supabase Storage service schema.
+                  # Fixture mirrors only the columns used by this private-bucket migration.
+                  cur.execute("create schema if not exists storage")
+                  cur.execute("create table if not exists storage.buckets (id text primary key, name text not null, public boolean not null, file_size_limit bigint, allowed_mime_types text[])")
                   for migration in ("002_pi_ingestion_wallet_idx.sql",
                                     "003_pi_observed_pnl_metrics.sql",
                                     "004_pi_pnl_concentration_metrics.sql",
@@ -91,14 +95,15 @@ jobs:
                                     "021_rn1_activity_pilot.sql",
                                     "023_rn1_outcome_market_price_evidence.sql",
                                     "024_rn1_historical_price_points.sql",
-                                    "025_rn1_fill_price_benchmark.sql"):
+                                    "025_rn1_fill_price_benchmark.sql",
+                                    "027_rn1_full_public_archive.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 23, f"Expected RLS on all 23 tables, got {secured}"
+                  assert secured == 27, f"Expected RLS on all 27 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
