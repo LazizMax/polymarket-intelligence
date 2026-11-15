@@ -436,6 +436,237 @@ async function scheduledRN1Activity(){
  }
 }
 
+
+const RN1_FULL_BUCKET="pi-rn1-research-private";
+type RN1ArchiveStream="trades_all"|"activity_all";
+type MarketRollup={
+ wallet:string;market_key:string;title:string;event_slug:string;fills:number;buy_fills:number;sell_fills:number;
+ buy0_shares:number;buy1_shares:number;sell0_shares:number;sell1_shares:number;
+ buy0_cost:number;buy1_cost:number;sell0_proceeds:number;sell1_proceeds:number;
+ unknown_outcome_fills:number;min_trade_at:string;max_trade_at:string;
+};
+type ActivityRollup={
+ wallet:string;market_key:string;kind:string;events:number;reported_usdc_size:number;amount_present:number;
+ min_event_at:string;max_event_at:string;
+};
+function fullEnvelope(payload:unknown){
+ const p=payload as any;
+ if(!p||!Array.isArray(p.data)||p.data.length>1000||!p.pagination
+  ||typeof p.pagination.has_more!=="boolean"
+  ||(p.pagination.has_more&&p.data.length===0))return null;
+ const next=p.pagination.next_cursor;
+ if(next!==null&&next!==undefined&&(typeof next!=="string"||next.length>2048))return null;
+ if(p.pagination.has_more&&(!next||typeof next!=="string"))return null;
+ return {rows:p.data as any[],hasMore:p.pagination.has_more,nextCursor:typeof next==="string"&&next?next:null};
+}
+function recordRN1Aggregates(stream:RN1ArchiveStream,rows:any[]){
+ const markets=new Map<string,MarketRollup>();
+ const activities=new Map<string,ActivityRollup>();
+ let valid=0,invalid=0,minAt:string|null=null,maxAt:string|null=null;
+ for(const raw of rows){
+  const normalized=stream==="trades_all"?normalizeV2Trade(raw,RN1):normalizeActivity(raw,RN1);
+  if(!normalized){invalid++;continue}
+  valid++;
+  const at=String(stream==="trades_all"?normalized.reported_at:normalized.occurred_at);
+  minAt= !minAt||at<minAt?at:minAt;
+  maxAt= !maxAt||at>maxAt?at:maxAt;
+  if(stream==="trades_all"){
+   const r=normalized,market_key=String(r.market_key);
+   let m=markets.get(market_key);
+   if(!m){
+    m={wallet:RN1,market_key,title:String(r.market_title||""),event_slug:String(r.event_slug||""),
+      fills:0,buy_fills:0,sell_fills:0,buy0_shares:0,buy1_shares:0,
+      sell0_shares:0,sell1_shares:0,buy0_cost:0,buy1_cost:0,
+      sell0_proceeds:0,sell1_proceeds:0,unknown_outcome_fills:0,min_trade_at:at,max_trade_at:at};
+    markets.set(market_key,m);
+   }
+   m.fills++;
+   if(at<m.min_trade_at)m.min_trade_at=at;
+   if(at>m.max_trade_at)m.max_trade_at=at;
+   if(!m.title&&r.market_title)m.title=String(r.market_title);
+   if(!m.event_slug&&r.event_slug)m.event_slug=String(r.event_slug);
+   const shares=Number(r.shares),notional=Number(r.observed_notional_usdc),index=r.outcome_index;
+   if(r.side==="BUY"){m.buy_fills++;
+    if(index===0){m.buy0_shares+=shares;m.buy0_cost+=notional}
+    else if(index===1){m.buy1_shares+=shares;m.buy1_cost+=notional}
+    else m.unknown_outcome_fills++;
+   }else{m.sell_fills++;
+    if(index===0){m.sell0_shares+=shares;m.sell0_proceeds+=notional}
+    else if(index===1){m.sell1_shares+=shares;m.sell1_proceeds+=notional}
+    else m.unknown_outcome_fills++;
+   }
+  }else{
+   const market_key=String(normalized.market_key||"__global__");
+   const kind=String(normalized.kind);
+   const key=market_key+"|"+kind;
+   let a=activities.get(key);
+   if(!a){a={wallet:RN1,market_key,kind,events:0,reported_usdc_size:0,
+       amount_present:0,min_event_at:at,max_event_at:at};activities.set(key,a)}
+   a.events++;
+   if(at<a.min_event_at)a.min_event_at=at;
+   if(at>a.max_event_at)a.max_event_at=at;
+   if(normalized.reported_usdc_size!==null && normalized.reported_usdc_size!==undefined){
+    a.reported_usdc_size+=Number(normalized.reported_usdc_size);a.amount_present++;
+   }
+  }
+ }
+ return {valid,invalid,minAt,maxAt,markets:[...markets.values()],activities:[...activities.values()]};
+}
+async function gzipRN1Data(input:string):Promise<Uint8Array>{
+ const body=new Blob([input]).stream().pipeThrough(new CompressionStream("gzip"));
+ return new Uint8Array(await new Response(body).arrayBuffer());
+}
+async function uploadRN1Archive(key:string,payload:Uint8Array){
+ const service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
+ const url=Deno.env.get("SUPABASE_URL")||"";
+ if(!service||!/^https:\/\/[^/]+\.supabase\.co$/.test(url))throw Error("Private Storage environment missing");
+ const response=await fetch(url+"/storage/v1/object/"+RN1_FULL_BUCKET+"/"+key,{
+  method:"POST",headers:{"Authorization":"Bearer "+service,"apikey":service,
+   "Content-Type":"application/gzip","x-upsert":"true","cache-control":"3600"},
+  body:payload as BodyInit,signal:AbortSignal.timeout(25000)});
+ if(!response.ok)throw Error("RN1 private archive upload HTTP "+response.status+
+  " "+(await response.text()).slice(0,130));
+}
+async function runRN1FullStream(stream:RN1ArchiveStream){
+ const state=await db.unsafe(`
+ update pi.rn1_full_streams set lease_until=now()+interval '90 seconds',updated_at=now()
+ where stream=$1 and status='collecting'
+ and (lease_until is null or lease_until<now())
+ returning stream,source_path,next_cursor,pages_fetched,rows_seen,raw_gzip_bytes,max_raw_bytes,max_db_bytes`,[stream]);
+ if(!state.length)return {stream,status:"idle_or_paused"};
+ const job=state[0],status={stream,pages:0,rows:0,valid:0,invalid:0};
+ const limits=await db.unsafe(`select pg_database_size(current_database())::bigint db_bytes,
+    coalesce((select sum(raw_gzip_bytes) from pi.rn1_full_streams),0)::bigint all_raw_bytes`);
+ if(Number(limits[0].db_bytes)>=Number(job.max_db_bytes)
+  ||Number(limits[0].all_raw_bytes)>=Number(job.max_raw_bytes)){
+  await db.unsafe(`update pi.rn1_full_streams set status='paused_quota',lease_until=null,
+   last_error='Collection paused before shared DB/storage safety budget',
+   updated_at=now() where stream=$1`,[stream]);
+  return {...status,status:"paused_quota"};
+ }
+ let cursor=job.next_cursor as string|null;
+ try{
+  for(let j=0;j<2;j++){
+   const params:Record<string,string>=stream==="trades_all"
+    ?{user:RN1,start:"1",limit:"1000",taker_only:"false"}
+    :{user:RN1,start:"1",limit:"1000"};
+   if(cursor)params.cursor=cursor;
+   const response=await get(String(job.source_path),params);
+   const envelope=fullEnvelope(response);
+   if(!envelope)throw Error("Unexpected full-history V2 envelope");
+   if(envelope.hasMore&&envelope.nextCursor===cursor)throw Error("Source cursor did not advance");
+   const oldCursor=cursor;
+   const pageNo=Number(job.pages_fetched)+status.pages+1;
+   const rollup=recordRN1Aggregates(stream,envelope.rows);
+   const raw=JSON.stringify({source_response:response,request:params});
+   const digest=await sha256(raw);
+   const key=stream+"/page-"+String(pageNo).padStart(8,"0")+"-"+digest.slice(0,16)+".json.gz";
+   const payload=await gzipRN1Data(raw);
+   if(payload.byteLength>20000000)throw Error("Compressed page exceeded bucket file cap");
+   if(Number(limits[0].all_raw_bytes)+payload.byteLength+Number(job.raw_gzip_bytes)*0
+      >Number(job.max_raw_bytes)){
+    await db.unsafe(`update pi.rn1_full_streams set status='paused_quota',
+      lease_until=null,last_error='Private source archives reached safety budget',
+      updated_at=now() where stream=$1`,[stream]);
+    return {...status,status:"paused_quota"};
+   }
+   await uploadRN1Archive(key,payload);
+   const finished=!envelope.hasMore;
+   await db.begin(async tx=>{
+    const a=await tx.unsafe(`
+     insert into pi.rn1_full_archive_pages
+      (stream,page_no,sha256,storage_key,cursor_in,cursor_out,row_count,valid_count,invalid_count,
+       compressed_bytes,min_reported_at,max_reported_at)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     on conflict(stream,page_no) do nothing returning page_no`,
+     [stream,pageNo,digest,key,oldCursor,envelope.nextCursor,envelope.rows.length,rollup.valid,
+      rollup.invalid,payload.byteLength,rollup.minAt,rollup.maxAt]);
+    if(!a.length)throw Error("Full history archive page conflict");
+    if(rollup.markets.length){
+     await tx.unsafe(`
+      insert into pi.rn1_full_market_metrics(
+       wallet,market_key,title,event_slug,fills,buy_fills,sell_fills,
+       buy0_shares,buy1_shares,sell0_shares,sell1_shares,
+       buy0_cost,buy1_cost,sell0_proceeds,sell1_proceeds,unknown_outcome_fills,min_trade_at,max_trade_at)
+      select x.wallet,x.market_key,x.title,x.event_slug,x.fills,x.buy_fills,x.sell_fills,
+       x.buy0_shares,x.buy1_shares,x.sell0_shares,x.sell1_shares,
+       x.buy0_cost,x.buy1_cost,x.sell0_proceeds,x.sell1_proceeds,x.unknown_outcome_fills,
+       x.min_trade_at,x.max_trade_at
+      from jsonb_to_recordset(($1::text)::jsonb) as x(
+       wallet text,market_key text,title text,event_slug text,fills bigint,
+       buy_fills bigint,sell_fills bigint,buy0_shares numeric,buy1_shares numeric,
+       sell0_shares numeric,sell1_shares numeric,buy0_cost numeric,buy1_cost numeric,
+       sell0_proceeds numeric,sell1_proceeds numeric,unknown_outcome_fills bigint,
+       min_trade_at timestamptz,max_trade_at timestamptz)
+      on conflict(wallet,market_key) do update set
+       fills=pi.rn1_full_market_metrics.fills+excluded.fills,
+       buy_fills=pi.rn1_full_market_metrics.buy_fills+excluded.buy_fills,
+       sell_fills=pi.rn1_full_market_metrics.sell_fills+excluded.sell_fills,
+       buy0_shares=pi.rn1_full_market_metrics.buy0_shares+excluded.buy0_shares,
+       buy1_shares=pi.rn1_full_market_metrics.buy1_shares+excluded.buy1_shares,
+       sell0_shares=pi.rn1_full_market_metrics.sell0_shares+excluded.sell0_shares,
+       sell1_shares=pi.rn1_full_market_metrics.sell1_shares+excluded.sell1_shares,
+       buy0_cost=pi.rn1_full_market_metrics.buy0_cost+excluded.buy0_cost,
+       buy1_cost=pi.rn1_full_market_metrics.buy1_cost+excluded.buy1_cost,
+       sell0_proceeds=pi.rn1_full_market_metrics.sell0_proceeds+excluded.sell0_proceeds,
+       sell1_proceeds=pi.rn1_full_market_metrics.sell1_proceeds+excluded.sell1_proceeds,
+       unknown_outcome_fills=pi.rn1_full_market_metrics.unknown_outcome_fills+excluded.unknown_outcome_fills,
+       min_trade_at=least(pi.rn1_full_market_metrics.min_trade_at,excluded.min_trade_at),
+       max_trade_at=greatest(pi.rn1_full_market_metrics.max_trade_at,excluded.max_trade_at),
+       title=coalesce(nullif(pi.rn1_full_market_metrics.title,''),excluded.title),
+       event_slug=coalesce(nullif(pi.rn1_full_market_metrics.event_slug,''),excluded.event_slug),
+       updated_at=now()`,[JSON.stringify(rollup.markets)]);
+    }
+    if(rollup.activities.length){
+     await tx.unsafe(`
+      insert into pi.rn1_full_activity_metrics(
+       wallet,market_key,kind,events,reported_usdc_size,amount_present,min_event_at,max_event_at)
+      select x.wallet,x.market_key,x.kind,x.events,x.reported_usdc_size,x.amount_present,
+       x.min_event_at,x.max_event_at
+      from jsonb_to_recordset(($1::text)::jsonb) as x(
+       wallet text,market_key text,kind text,events bigint,reported_usdc_size numeric,
+       amount_present bigint,min_event_at timestamptz,max_event_at timestamptz)
+      on conflict(wallet,market_key,kind) do update set
+       events=pi.rn1_full_activity_metrics.events+excluded.events,
+       reported_usdc_size=pi.rn1_full_activity_metrics.reported_usdc_size+excluded.reported_usdc_size,
+       amount_present=pi.rn1_full_activity_metrics.amount_present+excluded.amount_present,
+       min_event_at=least(pi.rn1_full_activity_metrics.min_event_at,excluded.min_event_at),
+       max_event_at=greatest(pi.rn1_full_activity_metrics.max_event_at,excluded.max_event_at)`,
+       [JSON.stringify(rollup.activities)]);
+    }
+    const advanced=await tx.unsafe(`
+     update pi.rn1_full_streams
+     set pages_fetched=pages_fetched+1,rows_seen=rows_seen+$3,
+      rows_valid=rows_valid+$4,rows_invalid=rows_invalid+$5,raw_gzip_bytes=raw_gzip_bytes+$6,
+      next_cursor=$2,first_seen_at=least(first_seen_at,$7::timestamptz),
+      last_seen_at=greatest(last_seen_at,$8::timestamptz),
+      last_success_at=now(),updated_at=now(),last_error=null,
+      status=case when $9::boolean then 'source_exhausted' else 'collecting' end,
+      source_exhausted_at=case when $9::boolean then now() else source_exhausted_at end,
+      lease_until=case when $9::boolean then null else lease_until end
+     where stream=$1 and pages_fetched=$10 and next_cursor is not distinct from $11
+       and status='collecting' returning stream`,
+     [stream,envelope.nextCursor,envelope.rows.length,rollup.valid,rollup.invalid,
+      payload.byteLength,rollup.minAt,rollup.maxAt,finished,pageNo-1,oldCursor]);
+    if(!advanced.length)throw Error("Concurrent full archive cursor update");
+   });
+   status.pages++;status.rows+=envelope.rows.length;status.valid+=rollup.valid;status.invalid+=rollup.invalid;
+   cursor=envelope.nextCursor;
+   if(finished){
+    return {...status,status:"source_exhausted"};
+   }
+  }
+  await db.unsafe("update pi.rn1_full_streams set lease_until=null where stream=$1 and status='collecting'",[stream]);
+  return {...status,status:"collecting"};
+ }catch(e){
+  const message=e instanceof Error?e.message.slice(0,190):"Full history worker failed";
+  console.error("rn1_full_archive",stream,message);
+  await db.unsafe(`update pi.rn1_full_streams set lease_until=null,last_error=$2,updated_at=now()
+   where stream=$1`,[stream,message]);
+  return {...status,status:"failed",error:message};
+ }
+}
+
 async function scheduledRN1Trades(){
  // Bounded 4,000-row study: not a complete historical backfill. No orders and no claims of maker identity.
  await db.unsafe("insert into pi.rn1_trade_import_state(wallet) values($1) on conflict do nothing",[RN1]);
@@ -537,6 +768,12 @@ Deno.serve(async (req: Request) => {
     if (body?.action === "rn1_activity_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       return json(await scheduledRN1Activity());
+    }
+    if (body?.action === "rn1_full_archive_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      const stream=String(body.stream||"");
+      if(stream!=="trades_all"&&stream!=="activity_all")return json({error:"Invalid stream"},400);
+      return json(await runRN1FullStream(stream));
     }
     if (body?.action === "rn1_trades_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
