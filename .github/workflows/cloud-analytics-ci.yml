@@ -149,5 +149,12 @@ jobs:
                       if "roi_total_weighted" in query:
                           assert abs(result[0][5] - (-1000/140)) < .00001,result[0]
                           assert abs(result[0][6] - 2.5) < .00001,result[0]
+                      # Verify all real research API SQL against the protected schema.
+                  strategy=source.split("async function rn1StrategyEvidence(){",1)[1].split("async function rn1ActivityResearch(){",1)[0]
+                  queries=re.findall(r"await db\\.unsafe\\(`([\\s\\S]*?)`,\\[RN1\\]\\)",strategy)
+                  assert len(queries)==5, f"Expected 5 RN1 strategy SQL queries; found {len(queries)}"
+                  for query in queries:
+                      cur.execute(query.replace("$1","%s"),(wallet,))
+                      cur.fetchall()
           con.close()
           PY
