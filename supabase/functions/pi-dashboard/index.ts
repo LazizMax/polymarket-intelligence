@@ -359,6 +359,109 @@ async function temporalResearch(body:any){
 
 const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 
+
+async function rn1StrategyEvidence(){
+ // Strictly source-observed facts vs explicit buy-and-hold counterfactual.
+ // A historical one-minute price point is NOT a contemporaneous executable bid/ask.
+ const counts=await db.unsafe(`
+ select (select count(*)::int from pi.rn1_resolution_evidence) resolution_markets_checked,
+ (select count(*)::int from pi.rn1_resolution_evidence
+   where status='resolved' and jsonb_typeof(payouts)='array'
+   and jsonb_array_length(payouts)=2
+   and (payouts->>0)::numeric+(payouts->>1)::numeric=1000000) settled_markets,
+ (select count(*)::int from pi.rn1_price_history_evidence where request_status='ok') token_histories,
+ (select count(*)::int from pi.rn1_historical_price_points) observed_price_points,
+ (select count(*)::int from pi.rn1_fill_price_benchmark where wallet=$1) benchmarked_buys,
+ (select count(distinct market_key)::int from pi.rn1_fill_price_benchmark where wallet=$1) benchmarked_markets
+ `,[RN1]);
+ const hold=await db.unsafe(`
+ with m as(
+  select t.market_key,
+  sum(t.shares*t.price) as cost,
+  sum(t.shares) filter(where t.outcome_index=0) q0,
+  sum(t.shares) filter(where t.outcome_index=1) q1,
+  sum(t.shares*t.price) filter(where t.outcome_index=0) c0,
+  sum(t.shares*t.price) filter(where t.outcome_index=1) c1,
+  count(*)::int fills,
+  (r.payouts->>0)::numeric/1000000 as p0,
+  (r.payouts->>1)::numeric/1000000 as p1
+  from pi.trades t join pi.rn1_resolution_evidence r on t.market_key=r.market_key
+  where t.wallet=$1 and t.side='BUY' and t.reported_at<r.resolved_at
+   and r.status='resolved' and jsonb_typeof(r.payouts)='array'
+   and jsonb_array_length(r.payouts)=2
+   and (r.payouts->>0)::numeric+(r.payouts->>1)::numeric=1000000
+  group by t.market_key,r.payouts
+ ),
+ v as(
+  select *,
+   coalesce(q0,0)*p0+coalesce(q1,0)*p1 as payout,
+   case when q0>0 and q1>0
+    then least(q0,q1)*(1-c0/q0-c1/q1) else 0 end as pair_component
+  from m
+ )
+ select count(*)::int markets,sum(fills)::int fills,
+ sum(cost)::float8 as buy_cost,
+ sum(payout)::float8 as hypothetical_payout,
+ sum(payout-cost)::float8 as hypothetical_gross_pnl,
+ sum(pair_component)::float8 as pairing_component,
+ sum(payout-cost-pair_component)::float8 as directional_residual
+ from v`,[RN1]);
+ const tiers=await db.unsafe(`
+ with ranked as(
+  select market_key,row_number() over(order by sum(shares*fill_price) desc,market_key) as pos
+  from pi.rn1_fill_price_benchmark where wallet=$1 group by market_key
+ ), fills as (
+  select b.*,case when r.pos<=20 then 'top20' else 'next60' end as segment
+  from pi.rn1_fill_price_benchmark b join ranked r on r.market_key=b.market_key
+  where b.wallet=$1
+ )
+ select coalesce(segment,'total') segment,
+ count(*)::int fills,count(distinct market_key)::int markets,
+ count(*) filter(where reference_price is not null)::int referenced,
+ count(*) filter(where after_15m_price is not null)::int forward_15m,
+ sum(shares*fill_price)::float8 as buy_cost,
+ sum(shares*(payout_per_share-fill_price))::float8 as hypothetical_gross_pnl,
+ sum(shares*(reference_price-fill_price))::float8 as execution_vs_stale_reference,
+ sum(shares*(payout_per_share-reference_price))::float8 as outcome_vs_stale_reference,
+ sum(shares*(after_15m_price-fill_price))::float8 as markout_15m,
+ 100.0*count(*) filter(where after_15m_price>fill_price)
+ /nullif(count(*) filter(where after_15m_price is not null),0) as favorable_markout_pct,
+ avg(extract(epoch from bought_at)-(reference_epoch+coalesce(reference_width_seconds,0)))
+ filter(where reference_epoch is not null)::float8 as avg_reference_age_seconds
+ from fills group by rollup(segment) order by segment`,[RN1]);
+ const first=await db.unsafe(`
+ with ranked as(
+  select b.*,row_number() over(partition by b.market_key order by b.bought_at,b.trade_key) rn
+  from pi.rn1_fill_price_benchmark b where b.wallet=$1
+ )
+ select count(*)::int markets,count(distinct t.event_slug)::int distinct_events,
+ sum(b.payout_per_share)::float8 as first_side_winners,
+ sum(b.reference_price)::float8 as expected_winners_from_prices,
+ sum(b.payout_per_share-b.reference_price)::float8 as excess_winners,
+ sqrt(sum(b.reference_price*(1-b.reference_price)))::float8 as naive_independent_sd
+ from ranked b join pi.trades t on t.wallet=b.wallet and t.trade_key=b.trade_key
+ where b.rn=1 and b.reference_price is not null`,[RN1]);
+ const examples=await db.unsafe(`
+ select b.market_key,(array_agg(nullif(t.market_title,'') order by b.bought_at desc))[1] market_title,
+ (array_agg(nullif(t.event_slug,'') order by b.bought_at desc))[1] event_slug,
+ count(*)::int fills,sum(b.shares*b.fill_price)::float8 as buy_cost,
+ sum(b.shares*(b.payout_per_share-b.fill_price))::float8 as hypothetical_gross_pnl,
+ sum(b.shares*(b.after_15m_price-b.fill_price))::float8 as markout_15m
+ from pi.rn1_fill_price_benchmark b
+ join pi.trades t on t.wallet=b.wallet and t.trade_key=b.trade_key
+ where b.wallet=$1
+ group by b.market_key order by sum(b.shares*b.fill_price) desc limit 10`,[RN1]);
+ return {count:counts[0]||{},hold:hold[0]||{},tiers,first_selection:first[0]||{},examples,
+  quality:"research_only_not_validated_alpha",
+  time_window:"2026-11-12 to 2026-11-15 UTC; latest-first 4,000-trade pilot",
+  caveats:[
+   "Buy-and-hold PnL is hypothetical. Actual inventory, merges, redemptions, transfers, prior purchases, incentives and fees are not fully reconciled.",
+   "The price series provides historical observations, not bid/ask, execution priority or an independently executable price. A one-minute bucket ending before each trade is used; the reference is on average about 31 seconds old.",
+   "The 80 highest-notional sampled markets represent a biased selection. They share only 26 distinct sporting events; individual fills are not independent predictions.",
+   "Maker/taker identity, proprietary sports probabilities and contemporaneous bookmaker odds remain unverified."
+  ]};
+}
+
 async function rn1ActivityResearch(){
  const state=await db.unsafe(`
   select status,pages_fetched,rows_seen,rows_stored,missing_required,sample_limit,
@@ -517,6 +620,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="arb_temporal")return send(await temporalResearch(body));
   if(body?.action==="arb_observatory")return send(await arbObservatory());
   if(body?.action==="rn1_research")return send(await rn1Research());
+  if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
   return send({error:"Action inconnue"},400);
  }catch(e){
