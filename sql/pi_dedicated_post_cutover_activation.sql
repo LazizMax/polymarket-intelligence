@@ -6,12 +6,12 @@
 
 DO $destination_cutover$
 DECLARE j record;
-DECLARE verified boolean;
+DECLARE readiness_ok boolean;
 BEGIN
  SELECT EXISTS(SELECT 1 FROM pi.migration_cutover_readiness
    WHERE singleton=true AND verified=true AND verified_at>now()-interval '2 hours')
- INTO verified;
- IF NOT verified THEN
+ INTO readiness_ok;
+ IF NOT readiness_ok THEN
   RAISE EXCEPTION 'Refuse activation: recent external data-integrity verification missing';
  END IF;
  IF (SELECT count(*) FROM pi.external_dashboard_access WHERE enabled)<1 THEN
