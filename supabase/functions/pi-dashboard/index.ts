@@ -244,6 +244,7 @@ async function arbitrage(body:any){
   if(tokens.length!==2||names.length!==2||names[0]!=="yes"||names[1]!=="no"||tokens[0]===tokens[1])continue;
   if(!tokens.every(x=>/^\d{20,90}$/.test(x)))continue;
   selected.push({tokens,question:String(m.question||"").slice(0,220),slug:String(m.slug||"").slice(0,140),
+    event_slug:String(Array.isArray(m.events)?m.events[0]?.slug||"":"" ).slice(0,180),
     condition_id:String(m.conditionId||"").slice(0,100),volume_24h:Number(m.volume24hr||0)});
  }
  const params=selected.flatMap(m=>m.tokens.map((token_id:string)=>({token_id})));
@@ -267,7 +268,7 @@ async function arbitrage(body:any){
   if(!Number.isFinite(minSize)||shares<minSize)continue;
   const q=quotePair(yes.asks,no.asks,shares,feeReservePct);
   if(!q)continue; // liquidity to fill both legs is mandatory
-  rows.push({...q,question:m.question,slug:m.slug,condition_id:m.condition_id,volume_24h:m.volume_24h,
+  rows.push({...q,question:m.question,slug:m.slug,event_slug:m.event_slug,condition_id:m.condition_id,volume_24h:m.volume_24h,
     yes_book_time:yes.timestamp||null,no_book_time:no.timestamp||null});
  }
  rows.sort((a,b)=>b.indicative_roi_pct-a.indicative_roi_pct);
@@ -286,7 +287,7 @@ async function temporalResearch(body:any){
  };
  // Read the newest bounded window. Older samples are never fabricated or extrapolated.
  const rows=await db.unsafe(`
-  select observed_at::text,market_key,market_slug,question,yes_token_id,no_token_id,
+  select observed_at::text,market_key,market_slug,event_slug,question,yes_token_id,no_token_id,
     quote_shares::double precision,yes_buy_avg::double precision,no_buy_avg::double precision,
     yes_sell_avg::double precision,no_sell_avg::double precision
   from pi.arb_temporal_snapshots
