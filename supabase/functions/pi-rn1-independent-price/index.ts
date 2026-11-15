@@ -165,6 +165,8 @@ async function tick(){
   if(!Array.isArray(rows)||rows.length!==Number(page.row_count)||rows.length!==Number(page.valid_count))throw Error("Source completeness mismatch");
   const state:State=claimed[0].checkpoint_key?JSON.parse(await readStorage(String(claimed[0].checkpoint_key))):fresh();
   const roles=getRoles(rows,await takersFor(rows),page);
+  const sourceTokenCount=new Set(rows.map((r:any)=>String(r.token_id||""))
+   .filter((id:string)=>/^[0-9]{20,100}$/.test(id))).size;
   const chosen=selectTokens(rows,pageNo),chosenSet=new Set(chosen);
   const byToken=new Map<string,any[]>();
   for(const token of chosen)byToken.set(token,rows.filter((r:any)=>String(r.token_id)===token));
@@ -178,9 +180,9 @@ async function tick(){
   await writeStorage(checkpoint,JSON.stringify(state));
   const matched=Object.fromEntries(HORIZONS.map(h=>[String(h),Number(out.pageSummary.market_price[String(h)]?.["maker|all"]?.n||0)]));
   await db.begin(async tx=>{
-   const r=await tx.unsafe("insert into pi.rn1_independent_price_pages(page_no,source_sha256,min_trade_at,max_trade_at,sampled_tokens,sampled_buy_fills,sample_market_count,sample_event_slugs,history_requests,history_success,matched_by_horizon,summary,checkpoint_key) values($1,$2,to_timestamp($3),to_timestamp($4),$5,$6,$7,($8::text)::jsonb,$9,$10,($11::text)::jsonb,($12::text)::jsonb,$13) on conflict(page_no) do nothing returning page_no",
+   const r=await tx.unsafe("insert into pi.rn1_independent_price_pages(page_no,source_sha256,min_trade_at,max_trade_at,sampled_tokens,sampled_buy_fills,sample_market_count,sample_event_slugs,history_requests,history_success,matched_by_horizon,summary,checkpoint_key,source_tokens) values($1,$2,to_timestamp($3),to_timestamp($4),$5,$6,$7,($8::text)::jsonb,$9,$10,($11::text)::jsonb,($12::text)::jsonb,$13,$14) on conflict(page_no) do nothing returning page_no",
      [pageNo,page.sha256,out.minTs,out.maxTs,chosen.length,out.pageSummary.sampled_buy_fills,out.marketSet.size,
-      JSON.stringify([...out.events]),coverage.requested,coverage.ok,JSON.stringify(matched),JSON.stringify(out.pageSummary),checkpoint]);
+      JSON.stringify([...out.events]),coverage.requested,coverage.ok,JSON.stringify(matched),JSON.stringify(out.pageSummary),checkpoint,sourceTokenCount]);
    if(!r.length)throw Error("Page already processed");
    const advanced=await tx.unsafe("update pi.rn1_independent_price_jobs set next_page=$2::bigint,pages_done=pages_done+1,source_fills=source_fills+$3,sampled_buy_fills=sampled_buy_fills+$4,sampled_maker_fills=sampled_maker_fills+$5,sampled_taker_fills=sampled_taker_fills+$6,sampled_unknown_fills=sampled_unknown_fills+$7,checkpoint_key=$8,summary=($9::text)::jsonb,lease_until=null,last_success_at=now(),status=case when $2::bigint=0 then 'complete' else 'running' end,completed_at=case when $2::bigint=0 then now() else completed_at end,last_error=null,error_attempts=0,updated_at=now() where job_key=$1 and next_page=$10 and status='running' returning next_page",
      [JOB,pageNo-1,rows.length,out.pageSummary.sampled_buy_fills,out.pageSummary.roles.maker||0,out.pageSummary.roles.taker||0,
