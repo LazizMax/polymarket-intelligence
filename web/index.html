@@ -139,23 +139,27 @@ async function renderClosedPositionRoi(target){
  const h=node("div",null,"cardhead");const hd=node("div");hd.append(node("h2","ROI des positions clôturées"));
  hd.append(node("div","Une position = un marché et une issue (plusieurs achats/ventes possibles). Ce n'est PAS le ROI par exécution.","small"));h.append(hd);
  const buttons=node("div",null,"row");
- if(!state){buttons.append(button("Collecter les ROI",async()=>{
-  try{await api("roi_request",{wallet:currentWallet});toast("Import demandé. Les données s'afficheront au fil des synchronisations.");roiPage=1;await renderWallet()}catch(e){showError(e)}
- }));}
- else if(state.exhausted){buttons.append(button("Rafraîchir l'historique",async()=>{
-  try{await api("roi_request",{wallet:currentWallet,force:true});roiPage=1;toast("Actualisation demandée");await renderWallet()}catch(e){showError(e)}
+ if(state?.sync_mode==="idle"){buttons.append(button("Vérifier maintenant",async()=>{
+  try{await api("roi_request",{wallet:currentWallet});roiPage=1;toast("Vérification prioritaire demandée");await renderWallet()}catch(e){showError(e)}
  },"secondary"))}
- else{buttons.append(button("Actualiser l'affichage",()=>renderWallet().catch(showError),"secondary"))}
+ buttons.append(button("Actualiser l'affichage",()=>renderWallet().catch(showError),"secondary"));
  h.append(buttons);section.append(h);
  if(!state){
-  section.append(banner("Les ROI ne sont pas encore collectés pour ce wallet. Lance l'import ; l'historique sera stocké dans Supabase et la pagination reprendra automatiquement."));
+  section.append(banner("Ce wallet est suivi automatiquement. Ses positions clôturées vont être importées dans Supabase sans intervention. L'état sera affiché dès le premier passage du collecteur."));
   target.append(section);return;
  }
- const complete=state.exhausted===true,canGlobal=complete && summary && summary.valid>0 && summary.invalid===0;
- section.append(banner(complete
-  ?(summary?.invalid>0?"Historique de positions clôturées importé, mais certains coûts sont inconnus : ROI global complet non calculable.":"Historique des positions clôturées importé. Estimations basées sur le coût d'entrée reconstitué, frais non rapprochés.")
-  :"COLLECTE PARTIELLE — "+fmt(state.pages_fetched)+" page(s), "+fmt(state.rows_seen)+" position(s) récupérée(s). Les ROI présentés concernent uniquement l'échantillon importé ; les performances globales restent indisponibles."));
- if(state.last_error)section.append(node("p","Dernière erreur de collecte : "+state.last_error,"red"));
+ const hasBaseline=Boolean(state.last_complete_at);
+ const updating=state.sync_mode!=="idle";
+ const complete=hasBaseline && !updating;
+ const canGlobal=complete && summary && summary.valid>0 && summary.invalid===0;
+ section.append(banner(!hasBaseline
+  ?"HISTORIQUE EN COURS D'IMPORT AUTOMATIQUE — "+fmt(state.pages_fetched)+" page(s), "+fmt(state.rows_seen)+" position(s) récupérée(s). Le ROI de cet échantillon n'est pas encore global."
+  :updating
+    ?"Actualisation "+(state.sync_mode==="recent"?"des nouvelles clôtures":"complète")+" en cours. L'historique précédent reste visible ; les chiffres peuvent évoluer jusqu'à la fin du passage."
+    :summary?.invalid>0
+      ?"ROI mis à jour automatiquement (contrôle récent : "+(state.last_recent_at?state.last_recent_at.slice(0,16).replace("T"," ")+" UTC":"en attente")+"). Certains coûts sont inconnus ; le ROI total des positions exploitables n'est pas celui de tous les trades."
+      :"Historique des positions clôturées synchronisé automatiquement. Mise à jour récente : "+(state.last_recent_at?state.last_recent_at.slice(0,16).replace("T"," ")+" UTC":"non renseignée")+". Les frais et transferts restent à réconcilier."));
+ if(state.last_error)section.append(node("p","Dernière erreur de collecte : "+state.last_error+" (nouvelle tentative automatique)","red"));
  const blocks=node("div",null,"metrics");
  blocks.append(metric(canGlobal?"ROI total des positions closes":"ROI total pondéré (données exploitables)",summary?.valid?pct(summary.roi_total_weighted):"—",Number(summary?.roi_total_weighted)>=0?"green":"red"));
  blocks.append(metric("ROI moyen (non pondéré)",summary?.valid?pct(summary.roi_mean):"—"));
@@ -210,8 +214,8 @@ async function renderWallet(){
 async function renderData(){
  const target=$("content");target.replaceChildren(heading("Collecte & qualité","Santé des données stockées dans le schéma privé Supabase."));
  const v=await api("health");const stats=v.stats;
- const boxes=node("div",null,"metrics");boxes.append(metric("Wallets",fmt(stats.wallets)),metric("Séries quotidiennes",fmt(stats.pnl_rows)),metric("Trades détaillés",fmt(stats.trades)),metric("Positions détaillées",fmt(stats.positions)));target.append(boxes);
- target.append(banner("Les trades et les positions individuels sont encore à importer. Aucun ROI sur capital n'est certifié. Les observations PnL proviennent des APIs publiques Polymarket et restent partielles."));
+ const boxes=node("div",null,"metrics");boxes.append(metric("Wallets",fmt(stats.wallets)),metric("Positions closes avec ROI",fmt(stats.roi_positions)),metric("Historiques ROI complets",fmt(stats.roi_with_full_baseline)),metric("Synchronisations ROI en cours",fmt(stats.roi_syncing)));target.append(boxes);
+ target.append(banner("Tous les wallets suivis reçoivent automatiquement un import de leurs positions clôturées, puis des contrôles récents et des audits complets. Les ROI sont estimatifs : transactions individuelles, frais et capital investi ne sont pas encore réconciliés."));
  const c=node("section",null,"card");c.append(node("h2","Historique des collectes"));c.append(node("p","Dernière donnée synchronisée : "+(stats.last_collection||"inconnue")));
  const wrap=node("div",null,"tablewrap");const t=node("table");const h=node("tr");["Wallet","Flux","État","Lignes","Terminé"].forEach(x=>h.append(node("th",x)));const th=node("thead");th.append(h);t.append(th);const b=node("tbody");
  v.jobs.forEach(j=>{const tr=node("tr");[short(j.wallet),j.stream,j.status,fmt(j.rows_fetched),j.finished_at||"—"].forEach(x=>tr.append(node("td",x)));b.append(tr)});if(!v.jobs.length){const tr=node("tr");const cell=node("td","Le pilote initial a été importé ponctuellement ; aucune exécution planifiée enregistrée.","muted");cell.colSpan=5;tr.append(cell);b.append(tr)}t.append(b);wrap.append(t);c.append(wrap);target.append(c);
