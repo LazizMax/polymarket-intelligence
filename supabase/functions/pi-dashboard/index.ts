@@ -548,9 +548,19 @@ async function rn1QuoteForensics(){
     model_pair_ceiling_2pct,
    pre_ask
   from ranked
+ ), eligible as(
+  -- Every pricing rule must be evaluated on exactly the same executions.
+  -- A per-model validity filter would select easier fills for some rules.
+  select * from candidates
+  where least(model_best_bid,model_one_tick_below,model_two_ticks_below,
+    model_inventory_one_tick,model_inventory_two_ticks,
+    model_pair_ceiling_1pct,model_pair_ceiling_2pct)>=tick
+   and greatest(model_best_bid,model_one_tick_below,model_two_ticks_below,
+    model_inventory_one_tick,model_inventory_two_ticks,
+    model_pair_ceiling_1pct,model_pair_ceiling_2pct)<pre_ask
  ), expanded as(
   select period,market_key,event_slug,fill_price,tick,model_name,model_price
-  from candidates
+  from eligible
   cross join lateral (values
     ('best_bid',model_best_bid),
     ('one_tick_below',model_one_tick_below),
@@ -560,7 +570,6 @@ async function rn1QuoteForensics(){
     ('pair_ceiling_1pct',model_pair_ceiling_1pct),
     ('pair_ceiling_2pct',model_pair_ceiling_2pct)
   ) v(model_name,model_price)
-  where model_price>=tick and model_price<pre_ask
  )
  select period,model_name,count(*)::int fills,
   count(distinct market_key)::int markets,
