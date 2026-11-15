@@ -219,19 +219,36 @@ async function tick(){
   // NEVER interpreted as 0 inventory.
   let holdings:any[]=[],
    positionStatus:"complete"|"unavailable"="unavailable",
-   positionObservedAt:string|null=null,rawPositions:any=null;
+   positionObservedAt:string|null=null,rawPositions:any[]=[];
   try{
-   const positionUrl=new URL("https://data-api.polymarket.com/v2/positions");
-   positionUrl.searchParams.set("user",RN1);
-   positionUrl.searchParams.set("status","OPEN");
-   positionUrl.searchParams.set("limit","1000");
-   positionUrl.searchParams.set("filter_amount","0");
-   positionUrl.searchParams.set("condition",targets.map(t=>t.market_key).join(","));
-   const response=await fetchJSON(positionUrl.toString(),{headers:{accept:"application/json"}});
-   const checked=normalizeCurrentHoldings(response,targets,RN1);
-   holdings=checked;rawPositions=response;
+   const all:any[]=[];
+   // Data API condition filtering behaves inconsistently with long comma lists:
+   // tested 8 conditions returned unrelated holdings with HTTP 200. Keep each
+   // request to TWO condition ids (< 200 characters) and verify every response
+   // is restricted to exactly the requested targets before treating missing
+   // outcomes as a genuine zero holding.
+   for(let offset=0;offset<targets.length;offset+=2){
+    const subset=targets.slice(offset,offset+2);
+    const url=new URL("https://data-api.polymarket.com/v2/positions");
+    url.searchParams.set("user",RN1);
+    url.searchParams.set("status","OPEN");
+    url.searchParams.set("limit","1000");
+    url.searchParams.set("filter_amount","0");
+    url.searchParams.set("condition",subset.map(t=>t.market_key).join(","));
+    const response=await fetchJSON(url.toString(),{headers:{accept:"application/json"}});
+    // Fails closed on incomplete pages, unexpected wallet or out-of-filter
+    // token ids; a partial sample must NEVER create a zero-inventory claim.
+    const checked=normalizeCurrentHoldings(response,subset,RN1);
+    all.push(...checked);
+    rawPositions.push({conditions:subset.map(t=>t.market_key),response});
+   }
+   if(all.length!==targets.length*2)throw Error("Not every selected token has a checked position");
+   holdings=all;
    positionObservedAt=stamp();positionStatus="complete";
-  }catch(e){console.warn("Pretrade wallet inventory unavailable",String(e));}
+  }catch(e){
+   console.warn("Pretrade wallet inventory unavailable (failed closed)",String(e));
+   holdings=[];positionObservedAt=null;positionStatus="unavailable";
+  }
   const requestStarted=stamp();
   const books=await fetchJSON("https://clob.polymarket.com/books",{
    method:"POST",headers:{"content-type":"application/json",accept:"application/json"},
@@ -242,7 +259,7 @@ async function tick(){
   const raw=JSON.stringify({source:"https://clob.polymarket.com/books",
    request_started_at:requestStarted,received_at:receivedAt,targets,books,
    position_observed_at:positionObservedAt,position_status:positionStatus,
-   positions_response:rawPositions});
+   positions_responses:rawPositions});
   const digest=await hash(raw);
   const payload=await gzip(raw);
   if(payload.length>20_000_000)throw Error("Quote archive exceeded maximum object size");
