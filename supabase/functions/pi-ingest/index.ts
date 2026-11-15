@@ -2,6 +2,7 @@
 // Backend writes private pi schema, with no credentials exposed in the browser.
 import postgres from "npm:postgres@3.4.3";
 import {captureTemporalBooks} from "./arb-capture.ts";
+import {RN1,normalizeV2Trade,pageEnvelope,sha256} from "./rn1-trade-utils.ts";
 import { closedRoi } from "./roi-math.ts";
 import { closesPageComplete } from "./roi-sync.ts";
 
@@ -338,6 +339,91 @@ async function scheduledTemporal(){
  }
 }
 
+
+async function scheduledRN1Trades(){
+ // Bounded 4,000-row study: not a complete historical backfill. No orders and no claims of maker identity.
+ await db.unsafe("insert into pi.rn1_trade_import_state(wallet) values($1) on conflict do nothing",[RN1]);
+ const claim=await db.unsafe(`
+  update pi.rn1_trade_import_state set lease_until=now()+interval '110 seconds',updated_at=now()
+  where wallet=$1 and status='collecting'
+    and (lease_until is null or lease_until<now())
+  returning next_cursor,rows_seen,sample_limit,pages_fetched`,[RN1]);
+ if(!claim.length)return {status:"idle_or_leased"};
+ const job=await db.unsafe("insert into pi.ingestion_jobs(wallet,stream,status,started_at) values($1,'rn1_v2_trades','running',now()) returning id",[RN1]);
+ let pages=0,seen=0,stored=0,invalid=0,status="collecting",cursor=claim[0].next_cursor as string|null;
+ try{
+  for(let j=0;j<2;j++){
+   const params:Record<string,string>={user:RN1,limit:"200",start:"1"};
+   if(cursor)params.cursor=cursor;
+   const response=pageEnvelope(await get("/v2/trades",params));
+   if(!response)throw Error("Unexpected V2 trades envelope");
+   const {data,hasMore,nextCursor}=response;
+   if(hasMore&&nextCursor===cursor)throw Error("V2 cursor failed to advance");
+   if(seen+Number(claim[0].rows_seen)+data.length>Number(claim[0].sample_limit))
+     throw Error("Pilot page exceeds configured cap");
+   // Archive before any aggregation. The raw envelope and row order are preserved for forensic audit.
+   const raw={data,pagination:{has_more:hasMore,next_cursor:nextCursor},params:{user:RN1,start:1,limit:200,requested_cursor:cursor}};
+   const pageSHA=await sha256(JSON.stringify(raw));
+   const normalized=[];
+   for(let i=0;i<data.length;i++){
+    const item=normalizeV2Trade(data[i]);
+    if(!item){invalid++;continue;}
+    normalized.push({...item,trade_key:"v2:"+await sha256(pageSHA+":"+i),source_row_index:i,raw_archive_key:"rn1-v2:"+pageSHA});
+   }
+   // Raw page, normalized trades, and cursor advancement share ONE DB transaction.
+   const old=cursor,nowCursor=nextCursor,terminal=!hasMore,capReached=(Number(claim[0].rows_seen)+seen+data.length)>=Number(claim[0].sample_limit);
+   let inserted=0;
+   await db.begin(async tx=>{
+    const archive=await tx.unsafe(`
+      insert into pi.rn1_trade_pages(page_sha,wallet,requested_cursor,returned_cursor,row_count,
+       first_trade_ts,last_trade_ts,raw_payload)
+      values($1,$2,$3,$4,$5,$6,$7,($8::text)::jsonb)
+      on conflict(page_sha) do nothing returning page_sha`,
+      [pageSHA,RN1,old,nowCursor,data.length,
+       data.length?new Date(Math.min(...data.map((a:any)=>Number(a.timestamp)))*1000).toISOString():null,
+       data.length?new Date(Math.max(...data.map((a:any)=>Number(a.timestamp)))*1000).toISOString():null,
+       JSON.stringify(raw)]);
+    if(!archive.length)throw Error("Repeated raw page; cursor not advancing");
+    if(normalized.length){
+     const rows=await tx.unsafe(`
+       insert into pi.trades
+        (wallet,trade_key,reported_at,first_observed_at,market_key,token_id,tx_hash,side,price,shares,
+         observed_notional_usdc,raw_archive_key,outcome_index,outcome_label,market_slug,event_slug,source_row_index)
+       select x.wallet,x.trade_key,x.reported_at,now(),x.market_key,x.token_id,x.tx_hash,x.side,x.price,x.shares,
+         x.observed_notional_usdc,x.raw_archive_key,x.outcome_index,x.outcome_label,x.market_slug,x.event_slug,x.source_row_index
+       from jsonb_to_recordset(($1::text)::jsonb) as x(
+        wallet text,trade_key text,reported_at timestamptz,market_key text,token_id text,tx_hash text,
+        side text,price numeric,shares numeric,observed_notional_usdc numeric,raw_archive_key text,
+        outcome_index smallint,outcome_label text,market_slug text,event_slug text,source_row_index integer)
+       on conflict(wallet,trade_key) do nothing returning trade_key`,[JSON.stringify(normalized)]);
+     inserted=rows.length;
+    }
+    const state=await tx.unsafe(`
+      update pi.rn1_trade_import_state
+      set next_cursor=$2,rows_seen=rows_seen+$3,rows_stored=rows_stored+$4,
+        missing_required=missing_required+$5,pages_fetched=pages_fetched+1,
+        status=case when $6::boolean then 'source_exhausted' when $7::boolean then 'pilot_complete' else 'collecting' end,
+        lease_until=case when $6::boolean or $7::boolean then null else lease_until end,
+        last_success_at=now(),last_error=null,updated_at=now()
+      where wallet=$1 and next_cursor is not distinct from $8 and status='collecting' returning wallet`,
+      [RN1,nowCursor,data.length,inserted,normalized.length?data.length-normalized.length:data.length,terminal,capReached,old]);
+    if(!state.length)throw Error("Concurrent RN1 cursor changed");
+   });
+   pages++;seen+=data.length;stored+=inserted;cursor=nextCursor;
+   if(terminal||capReached){status=terminal?"source_exhausted":"pilot_complete";break;}
+  }
+  if(status==="collecting")await db.unsafe("update pi.rn1_trade_import_state set lease_until=null,updated_at=now() where wallet=$1",[RN1]);
+  await db.unsafe("update pi.ingestion_jobs set status='done',pages_fetched=$2,rows_fetched=$3,finished_at=now(),updated_at=now() where id=$1",[job[0].id,pages,seen]);
+  return {status,pages,seen,stored,invalid};
+ }catch(e){
+  const message=e instanceof Error?e.message.slice(0,170):"unknown V2 feed failure";
+  await db.unsafe("update pi.rn1_trade_import_state set last_error=$2,lease_until=null,updated_at=now() where wallet=$1",[RN1,message]);
+  await db.unsafe("update pi.ingestion_jobs set status='failed',error_message=$2,finished_at=now(),updated_at=now() where id=$1",[job[0].id,message]);
+  console.error("rn1_v2_trades",message);
+  return {status:"failed",pages,seen,stored,error:message};
+ }
+}
+
 async function schedulerAllowed(req: Request): Promise<boolean> {
   const token = req.headers.get("x-pi-scheduler-token") ?? "";
   if (!/^[0-9a-f]{64}$/.test(token)) return false;
@@ -351,6 +437,10 @@ Deno.serve(async (req: Request) => {
   if (Number(req.headers.get("content-length") ?? 0)>5000) return json({error:"Payload too large"},413);
   try {
     const body = await req.json();
+    if (body?.action === "rn1_trades_scheduled") {
+      if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
+      return json(await scheduledRN1Trades());
+    }
     if (body?.action === "arb_temporal_scheduled") {
       if (!await schedulerAllowed(req)) return json({error:"Forbidden"},403);
       return json(await scheduledTemporal());
