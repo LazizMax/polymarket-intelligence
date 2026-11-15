@@ -57,20 +57,25 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Refuse overwriting an existing release
+      - name: Check whether a new version needs publishing
+        id: release_state
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::Release $TAG already exists. Increase app/version.json."
-            exit 1
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version $TAG already published; tests passed, skipping duplicate release."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Package ZIP and SHA-256 manifest
+        if: steps.release_state.outputs.publish == 'true'
         run: python scripts/package_release.py
 
       - name: Publish GitHub Release
+        if: steps.release_state.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -81,6 +86,7 @@ jobs:
             --notes "Mise à jour du code. La base de données et les paramètres locaux restent conservés."
 
       - name: Update public latest.json manifest
+        if: steps.release_state.outputs.publish == 'true'
         run: |
           cp dist/latest.json latest.json
           git config user.name "github-actions[bot]"
