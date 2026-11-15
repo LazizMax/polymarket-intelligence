@@ -30,7 +30,7 @@ def test_position_causality_and_unfilled_order_caveats():
     assert "Training from other markets only" in API
     assert "not time-causal" in API
     assert "No latent parent-order quantity" in API
-    assert "aucune formule fiable" in WEB
+    assert "Aucune formule fiable" in WEB
     assert "346 fills" in REPORT
     assert "×5,67" in REPORT
 
