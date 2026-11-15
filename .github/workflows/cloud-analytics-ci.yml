@@ -96,7 +96,8 @@ jobs:
                                     "023_rn1_outcome_market_price_evidence.sql",
                                     "024_rn1_historical_price_points.sql",
                                     "025_rn1_fill_price_benchmark.sql",
-                                    "027_rn1_full_public_archive.sql"):
+                                    "027_rn1_full_public_archive.sql",
+                                    "029_rn1_archive_metrics_safety.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
