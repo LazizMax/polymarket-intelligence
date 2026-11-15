@@ -34,7 +34,7 @@ def test_causal_inventory_and_price_proxy_not_clob():
     assert "observeFuture(state,token,price,at)" in SOURCE
     assert "at>=lower&&at<=upper" in SOURCE
     assert "GRACE=[120,300,600,900,1800]" in SOURCE
-    assert "expire" in SOURCE.lower()
+    assert "Drop waiting fills whose entire future-trade observation window" in SOURCE
     assert "NOT external" in SOURCE or "NOT independent" in SOURCE
 
 def test_private_rls_and_auth_no_plaintext_token():
