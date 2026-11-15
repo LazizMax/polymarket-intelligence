@@ -52,3 +52,18 @@ def test_inverse_token_inclusion_weighting_is_explicit():
     assert "pondération inverse de la probabilité de sélection" in UI
     assert "elle ne corrige PAS" in UI
     assert "source_tokens integer" in SCHEMA
+
+def test_event_level_cluster_uncertainty_is_private_and_causal():
+    assert "type EventMoment={n:number;x:number;y:number}" in SRC
+    assert "function addEvent(state:State,eventId:string" in SRC
+    assert "eventId?\"event:\"+eventId:\"market:\"+market" in SRC
+    assert "state.event_start_page=pageNo" in SRC
+    assert "addEvent(state,eventId?" in SRC
+    assert "function eventEvidence(state:State)" in SRC
+    assert "m.y-mu*m.x" in SRC
+    assert "1.96*se" in SRC
+    assert "event_cluster_evidence=eventEvidence(state)" in SRC
+    assert "summary->'event_cluster_evidence' as event_cluster_evidence" in API
+    assert "Incertitude regroupée par événement sportif" in UI
+    assert "eventN>=30" in UI
+    assert "Il exclut les pages précédemment terminées" in UI
