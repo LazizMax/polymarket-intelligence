@@ -293,7 +293,7 @@ async function arbObservatory(){
  const stats=new Map<string,any>();
  for(const x of items){
   if(!stats.has(x.market_key))stats.set(x.market_key,{
-   key:x.market_key,question:x.question,slug:x.event_slug||null,market_slug:x.market_slug,
+   key:x.market_key,question:x.question,event_slug:x.event_slug||null,market_slug:x.market_slug,
    first_at:x.observed_at,last_at:x.observed_at,observations:0,
    yes_bid:x.yes_bid,yes_ask:x.yes_ask,no_bid:x.no_bid,no_ask:x.no_ask,
    weighted_yes_buy:x.yes_buy_avg,weighted_no_buy:x.no_buy_avg,
@@ -304,7 +304,7 @@ async function arbObservatory(){
   a.first_at=x.observed_at;a.first_yes_ask=x.yes_ask;
   if(x.yes_bid!==null&&x.yes_ask!==null&&x.no_bid!==null&&x.no_ask!==null)a.complete_bbo++;
   // Backfill the most recent known *event* slug; never invent a /event/ URL from a market slug.
-  if(!a.slug&&x.event_slug)a.slug=x.event_slug;
+  if(!a.event_slug&&x.event_slug)a.event_slug=x.event_slug;
  }
  const computed=[...stats.values()].map(x=>{
   const valid=(v:unknown)=>v!==null&&v!==undefined&&Number.isFinite(Number(v));
