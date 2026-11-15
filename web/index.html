@@ -598,6 +598,64 @@ async function renderRN1Sizing(){
     db.append(tr);
    }
    dt.append(db);dw.append(dt);detailsWrap.append(dw);details.append(detailsWrap);modelOutput.append(details);
+
+   // Independent holdout by entire market, not by the outcome token or fill.
+   const marketSection=node("section");
+   marketSection.append(node("h3","Validation hors marchés connus · prix, inventaire, exposition"));
+   const marketResults=node("div");
+   marketResults.append(node("p","Comparaison sur des marchés totalement exclus de l'apprentissage…","foot"));
+   marketSection.append(marketResults);
+   modelOutput.append(marketSection);
+   try{
+    const mr=await api("rn1_sizing_market_validation");
+    marketResults.replaceChildren();
+    const marketMetrics=node("div",null,"metrics");
+    marketMetrics.append(
+      metric("Fills Maker qualifiés",fmt(mr.n_fills||0)),
+      metric("Marchés distincts",fmt(mr.markets||0)),
+      metric("Tokens YES/NO",fmt(mr.tokens||0)),
+      metric("Groupes de validation",fmt((mr.fold_n||[]).length))
+    );
+    marketResults.append(marketMetrics);
+    marketResults.append(node("p","Cinq sous-ensembles déterministes : les deux issues d'un marché restent ensemble dans le test. Chaque modèle apprend sur les AUTRES marchés. Les inventaires publics sont observés au plus 60 secondes avant le fill ; ce n'est pas une validation chronologique de nouveaux matchs futurs.","foot"));
+    const labels={
+      global_fixed_shares:"Parts fixes (global)",
+      global_fixed_usdc:"USDC fixes (global)",
+      price_bucket_shares:"Parts selon la cote",
+      price_bucket_usdc:"USDC selon la cote",
+      price_inventory_shares:"Parts · cote + déséquilibre",
+      price_inventory_usdc:"USDC · cote + déséquilibre",
+      price_cost_shares:"Parts · cote + coût ouvert",
+      price_cost_usdc:"USDC · cote + coût ouvert",
+      fraction_open_market_cost:"Pourcentage du coût ouvert"
+    };
+    const wrap=node("div",null,"tablewrap"),table=node("table");
+    const head=node("thead"),header=node("tr");
+    ["Règle","Erreur log moyenne / fill","Erreur médiane ×","Erreur log moyenne / marché","Fills testés"].forEach(v=>header.append(node("th",v)));
+    head.append(header);table.append(head);
+    const tbody=node("tbody"),validated=mr.models||[];
+    for(let i=0;i<validated.length;i++){
+      const item=validated[i],tr=node("tr");
+      tr.append(
+        node("td",(i===0?"★ ":"")+(labels[item.model]||item.model),"name"),
+        node("td",item.mean_abs_log_error==null?"—":fmt(item.mean_abs_log_error,3)),
+        node("td",item.median_error_factor==null?"—":"×"+fmt(item.median_error_factor,2)),
+        node("td",item.equal_market_mean_abs_log_error==null?"—":fmt(item.equal_market_mean_abs_log_error,3)),
+        node("td",fmt(item.n))
+      );
+      tbody.append(tr);
+    }
+    table.append(tbody);wrap.append(table);marketResults.append(wrap);
+    const best=validated[0];
+    if(best){
+      const info=node("p","La première ligne minimise uniquement l'erreur moyenne des tailles de FILLS dans cet échantillon. Meilleur modèle ici : "+(labels[best.model]||best.model)+", mais erreur médiane ×"+fmt(best.median_error_factor,1)+". Aucune formule fiable de taille d'ordre n'est identifiée.","foot");
+      marketResults.append(info);
+    }
+    if(mr.truncated)marketResults.append(node("p","Avertissement : limite de 2 500 fills récents atteinte, résultats partiels.","red"));
+    for(const note of mr.definitions||[])marketResults.append(node("p","• "+note,"foot"));
+   }catch(error){
+    marketResults.replaceChildren(node("p","Comparaison inter-marchés indisponible : "+String(error?.message||error),"red"));
+   }
    const caution=node("section");
    caution.append(node("h3","Conditions de validité"));
    if(x.truncated)caution.append(node("p","AVERTISSEMENT : limite de 10 000 fills les plus récents atteinte ; ce n'est pas l'historique intégral.","red"));
