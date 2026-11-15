@@ -248,7 +248,7 @@ async function renderTemporal(target){
  for(const r of rows){
   const tr=node("tr"),market=node("td"),title=node("div",r.question||r.key,"name");
   market.append(title);
-  if(r.slug){const a=node("a","Ouvrir sur Polymarket ↗","small");a.href="https://polymarket.com/event/"+encodeURIComponent(r.slug);a.target="_blank";a.rel="noopener noreferrer";market.append(a);}
+  if(r.event_slug){const a=node("a","Ouvrir sur Polymarket ↗","small");a.href="https://polymarket.com/event/"+encodeURIComponent(r.event_slug);a.target="_blank";a.rel="noopener noreferrer";market.append(a);}
   const coverage=Number(r.observations||0)>=12?"Historique descriptif":"Historique insuffisant";
   market.append(node("div",coverage,"small"));tr.append(market);
   tr.append(node("td",fmt(r.observations)),node("td",price(r.yes_bid)+" / "+price(r.yes_ask)),
