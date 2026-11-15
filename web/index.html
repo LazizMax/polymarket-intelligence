@@ -215,71 +215,56 @@ async function renderWallet(){
 const arbSettings={shares:50,fee_reserve_pct:4,limit:30};
 const arbMoney=(n)=>n===null||n===undefined?"—":(Number(n)>=0?"+":"−")+"$"+fmt(Math.abs(Number(n)),3);
 
-const temporalOptions={entry_ceiling:0.47,fee_reserve_pct:2,min_roi_pct:0.5,max_hold_minutes:120};
+
 async function renderTemporal(target){
- const c=node("section",null,"card");const head=node("div",null,"cardhead");
- head.append(node("h2","Arbitrage temporel — simulation séquentielle"));
- head.append(node("span","Collecte serveur prévue : toutes les 10 minutes · 50 shares · fenêtre 48 h","small"));c.append(head);
- c.append(node("p","On simule un achat au prix ASK observé, puis une couverture éventuelle sur un relevé ULTÉRIEUR. Les positions impossibles à couvrir, les stops et les expositions restent visibles. Ce modèle taker de référence ne reproduit pas encore les files maker de RN1.","foot"));
- const opts=node("div",null,"filters");
- function val(label,key,min,max,step){
-  const wrap=node("label",label),input=node("input");input.type="number";
-  input.value=String(temporalOptions[key]);input.min=String(min);input.max=String(max);input.step=String(step);
-  input.addEventListener("change",()=>{
-   const v=Number(input.value);if(Number.isFinite(v))temporalOptions[key]=Math.max(min,Math.min(max,v));
-   input.value=String(temporalOptions[key]);
-  });wrap.append(input);return wrap;
- }
- opts.append(val("Prix maxi de la première jambe","entry_ceiling",.05,.49,.01),
-  val("Provision coûts (%)","fee_reserve_pct",0,10,.25),
-  val("ROI net minimal de couverture (%)","min_roi_pct",0,10,.25),
-  val("Exposition maximale (minutes)","max_hold_minutes",10,1440,10));
- opts.append(button("Recalculer",()=>renderArb().catch(showError),"secondary"));c.append(opts);
- target.append(c);
+ const card=node("section",null,"card");const header=node("div",null,"cardhead");
+ header.append(node("h2","Observatoire market making — prix effectivement observés"));
+ header.append(node("span","Carnets enregistrés toutes les 10 min · historique 48 h","small"));card.append(header);
+ card.append(banner("La précédente simulation achetait arbitrairement une issue sous 0,47 $. Elle n'avait aucun signal de valeur ni modèle de remplissage. Les « PnL papier » et positions associées ont été retirés : ils ne permettaient pas de déduire une stratégie profitable."));
+ card.append(node("p","Ce tableau montre désormais uniquement des cotations collectées : BID (prix de vente immédiate), ASK (prix d'achat immédiat), spread et leur évolution. Un spread large n'est PAS un profit réalisable en maker. La probabilité de remplissage, la vitesse de couverture et l'adverse selection restent inconnues.","foot"));
+ target.append(card);
  let data;
- try{data=await api("arb_temporal",temporalOptions)}
- catch(e){c.append(node("p","Historique temporel indisponible : "+String(e.message||e),"red"));return;}
- const stamp=data.last_observation_at?String(data.last_observation_at).replace("T"," ").slice(0,19)+" UTC":"aucune observation";
- const job=data.last_job;
- c.append(node("p","Dernière observation enregistrée : "+stamp
-  +(job?.status==="failed"?" · Dernière collecte en erreur : "+String(job.error||"inconnue"):""),"foot"));
- if(!data.summary.samples){
-  c.append(banner("Aucun carnet historique enregistré. Le collecteur périodique doit d'abord effectuer des relevés. Il faut au moins DEUX instants distincts sur le même marché pour tester une couverture dans le temps."));
-  return;
+ try{data=await api("arb_observatory")}
+ catch(e){card.append(node("p","Observations indisponibles : "+String(e.message||e),"red"));return;}
+ const last=data.last_observation_at?String(data.last_observation_at).replace("T"," ").slice(0,19)+" UTC":"aucune";
+ card.append(node("p","Dernier relevé : "+last+" · Collecte : "+(data.last_job?.status||"inconnue")
+  +(data.last_job?.status==="failed"?" · "+String(data.last_job.error||""):""),"foot"));
+ const rows=Array.isArray(data.markets)?data.markets:[];
+ if(!rows.length){card.append(banner("Aucun relevé disponible. Les données seront visibles dès le premier passage du collecteur."));return;}
+ const metrics=node("div",null,"metrics");
+ metrics.append(metric("Marchés observés",fmt(rows.length)),
+  metric("Relevés enregistrés",fmt(data.history_rows)),
+  metric("BBO complets",fmt(rows.reduce((t,r)=>t+Number(r.complete_bbo||0),0))),
+  metric("Stratégies rentables validées","0"));
+ card.append(metrics);
+ if(data.truncated)card.append(banner("Échantillon plafonné à 3 800 relevés : historique partiel."));
+ const wrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),hr=node("tr");
+ ["Marché","Relevés","BID / ASK YES","BID / ASK NO","Spread YES","Spread NO","Δ ASK YES observé","Somme ASK pondérée"].forEach(x=>hr.append(node("th",x)));
+ thead.append(hr);table.append(thead);
+ const tbody=node("tbody");
+ const price=x=>x===null||x===undefined?"—":fmt(x,4)+" $";
+ const spread=x=>x===null||x===undefined?"—":fmt(x*100,2)+" ¢";
+ const signed=x=>x===null||x===undefined?"—":(x>=0?"+":"−")+fmt(Math.abs(x)*100,2)+" ¢";
+ for(const r of rows){
+  const tr=node("tr"),market=node("td"),title=node("div",r.question||r.key,"name");
+  market.append(title);
+  if(r.slug){const a=node("a","Ouvrir sur Polymarket ↗","small");a.href="https://polymarket.com/event/"+encodeURIComponent(r.slug);a.target="_blank";a.rel="noopener noreferrer";market.append(a);}
+  const coverage=Number(r.observations||0)>=12?"Historique descriptif":"Historique insuffisant";
+  market.append(node("div",coverage,"small"));tr.append(market);
+  tr.append(node("td",fmt(r.observations)),node("td",price(r.yes_bid)+" / "+price(r.yes_ask)),
+   node("td",price(r.no_bid)+" / "+price(r.no_ask)),
+   node("td",spread(r.yes_spread)),node("td",spread(r.no_spread)),
+   node("td",signed(r.yes_ask_drift)),
+   node("td",price(r.weighted_ask_pair)));
+  tbody.append(tr);
  }
- const stats=node("div",null,"metrics");
- stats.append(metric("Relevés historiques",fmt(data.summary.samples)));
- stats.append(metric("Paires hypothétiques",fmt(data.summary.pairs)));
- stats.append(metric("Sorties forcées / pertes possibles",fmt(data.summary.stops)));
- stats.append(metric("Positions non couvertes",fmt(data.summary.open_markets)));
- c.append(stats);
- const detail=node("div",null,"row spread");
- detail.append(node("div","Résultat net hypothétique des positions fermées : "+arbMoney(data.summary.closed_net_scenario),
-    data.summary.closed_net_scenario>=0?"green":"red"));
- detail.append(node("div","Paires : "+arbMoney(data.summary.paired_net_scenario)+" · Stops : "+arbMoney(data.summary.stopped_net_scenario),"small"));
- c.append(detail);
- if(data.truncated)c.append(banner("Historique tronqué à 3 800 observations : les résultats ne couvrent pas l'ensemble des 48 heures."));
- const wrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),tr=node("tr");
- ["Marché","Relevés","Dernière paire ASK","Paires papier","Stops papier","Net positions closes","Jam be non couverte"].forEach(x=>tr.append(node("th",x.replace("Jam be","Jambe"))));
- thead.append(tr);table.append(thead);
- const tb=node("tbody");
- for(const r of data.rows){
-  const line=node("tr"),first=node("td"),label=node("div",r.question||r.market_key,"name");
-  first.append(label);
-  if(r.event_slug){const a=node("a","Ouvrir sur Polymarket ↗","small");a.href="https://polymarket.com/event/"+encodeURIComponent(r.event_slug);a.rel="noopener noreferrer";a.target="_blank";first.append(a)}else{first.append(node("span","Lien événement indisponible","small"));}
-  line.append(first,node("td",fmt(r.snapshots)),node("td",r.latest_pair_cost===null?"—":fmt(r.latest_pair_cost,4)+" $ / 1 paire"),
-   node("td",fmt(r.pairs)),node("td",fmt(r.stops)),
-   node("td",arbMoney(r.closed_net_scenario),r.closed_net_scenario>=0?"green":"red"),
-   node("td",r.open?r.open.side+" · "+fmt(r.open.age_minutes,0)+" min · risque "+arbMoney(r.open.worst_case_loss_bound):"—"));
-  tb.append(line);
- }
- table.append(tb);wrap.append(table);c.append(wrap);
- c.append(node("p","IMPORTANT : montants contrefactuels, pas des gains ni des ordres exécutés. Les ASK/BID sont des snapshots espacés, la priorité des ordres et les frais réels sont inconnus ; les stops non cotables restent ouverts. Aucune recommandation d'investissement.","foot"));
+ table.append(tbody);wrap.append(table);card.append(wrap);
+ card.append(node("p","Interprétation : la somme ASK représente le coût indicatif d'une paire achetée immédiatement, à la quantité testée de 50 shares. Les spreads et leurs variations n'impliquent aucune possibilité de capture maker. Il faut des exécutions publiques et des données fines d'ordre pour tester RN1. Aucun ordre réel.","foot"));
 }
 
 async function renderArb(){
  const target=$("content");
- target.replaceChildren(heading("Arbitrage Lab","Arbitrage temporel : suivre la formation des paires dans le temps et le risque des jambes non couvertes."));
+ target.replaceChildren(heading("Arbitrage Lab","Observations de marché et recherche de spreads — aucune stratégie validée."));
  await renderTemporal(target);
  target.append(banner("Une marge affichée n'est PAS un arbitrage exécuté. Les deux côtés doivent réellement être remplis. Le taux de provision est un scénario paramétrable et NON le barème de frais officiel. Les éventuels rebates maker ne sont pas comptabilisés."));
  const filter=node("section",null,"card");
