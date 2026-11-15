@@ -746,6 +746,38 @@ async function renderRN1(){
    summary.join(" ; ")+". Ces références proviennent des autres exécutions DU MÊME WALLET, "+
    "pas de cotations de marché indépendantes. Elles ne prouvent donc ni sélection "+
    "adverse réelle, ni bénéfice réalisé.","foot"));
+  // Compare the SAME horizon, but not necessarily the same fills or events.
+  // Reference prices are the wallet's own future executions: NEVER call this CLOB adverse selection.
+  c.append(node("h3","Comparaison Maker : côté moins accumulé ou déjà dominant"));
+  const compare=node("div",null,"metrics");
+  const proxyAt=h=>{
+   const row=forward[h]||{};
+   return [["underweight","Côté moins accumulé"],["overweight","Côté déjà dominant"]].map(([position,label])=>{
+    const m=row["maker|"+position]||{};
+    const n=Number(m.n||0),shares=Number(m.shares||0),value=Number(m.weighted||0);
+    return {position,label,n,shares,markout:shares>0?value/shares:null};
+   });
+  };
+  for(const [h,label] of [["300","5 min"],["900","15 min"],["3600","60 min"]]){
+   const [under,over]=proxyAt(h);
+   const render=x=>x.n>0&&x.markout!==null?
+    fmt(x.markout*100,3)+" ¢ ("+fmt(x.n)+" fills)":"non observable";
+   c.append(node("p",label+" — côté moins accumulé : "+render(under)+
+    " ; côté dominant : "+render(over)+". Comparaison de transactions effectivement exécutées "+
+    "ayant une référence ultérieure disponible, pas de performance d'ordres théoriques.","foot"));
+  }
+  const data15=forward["900"]||{},
+   reference15=Number(data15["maker|all"]?.n||0);
+  compare.append(metric("Maker avec référence future à 15 min",
+   maker>0?fmt(100*reference15/maker,1)+" %":"—"));
+  const previous=Number(inv.comparable||0);
+  compare.append(metric("Maker avec comparaison d'inventaire",
+   maker>0?fmt(100*previous/maker,1)+" %":"—"));
+  c.append(compare);
+  c.append(node("p","Attention : les fills sans exécution ultérieure dans la fenêtre "+
+   "ne participent pas au prix moyen. Les chiffres peuvent varier entre les horizons "+
+   "et dépendent d'une sélection de fills. Aucune conclusion n'est encore validée "+
+   "hors période ni à l'échelle d'événements sportifs indépendants.","foot"));
   c.append(node("p","Échantillon chronologique figé : "+fmt(replay.frozen_last_page||0)+
    " pages. "+fmt(unknown)+" exécutions à rôle indéterminé. "+
    "Inventaire reconstruit uniquement avec les transactions exécutées ; les merges, "+
