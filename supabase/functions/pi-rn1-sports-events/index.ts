@@ -82,7 +82,7 @@ async function scoreboard(date:string){
  const recent=date>=new Date(Date.now()-86400000).toISOString().slice(0,10);
  if(rows.length&&(!recent||Date.now()-new Date(rows[0].fetched_at).getTime()<900000))
   return rows[0].games as any[];
- const url="https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates="+date.replaceAll("-","");
+ const url="https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates="+date.replaceAll("-","");
  const {data}=await getJSON(url);
  if(!Array.isArray(data?.events))throw Error("ESPN scoreboard events missing");
  const games=data.events as any[];
@@ -125,7 +125,7 @@ async function processGame(r:any){
   const game=matchGame(games,slug);
   if(!game||!/^\d{7,15}$/.test(String(game.id||"")))throw Error("No unique NBA game match on ESPN scoreboard");
   const id=String(game.id);
-  const {data,digest}=await getJSON("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event="+id);
+  const {data,digest}=await getJSON("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event="+id);
   if(!Array.isArray(data?.plays)||data.plays.length<2)throw Error("ESPN summary lacks completed play-by-play");
   const rows=normalizedPlays(data.plays,slug,id);
   if(rows.length<2)throw Error("No timestamped ESPN play-by-play");
