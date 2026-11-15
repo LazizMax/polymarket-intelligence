@@ -1,5 +1,5 @@
 import {assert,assertEquals,assertAlmostEquals} from "jsr:@std/assert@1.0.10";
-import {targetFromGamma,bookQuotes,matchPreTradeBook,sportsTakerFee,signature,normalizeCurrentHoldings,signedInventoryImbalance} from "./quote-utils.ts";
+import {targetFromGamma,bookQuotes,matchPreTradeBook,sportsTakerFee,signature,normalizeCurrentHoldings,signedInventoryImbalance,makerQuoteCandidate} from "./quote-utils.ts";
 const key="0x"+"a".repeat(64),target={market_key:key,event_slug:"nba-test-2026",title:"Team vs Team",
 market_type:"moneyline",assets:["1".repeat(70),"2".repeat(70)] as [string,string],protocol:"v1",origin:"sports_control" as const,volume24h:1000};
 Deno.test("v1/v2 choose correct outcome asset identifiers",()=>{
@@ -58,4 +58,23 @@ Deno.test("incomplete or cross-wallet positions never create zero-share observat
  rejected=false;
  try{normalizeCurrentHoldings({data:[{proxy_wallet:"0x"+"a".repeat(40)}],pagination:{has_more:false}},[target],"0x"+"c".repeat(40))}catch{rejected=true}
  assertEquals(rejected,true);
+});
+
+Deno.test("pure price rules use only prior bid/ask and prior inventory",()=>{
+ assertAlmostEquals(makerQuoteCandidate("best_bid",.46,.50,.01,100,20,.49)!, .46);
+ assertAlmostEquals(makerQuoteCandidate("one_below",.46,.50,.01,100,20,.49)!, .45);
+ assertAlmostEquals(makerQuoteCandidate("two_below",.46,.50,.01,100,20,.49)!, .44);
+ assertAlmostEquals(makerQuoteCandidate("skew_discount_1",.46,.50,.01,100,0,null)!, .45);
+ assertAlmostEquals(makerQuoteCandidate("skew_discount_2",.46,.50,.01,100,0,null)!, .44);
+ assertAlmostEquals(makerQuoteCandidate("pair_ceiling_1pct",.46,.50,.01,20,100,.55)!, .44);
+ assertEquals(makerQuoteCandidate("pair_ceiling_2pct",.46,.50,.01,20,0,null),null);
+ assertEquals(makerQuoteCandidate("pair_ceiling_0",.46,.50,.01,20,100,.999),null);
+});
+Deno.test("position outcome index mismatch fails closed",()=>{
+ const payload={data:[{proxy_wallet:"0x"+"c".repeat(40),condition_id:key,
+ token_id:target.assets[0],outcome_index:1,current_size:2}],pagination:{has_more:false}};
+ let rejected=false;
+ try{normalizeCurrentHoldings(payload,[target],"0x"+"c".repeat(40))}
+ catch{rejected=true}
+ assert(rejected);
 });
