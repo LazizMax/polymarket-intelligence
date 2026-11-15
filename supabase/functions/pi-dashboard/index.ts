@@ -1599,6 +1599,138 @@ async function rn1TriggerWindows(body:any){
   warnings:["Fenêtres token-minute conditionnelles aux marchés observés, pas des trades indépendants.","L'échantillon rn1_recent est sélectionné en fonction des fills récents ; sports_control n'est pas un groupe témoin apparié.","maker_inferred n'est pas un registre d'ordres privés ; l'heure du dépôt Maker est inconnue.","Filtre : carnet valide, âge <=15 s, spread <=10 cents, mid entre 1% et 99%, historique précédent de 10 à 180 s ; pas de contrôle des événements de jeu."]};
 }
 
+
+async function rn1SportsImpact(body:any){
+ const windowSeconds=[30,60].includes(Number(body?.window_seconds))?Number(body.window_seconds):30;
+ const slug=/^nba-[a-z]{2,4}-[a-z]{2,4}-20\d\d-\d\d-\d\d$/.test(String(body?.event_slug||""))
+  ?String(body.event_slug):"";
+ const statement=`
+ with games as (
+  select e.event_slug,e.first_play_at,e.last_play_at
+  from pi.rn1_nba_espn_links e
+  where e.status='complete'
+    and exists(select 1 from pi.trades t where t.event_slug=e.event_slug)
+ ), ranked as (
+  select p.event_slug,p.play_at,p.sequence_number,p.period_number,
+    p.is_scoring,p.home_score,p.away_score,
+    row_number() over(partition by p.event_slug order by p.play_at,p.sequence_number,p.play_id) rn,
+    row_number() over(partition by p.event_slug,p.period_number order by p.play_at,p.sequence_number,p.play_id) quarter_rank
+  from pi.rn1_nba_espn_plays p join games g on p.event_slug=g.event_slug
+ ), last_known as (
+  select r.*,
+   max(rn) filter(where home_score is not null and away_score is not null and home_score<>away_score)
+    over(partition by event_slug order by rn rows between unbounded preceding and 1 preceding) prior_leader_rn
+  from ranked r
+ ), events as (
+  select a.event_slug,a.play_at,a.is_scoring,(a.quarter_rank=1) period_start,
+   (a.home_score<>a.away_score and b.home_score is not null and b.away_score is not null
+    and sign(a.home_score-a.away_score)<>sign(b.home_score-b.away_score)) lead_change
+  from last_known a left join ranked b on b.event_slug=a.event_slug and b.rn=a.prior_leader_rn
+ ), buckets as (
+  select e.event_slug,floor(extract(epoch from(e.play_at-g.first_play_at))/${windowSeconds})::int bin,
+   bool_or(e.is_scoring) score,bool_or(e.period_start) quarter,
+   bool_or(e.lead_change) lead
+  from events e join games g on e.event_slug=g.event_slug group by 1,2
+ ), fills as (
+  select t.event_slug,floor(extract(epoch from(t.reported_at-g.first_play_at)) /${windowSeconds})::int bin,
+   count(*) fills
+  from pi.trades t join games g on t.event_slug=g.event_slug
+  where t.reported_at between g.first_play_at and g.last_play_at+interval '1 minute'
+  group by 1,2
+ ), classified as (
+  select b.event_slug,v.kind,v.exposed,coalesce(f.fills,0) next_fills
+  from buckets b
+  cross join lateral (values('score',b.score),('lead',b.lead),('quarter',b.quarter)) v(kind,exposed)
+  left join fills f on f.event_slug=b.event_slug and f.bin=b.bin+1
+  where v.kind<>'lead' or b.score
+ )
+ select event_slug,kind,exposed,
+  count(*)::int windows,count(*) filter(where next_fills>0)::int filled_windows,
+  sum(next_fills)::int following_fills
+ from classified group by 1,2,3 order by event_slug,kind,exposed desc
+ `;
+ const rows=await db.unsafe(statement);
+ const games=await db.unsafe(`
+ select l.event_slug,l.game_day::text game_day,l.espn_event_id,l.status,
+  l.plays_timed,l.scoring_plays,l.first_play_at::text first_play_at,
+  l.last_play_at::text last_play_at,
+  (select count(*)::int from pi.trades t where t.event_slug=l.event_slug) observed_fills
+ from pi.rn1_nba_espn_links l
+ where l.status in ('complete','partial')
+ order by l.game_day desc,l.event_slug limit 75
+ `);
+ const coverage=await db.unsafe(`
+ select count(*)::int total,
+ count(*) filter(where status='complete')::int complete,
+ count(*) filter(where status='partial')::int partial,
+ count(*) filter(where status='missing')::int missing,
+ coalesce(sum(plays_timed),0)::int timed_plays,
+ coalesce(sum(scoring_plays),0)::int scoring_plays,
+ (select count(*)::int from pi.trades) pilot_trades
+ from pi.rn1_nba_espn_links`);
+ const totals:any[]=[];
+ for(const kind of ["score","lead","quarter"]){
+  for(const exposed of [true,false]){
+   const select=rows.filter((r:any)=>r.kind===kind&&r.exposed===exposed);
+   const sum=(k:string)=>select.reduce((s:number,r:any)=>s+Number(r[k]||0),0);
+   const windows=sum("windows"),filledWindows=sum("filled_windows");
+   totals.push({kind,exposed,windows,filled_windows:filledWindows,following_fills:sum("following_fills"),
+    fill_window_pct:windows?100*filledWindows/windows:null,distinct_games:select.length});
+  }
+ }
+ let timeline:any[]=[], token:null|string=null, priceTimeline:any[]=[];
+ if(slug && games.some((g:any)=>g.event_slug===slug)){
+  timeline=await db.unsafe(`
+   with g as(select event_slug,first_play_at,last_play_at
+     from pi.rn1_nba_espn_links where event_slug=$1),
+   bins as(select x.i from g cross join lateral
+     generate_series(0,least(85,floor(extract(epoch from(g.last_play_at-g.first_play_at))/120)::int)) x(i)),
+   pp as(select floor(extract(epoch from(p.play_at-g.first_play_at))/120)::int i,
+     count(*)::int plays,count(*) filter(where p.is_scoring)::int scoring,
+     count(distinct p.period_number)::int periods,
+     max(p.home_score)::int max_home_score,max(p.away_score)::int max_away_score
+     from pi.rn1_nba_espn_plays p join g on p.event_slug=g.event_slug group by 1),
+   tt as(select floor(extract(epoch from(t.reported_at-g.first_play_at))/120)::int i,
+     count(*)::int fills,sum(t.observed_notional_usdc)::float8 notional
+     from pi.trades t join g on t.event_slug=g.event_slug group by 1)
+   select b.i,coalesce(pp.plays,0) plays,coalesce(pp.scoring,0) scoring,
+     coalesce(tt.fills,0) fills,coalesce(tt.notional,0) notional
+   from bins b left join pp on pp.i=b.i left join tt on tt.i=b.i order by b.i
+  `,[slug]);
+  const tok=await db.unsafe(`
+   select b.token_id,count(*)::int fills
+   from pi.rn1_fill_price_benchmark b
+   join pi.rn1_pattern_market_entries e on e.market_key=b.market_key
+   where e.event_slug=$1 group by b.token_id order by count(*) desc limit 1
+  `,[slug]);
+  token=tok[0]?.token_id??null;
+  if(token){
+   const e=games.find((g:any)=>g.event_slug===slug);
+   const start=Math.floor(Date.parse(e.first_play_at)/1000);
+   const end=Math.floor(Date.parse(e.last_play_at)/1000);
+   priceTimeline=await db.unsafe(`
+    select floor((observed_epoch-$2::bigint)/120)::int i,
+     avg(price)::float8 mean_price,count(*)::int points
+    from pi.rn1_historical_price_points
+    where token_id=$1 and observed_epoch between $2::bigint and $3::bigint
+    group by 1 order by 1 limit 100
+   `,[token,start,end]);
+  }
+ }
+ return {coverage:coverage[0]??{},games,totals,per_game:rows,
+   selection:slug||null,window_seconds:windowSeconds,timeline,price_timeline:priceTimeline,
+   price_token:token,
+   caveats:[
+    "Seulement les matchs NBA finalisés avec trades présents dans le pilote pi.trades (4 000 trades, PAS les 756 000 fills complets).",
+    "Unité statistique : fenêtre avec jeu observé ; label événement dans cette fenêtre, fill dans la fenêtre chronologique suivante. Ce n'est pas un ordre Maker nouvellement placé.",
+    "Les périodes de jeu et l'activité de marché sont des variables confondantes : les fenêtres ne sont ni indépendantes ni appariées en liquidité.",
+    "Changement de leader = passage du score non nul d'une équipe devant l'autre ; les égalités intermédiaires sont ignorées.",
+    "Rôle Maker/Taker non établi sur les 4 000 trades historiques ; voir RN1 · Déclencheurs pour les fills live annotés.",
+    "Prix graphiques : dernière-trade historique à la minute d'un token choisi, pas meilleur bid/ask ni prix de décision de RN1.",
+    "Résultat descriptif, pas prédiction causale, simulation d'exécution ou recommandation de copie."
+   ]};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -1630,6 +1762,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_reverse_engineering")return send(await rn1ReverseEngineering());
   if(body?.action==="rn1_setup_patterns")return send(await rn1SetupPatterns());
   if(body?.action==="rn1_trigger_windows")return send(await rn1TriggerWindows(body));
+  if(body?.action==="rn1_sports_impact")return send(await rn1SportsImpact(body));
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
