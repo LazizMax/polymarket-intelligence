@@ -45,3 +45,10 @@ Dans l'application permanente, l'adresse du manifeste de mise à jour est :
 **Activation initiale à effectuer :** ouvrir [Settings → Pages](https://github.com/LazizMax/polymarket-intelligence/settings/pages) et choisir **GitHub Actions** comme source. La première exécution du workflow `Deploy Polymarket Cloud frontend` échoue tant que Pages n'est pas activé ; relancer ensuite ce workflow. Le code frontend est déjà validé et prêt à être publié.
 
 Le dashboard en ligne utilise le schéma privé `pi` d'un projet Supabase existant. Il impose un compte Supabase Auth explicitement autorisé. L'import initial de 100 wallets, le PnL quotidien et les drawdowns observés sont opérationnels. Un job planifié rafraîchit 5 wallets toutes les 15 minutes. **Aucun ROI sur capital ni avantage de copy trading n'a encore été validé.** La documentation technique et la procédure de suspension sont dans [le runbook cloud](docs/CLOUD_RUNBOOK_V1.md).
+
+
+### ROI des positions clôturées
+
+Dans **Analyse wallet**, la nouvelle section ROI présente le coût estimé, PnL réalisé et ROI de chaque position clôturée, ainsi que le ROI total pondéré, le ROI moyen arithmétique et le ROI médian. Les valeurs de coût manquantes ne sont pas converties en zéro. Un historique incomplet ou des positions exclues restent signalés. [Méthodologie et limites](docs/ROI_CLOSED_POSITIONS_V1.md).
+
+Un ROI par **exécution** (chaque achat/vente) et le ROI sur capital exigent encore un ledger de transactions complet et réconcilié.
