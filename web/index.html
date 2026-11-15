@@ -553,6 +553,19 @@ async function renderRN1(){
      fmt(majority?.matched_fills||0)+". Les positions proviennent de l'API publique, "+
      "relevées avant les trades, et non du cumul approximatif des fills historiques.","foot"));
    }
+   const transitions=inv.transitions||{};
+   if(Number(transitions.comparable_fills||0)>0){
+    quotesCard.append(node("h3","Évolution de l'inventaire après les achats"));
+    quotesCard.append(node("p","Sur "+fmt(transitions.comparable_fills)+
+     " achats avec deux relevés de positions vérifiés (jusqu'à cinq minutes après), "+
+     fmt(transitions.less_imbalanced||0)+" relevés montrent un portefeuille YES/NO "+
+     "moins déséquilibré, "+fmt(transitions.more_imbalanced||0)+
+     " plus déséquilibré et "+fmt(transitions.unchanged||0)+
+     " inchangé, sur "+fmt(transitions.markets||0)+" marchés et "+
+     fmt(transitions.days||0)+" jour(s). Ce sont des changements entre photos "+
+     "du portefeuille, pas des effets attribuables à chaque achat : d'autres "+
+     "opérations peuvent avoir eu lieu entre les relevés.","foot"));
+   }
    const runs=[...new Set(invModels.map(x=>x.period))];
    if(runs.includes("train")&&runs.includes("holdout")){
     const train=invModels.filter(x=>x.period==="train"&&Number(x.fills)>=20&&Number.isFinite(Number(x.mae_ticks)));
