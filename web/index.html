@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -408,6 +408,162 @@ async function renderRN1Activity(target){
 }
 
 
+
+
+async function renderRN1Sports(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Événements sportifs",
+  "Quand RN1 est-il exécuté par rapport aux paniers, changements de leader et débuts de quart-temps ? Tests sur matchs NBA horodatés ESPN."));
+ const intro=node("section",null,"card");
+ intro.append(banner("ANALYSE DESCRIPTIVE : les exécutions observées ne révèlent PAS quand RN1 a déposé ou annulé ses ordres Maker. Nous ne concluons pas à une règle de déclenchement ni à un avantage copiable."));
+ target.append(intro);
+ const results=node("div");target.append(results);
+ let windowSeconds=30,slug="",data=null;
+ async function load(){
+  results.replaceChildren(node("p","Chargement des matchs et événements sportifs…","foot"));
+  try{data=await api("rn1_sports_impact",{window_seconds:windowSeconds,event_slug:slug});draw()}
+  catch(e){results.replaceChildren(node("p","Étude momentanément indisponible : "+String(e?.message||e),"red"))}
+ }
+ function select(label,items,current,cb){
+  const wrap=node("label",label),el=node("select");
+  for(const [v,t] of items){const opt=node("option",t);opt.value=v;el.append(opt)}
+  el.value=current;el.addEventListener("change",()=>cb(el.value));wrap.append(el);return wrap;
+ }
+ function rate(rows,kind,flag){
+  const r=rows.find(x=>x.kind===kind&&x.exposed===flag);
+  return r||{windows:0,filled_windows:0,following_fills:0,fill_window_pct:null,distinct_games:0};
+ }
+ function chartTimeline(parent,items,prices){
+  if(!items.length){parent.append(node("p","Aucune timeline détaillée pour ce match.","foot"));return}
+  const w=1040,h=205,left=35,right=12,top=20,bottom=32,plotW=w-left-right,plotH=h-top-bottom;
+  const n=items.length,barW=plotW/n;
+  const maxF=Math.max(1,...items.map(x=>Number(x.fills)||0));
+  const maxS=Math.max(1,...items.map(x=>Number(x.scoring)||0));
+  const NS="http://www.w3.org/2000/svg", svg=document.createElementNS(NS,"svg");
+  svg.setAttribute("viewBox",`0 0 ${w} ${h}`);
+  svg.style.cssText="display:block;width:100%;height:auto;max-height:270px";
+  function element(tag,attrs,txt){
+   const x=document.createElementNS(NS,tag);
+   for(const [key,value] of Object.entries(attrs||{}))x.setAttribute(key,String(value));
+   if(txt!==undefined)x.textContent=String(txt);
+   svg.append(x);return x;
+  }
+  for(let k=0;k<4;k++){
+   const y=top+(plotH*k)/3;
+   element("line",{x1:left,y1:y,x2:w-right,y2:y,stroke:"#26394a","stroke-width":1});
+  }
+  for(let i=0;i<n;i++){
+   const o=items[i],f=Number(o.fills)||0,s=Number(o.scoring)||0;
+   const x=left+i*barW;
+   const hh=plotH*f/maxF,ss=plotH*s/maxS;
+   const a=element("rect",{x:x+1,y:top+plotH-hh,width:Math.max(1,barW*.44),height:Math.max(0,hh),fill:"#4fe4c4",opacity:.82});
+   const b=element("rect",{x:x+barW*.50,y:top+plotH-ss,width:Math.max(1,barW*.38),height:Math.max(0,ss),fill:"#fbbf74",opacity:.68});
+   const detail="De "+fmt(i*2)+" à "+fmt(i*2+2)+" min : "+f+" fills RN1, "+s+" actions qui marquent.";
+   for(const obj of [a,b]){const title=document.createElementNS(NS,"title");title.textContent=detail;obj.append(title)}
+  }
+  for(let k=0;k<=5;k++){
+   const x=left+(plotW*k/5),minutes=Math.round(n*2*k/5);
+   element("text",{x,y:h-9,fill:"#90a4b7","font-size":12,"text-anchor":"middle"},minutes+" min");
+  }
+  const frame=node("div");frame.style.cssText="overflow-x:auto;width:100%";
+  frame.append(svg);parent.append(frame);
+  parent.append(node("p","Vert : nombre de fills RN1. Orange : nombre d'actions NBA qui marquent. Agrégation par tranches de 2 minutes depuis le premier jeu ESPN ; chaque série possède sa propre échelle.","foot"));
+  if(prices&&prices.length){
+   const valid=prices.filter(x=>Number.isFinite(Number(x.mean_price))&&Number(x.i)>=0&&Number(x.i)<n);
+   if(valid.length>=2){
+    const priceBox=node("div",null,"card");priceBox.style.marginTop="14px";
+    priceBox.append(node("h3","Évolution de la cote historique sur un token sélectionné"));
+    const spar=document.createElementNS(NS,"svg");spar.setAttribute("viewBox","0 0 1040 130");
+    spar.style.cssText="width:100%;height:auto;display:block";
+    const x0=35,y0=12,pw=993,ph=94;
+    const pts=valid.map(o=>[x0+Number(o.i)*pw/Math.max(1,n-1),y0+ph*(1-Number(o.mean_price))]);
+    const path=document.createElementNS(NS,"polyline");
+    path.setAttribute("points",pts.map(v=>v.join(",")).join(" "));
+    path.setAttribute("fill","none");path.setAttribute("stroke","#8fc0ff");
+    path.setAttribute("stroke-width","2.5");spar.append(path);
+    const a=document.createElementNS(NS,"text");a.setAttribute("x","4");a.setAttribute("y","18");a.setAttribute("fill","#90a4b7");a.textContent="1,0";spar.append(a);
+    const b=document.createElementNS(NS,"text");b.setAttribute("x","4");b.setAttribute("y","110");b.setAttribute("fill","#90a4b7");b.textContent="0,0";spar.append(b);
+    priceBox.append(spar);
+    priceBox.append(node("p","Historique public des prix de transaction, non carnet bid/ask. Le token est sélectionné parmi les achats RN1 disponibles ; données à la minute, couverture partielle.","foot"));
+    parent.append(priceBox);
+   }
+  }
+ }
+ function draw(){
+  if(!data)return;
+  results.replaceChildren();
+  const cov=data.coverage||{},games=data.games||[],totals=data.totals||[],perGame=data.per_game||[];
+  const stats=node("div",null,"metrics");
+  stats.append(metric("Matchs NBA terminés enrichis",fmt(cov.complete||0)),
+   metric("Actions sportives horodatées",fmt(cov.timed_plays||0)),
+   metric("Actions marquant des points",fmt(cov.scoring_plays||0)),
+   metric("Trades RN1 du pilote",fmt(cov.pilot_trades||0)));
+  results.append(stats);
+  const params=node("section",null,"card");
+  const filters=node("div",null,"filters");
+  filters.append(select("Durée des fenêtres",[["30","30 secondes"],["60","60 secondes"]],String(windowSeconds),v=>{windowSeconds=Number(v);load()}));
+  filters.append(select("Match pour explorer la chronologie",
+   [["","Tous les matchs"],...games.map(g=>[g.event_slug,g.event_slug.replace(/^nba-/,"").replace(/-2026-/," · 2026-")+" ("+fmt(g.observed_fills)+" fills pilote)")]],
+   slug,v=>{slug=v;load()}));
+  params.append(filters);results.append(params);
+  const study=node("section",null,"card");
+  study.append(node("h2","Probabilité d'observer au moins un fill dans la fenêtre suivante"));
+  study.append(node("p","Une fenêtre avec jeu est classée selon les événements NBA qu'elle contient. Nous comptons ensuite les fills RN1 dans la fenêtre chronologique suivante, de même durée. Les contrôles proviennent des mêmes matchs.","foot"));
+  const comparisons=[
+   ["score","Action qui marque des points","Autre action de jeu"],
+   ["lead","Changement de leader","Autre fenêtre avec panier (sans changement de leader)"],
+   ["quarter","Premier jeu du quart-temps","Autre moment de jeu"]
+  ];
+  for(const [kind,label,control] of comparisons){
+   const a=rate(totals,kind,true),b=rate(totals,kind,false),max=Math.max(1,Number(a.fill_window_pct)||0,Number(b.fill_window_pct)||0);
+   const sub=node("div");sub.style.cssText="margin-top:20px;padding-top:14px;border-top:1px solid #26394a";
+   sub.append(node("h3",label));
+   for(const [name,row,color] of [[label,a,"#4fe4c4"],[control,b,"#8fc0ff"]]){
+    const line=node("div");line.style.cssText="display:grid;grid-template-columns:minmax(135px,1fr) minmax(120px,2fr) 140px;gap:12px;align-items:center;margin:10px 0";
+    line.append(node("span",name,"small"));
+    const bg=node("div");bg.style.cssText="height:12px;border-radius:8px;background:#223646;overflow:hidden";
+    const bar=node("div");bar.style.cssText="height:100%;width:"+((Number(row.fill_window_pct)||0)*100/max)+"%;background:"+color+";border-radius:8px";
+    bg.append(bar);line.append(bg);
+    line.append(node("span",row.fill_window_pct===null?"—":fmt(row.fill_window_pct,2)+" % ("+fmt(row.filled_windows)+"/"+fmt(row.windows)+")","small"));
+    sub.append(line);
+   }
+   study.append(sub);
+  }
+  study.append(node("p","Le taux de fenêtres suivies d'un fill ne mesure ni le nombre de décisions de RN1 ni sa rentabilité. Les répétitions de fenêtres du même match créent une dépendance statistique.","foot"));
+  results.append(study);
+  if(slug){
+   const game=games.find(g=>g.event_slug===slug),tlCard=node("section",null,"card");
+   tlCard.append(node("h2",slug+" — actions et fills au cours du match"));
+   if(game)tlCard.append(node("p","Match "+game.status+" · "+fmt(game.observed_fills)+" fills dans le pilote RN1 · "+fmt(game.plays_timed)+" actions ESPN.","foot"));
+   chartTimeline(tlCard,data.timeline||[],data.price_timeline||[]);
+   results.append(tlCard);
+  }
+  const matchCard=node("section",null,"card");
+  matchCard.append(node("h2","Résultat par match — actions qui marquent"));
+  const wrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),h=node("tr");
+  ["Match","Avec action qui marque","Autres actions","Écart (points)","Fenêtres disponibles"].forEach(v=>h.append(node("th",v)));
+  thead.append(h);table.append(thead);
+  const tbody=node("tbody"),active=games.filter(g=>g.status==="complete"&&Number(g.observed_fills)>0);
+  for(const g of active){
+   const sr=perGame.find(x=>x.event_slug===g.event_slug&&x.kind==="score"&&x.exposed===true);
+   const nr=perGame.find(x=>x.event_slug===g.event_slug&&x.kind==="score"&&x.exposed===false);
+   if(!sr||!nr)continue;
+   const aa=100*Number(sr.filled_windows)/Math.max(1,Number(sr.windows));
+   const bb=100*Number(nr.filled_windows)/Math.max(1,Number(nr.windows));
+   const tr=node("tr"),cell=node("td"),open=button(g.event_slug,()=>{slug=g.event_slug;load()},"secondary");
+   cell.append(open);tr.append(cell,node("td",fmt(aa,1)+" %"),node("td",fmt(bb,1)+" %"),
+     node("td",(aa>=bb?"+":"")+fmt(aa-bb,1),aa>=bb?"green":"red"),
+     node("td",fmt(sr.windows)+" / "+fmt(nr.windows)));
+   tbody.append(tr);
+  }
+  table.append(tbody);wrap.append(table);matchCard.append(wrap);results.append(matchCard);
+  const limits=node("section",null,"card");
+  limits.append(node("h2","Niveau de preuve — limites indispensables"));
+  for(const c of data.caveats||[])limits.append(node("p","• "+c,"foot"));
+  results.append(limits);
+ }
+ await load();
+}
 
 async function renderRN1Triggers(){
  const target=$("content");
@@ -1479,7 +1635,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
