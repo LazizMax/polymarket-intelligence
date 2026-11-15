@@ -113,7 +113,7 @@ export function classifyExecutedFlowPage(
     out.imbalance_buckets[b].total++;
     if((index===0&&prev0<prev1)||(index===1&&prev1<prev0))
      out.imbalance_buckets[b].underweight++;
-    else if((index===0&&prev0>prev1)||(index===1&&prev1<prev0))
+    else if((index===0&&prev0>prev1)||(index===1&&prev1>prev0))
      out.imbalance_buckets[b].overweight++;
     else out.imbalance_buckets[b].neutral++;
    }
