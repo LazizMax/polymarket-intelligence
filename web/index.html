@@ -532,6 +532,81 @@ async function renderRN1Sports(){
   study.append(node("p","Le taux de fenêtres suivies d'un fill ne mesure ni le nombre de décisions de RN1 ni sa rentabilité. Les répétitions de fenêtres du même match créent une dépendance statistique.","foot"));
   results.append(study);
 
+  // Run heavier same-token, same-price-move sensitivity test only on an explicit click.
+  const robustCard=node("section",null,"card");
+  robustCard.append(node("h2","Validation conditionnelle · panier ou mouvement de cote ?"));
+  robustCard.append(node("p","Comparer les mêmes tokens, à la même phase du match et au même mouvement de cote (amplitude et direction). Ce test contrôle l'association avec le prix, mais ne mesure PAS l'effet causal total des paniers.","foot"));
+  const robustOutput=node("div");
+  const runRobust=button("Calculer les comparaisons appariées",async()=>{
+   runRobust.disabled=true;
+   robustOutput.replaceChildren(node("p","Calcul en cours sur les prix historiques et les événements NBA…","foot"));
+   try{
+    const r=await api("rn1_sports_robustness");
+    robustOutput.replaceChildren();
+    const info=node("p","Critères : "+r.definitions.matching+".","foot");
+    robustOutput.append(info);
+    const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),headingRow=node("tr");
+    ["Phase comparable","Groupes / matchs","Paniers, puis fill ≤30 s","Autres actions, puis fill ≤30 s","Écart moyen / groupe ≤30 s","Paniers, puis fill ≤60 s","Autres actions, puis fill ≤60 s","Écart moyen / groupe ≤60 s"].forEach(x=>headingRow.append(node("th",x)));
+    head.append(headingRow);table.append(head);
+    const body=node("tbody");
+    for(const s of r.phase_summaries||[]){
+     const tr=node("tr");
+     const pct=v=>v===null||v===undefined?"—":fmt(v,2)+" %";
+     const diff=v=>v===null||v===undefined?"—":(Number(v)>=0?"+":"")+fmt(v,2)+" pp";
+     tr.append(
+      node("td",fmt(s.phase_seconds/60)+" min","name"),
+      node("td",fmt(s.strata)+" / "+fmt(s.comparison_games)),
+      node("td",pct(s.scored_rate30_pct)+" ("+fmt(s.scored_hits30)+"/"+fmt(s.scored_windows)+")"),
+      node("td",pct(s.control_rate30_pct)+" ("+fmt(s.control_hits30)+"/"+fmt(s.control_windows)+")"),
+      node("td",diff(s.equal_stratum_diff30_pp)),
+      node("td",pct(s.scored_rate60_pct)+" ("+fmt(s.scored_hits60)+"/"+fmt(s.scored_windows)+")"),
+      node("td",pct(s.control_rate60_pct)+" ("+fmt(s.control_hits60)+"/"+fmt(s.control_windows)+")"),
+      node("td",diff(s.equal_stratum_diff60_pp))
+     );
+     body.append(tr);
+    }
+    table.append(body);wrap.append(table);robustOutput.append(wrap);
+    const central=(r.phase_summaries||[]).find(x=>Number(x.phase_seconds)===1800);
+    if(central){
+     const metrics=node("div",null,"metrics");
+     metrics.append(
+      metric("Tokens-phases appariés",fmt(central.strata)),
+      metric("Matchs comparés",fmt(central.comparison_games)),
+      metric("Moyenne par match · écart ≤60 s",(central.equal_game_diff60_pp>=0?"+":"")+fmt(central.equal_game_diff60_pp,2)+" pp"),
+      metric("Matchs à écart + / −",fmt(central.games_positive60)+" / "+fmt(central.games_negative60))
+     );
+     robustOutput.append(metrics);
+    }
+    const toggle=button("Voir les différences match par match",()=>{
+      const opened=detail.style.display!=="none";
+      detail.style.display=opened?"none":"block";
+      toggle.textContent=opened?"Voir les différences match par match":"Masquer les matchs";
+    },"secondary");
+    const detail=node("div");detail.style.display="none";
+    const detailWrap=node("div",null,"tablewrap"),dt=node("table"),dtHead=node("thead"),dh=node("tr");
+    ["Match","Groupes appariés","Après panier · ≤60 s","Sans panier · ≤60 s","Différence par match"].forEach(x=>dh.append(node("th",x)));
+    dtHead.append(dh);dt.append(dtHead);
+    const dtBody=node("tbody");
+    for(const g of [...(r.games||[])].sort((a,b)=>b.game_diff60_pp-a.game_diff60_pp)){
+     const tr=node("tr");
+     const score=Number(g.scored_windows)>0?100*Number(g.scored_hits60)/Number(g.scored_windows):null;
+     const control=Number(g.control_windows)>0?100*Number(g.control_hits60)/Number(g.control_windows):null;
+     tr.append(node("td",g.event_slug),node("td",fmt(g.strata)),
+      node("td",score===null?"—":fmt(score,1)+" %"),
+      node("td",control===null?"—":fmt(control,1)+" %"),
+      node("td",(Number(g.game_diff60_pp)>=0?"+":"")+fmt(g.game_diff60_pp,1)+" pp"));
+     dtBody.append(tr);
+    }
+    dt.append(dtBody);detailWrap.append(dt);detail.append(detailWrap);
+    robustOutput.append(toggle,detail);
+    for(const note of r.definitions.constraints||[])robustOutput.append(node("p","• "+note,"foot"));
+    robustOutput.append(node("p","Lecture : la disparition d'une association après contrôle du mouvement de cote n'est pas une preuve qu'un panier n'influence pas RN1. Le prix peut être un médiateur entre panier et fill. Aucune rentabilité ni ordre Maker non exécuté n'est identifié.","foot"));
+   }catch(e){robustOutput.replaceChildren(node("p","Erreur lors du contrôle : "+String(e?.message||e),"red"))}
+   finally{runRobust.disabled=false}
+  });
+  robustCard.append(runRobust,robustOutput);results.append(robustCard);
+
+
 
   const cross=(data.price_vs_events||[]);
   if(cross.length){
