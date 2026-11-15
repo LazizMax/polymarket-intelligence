@@ -55,7 +55,7 @@ async function copyRows(req:Request){
  const batchKey=String(data?.batch_key||"");
  const rows=data?.rows;
  if(!/^[a-z][a-z0-9_]{0,100}$/.test(table)||table.startsWith("migration_")||
-  ["dashboard_access","scheduler_auth"].includes(table)||!Array.isArray(rows)||rows.length<1||rows.length>200||
+  ["dashboard_access","scheduler_auth"].includes(table)||!Array.isArray(rows)||rows.length<1||rows.length>360||
   !/^[a-f0-9]{64}$/.test(batchKey))return send({error:"invalid_table_or_rows"},400);
  const tableRows=await sql.unsafe(`SELECT c.oid::regclass::text table_name
  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
