@@ -1870,6 +1870,189 @@ async function rn1SizingForensics(){
   }};
 }
 
+
+type Rn1SizingObs={token:string;market:string;at:number;shares:number;notional:number;price:number;fill_count:number};
+function rn1Median(items:number[]):number|null{
+ if(!items.length)return null;
+ const a=[...items].sort((x,y)=>x-y),n=a.length;
+ return n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2;
+}
+function rn1SizingEvents(rows:any[],burstSeconds:number):Rn1SizingObs[]{
+ const blocks=new Map<string,Rn1SizingObs>();
+ for(const r of rows){
+  const token=String(r.token_id),market=String(r.market_key),
+   at=Number(r.trade_epoch),price=Number(r.price),shares=Number(r.shares);
+  if(!token||!market||!Number.isFinite(at)||!Number.isFinite(price)||
+      !Number.isFinite(shares)||price<=0||price>=1||shares<=0)continue;
+  const key=burstSeconds?token+":"+Math.floor(at/burstSeconds):String(r.fingerprint);
+  let block=blocks.get(key);
+  if(!block){block={token,market,at,shares:0,notional:0,price:0,fill_count:0};blocks.set(key,block)}
+  block.shares+=shares;block.notional+=price*shares;
+  block.at=Math.min(block.at,at);block.fill_count++;
+ }
+ return [...blocks.values()].map(v=>({...v,price:v.notional/v.shares}))
+ .sort((a,b)=>a.token.localeCompare(b.token)||a.at-b.at||a.market.localeCompare(b.market));
+}
+function rn1ModelScenario(rows:any[],burstSeconds:number,minPriceSpan:number,details=false){
+ const events=rn1SizingEvents(rows,burstSeconds),byToken=new Map<string,Rn1SizingObs[]>();
+ for(const r of events){const list=byToken.get(r.token)||[];list.push(r);byToken.set(r.token,list)}
+ const eligible:{token:string;market:string;train:Rn1SizingObs[];test:Rn1SizingObs[];price_span:number;total_n:number}[]=[];
+ for(const [token,a] of byToken){
+  if(a.length<6)continue;
+  const k=Math.floor(.7*a.length),train=a.slice(0,k),
+   lastTrainSec=Math.floor(train[train.length-1].at),
+   test=a.slice(k).filter(v=>Math.floor(v.at)>lastTrainSec);
+  if(test.length<2)continue;
+  const prices=train.map(v=>v.price),span=Math.max(...prices)-Math.min(...prices);
+  if(span<minPriceSpan)continue;
+  eligible.push({token,market:a[0].market,train,test,price_span:span,total_n:a.length});
+ }
+ const byMarket=new Map<string,{sxy:number;sxx:number}>();
+ for(const g of eligible){
+  const x=g.train.map(a=>Math.log(a.price)),y=g.train.map(a=>Math.log(a.shares));
+  const xm=x.reduce((a,b)=>a+b,0)/x.length,ym=y.reduce((a,b)=>a+b,0)/y.length;
+  const acc=byMarket.get(g.market)||{sxy:0,sxx:0};
+  for(let i=0;i<x.length;i++){acc.sxy+=(x[i]-xm)*(y[i]-ym);acc.sxx+=(x[i]-xm)**2}
+  byMarket.set(g.market,acc);
+ }
+ const all=[...byMarket.values()].reduce((a,b)=>({sxy:a.sxy+b.sxy,sxx:a.sxx+b.sxx}),{sxy:0,sxx:0});
+ const beta=all.sxx>1e-10?all.sxy/all.sxx:null;
+ const errors:{token:string;market:string;shares:number;usdc:number;learned:number|null}[]=[];
+ const observations:any[]=[];
+ for(const g of eligible){
+  const medianShares=rn1Median(g.train.map(x=>x.shares))??1,
+   medianUsd=rn1Median(g.train.map(x=>x.notional))??1,
+   ownMarket=byMarket.get(g.market)||{sxy:0,sxx:0};
+  // Power slope is fitted ONLY on training fills from OTHER markets.
+  const denom=all.sxx-ownMarket.sxx,
+   crossMarketBeta=denom>1e-10?(all.sxy-ownMarket.sxy)/denom:null;
+  const intercept=crossMarketBeta===null?null:
+   rn1Median(g.train.map(x=>Math.log(x.shares)-crossMarketBeta*Math.log(x.price)));
+  const tokenErrors:any[]=[];
+  for(const x of g.test){
+   const a=Math.abs(Math.log(x.shares/medianShares)),
+    b=Math.abs(Math.log(x.notional/medianUsd)),
+    c=intercept===null||crossMarketBeta===null?null:
+      Math.abs(Math.log(x.shares)-(intercept+crossMarketBeta*Math.log(x.price)));
+   const err={token:g.token,market:g.market,shares:a,usdc:b,learned:c};
+   tokenErrors.push(err);errors.push(err);
+  }
+  const mean=(k:"shares"|"usdc"|"learned")=>{
+   const valid=tokenErrors.map(x=>x[k]).filter(x=>x!==null);
+   return valid.length?valid.reduce((s:number,x:number)=>s+x,0)/valid.length:null;
+  };
+  if(details)observations.push({
+   market:g.market.slice(0,12)+"…",token:g.token.slice(0,8)+"…"+g.token.slice(-6),
+   observed_events:g.total_n,train_events:g.train.length,test_events:g.test.length,
+   train_price_span:g.price_span,shares_mae:mean("shares"),usd_mae:mean("usdc"),
+   learned_mae:mean("learned")
+  });
+ }
+ const mean=(a:number[])=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
+ const median=rn1Median;
+ const model=(key:"shares"|"usdc"|"learned")=>{
+  const v=errors.map(x=>x[key]).filter((x):x is number=>x!==null);
+  return {n:v.length,mean_abs_log_error:mean(v),median_abs_log_error:median(v),
+   median_error_factor:v.length?Math.exp(median(v)!):null};
+ };
+ const wins={shares:0,usd:0,tie:0},marketScores=new Map<string,{sh:number;usd:number;n:number}>();
+ for(const o of observations){
+  const d=Number(o.usd_mae)-Number(o.shares_mae);
+  if(d>1e-6)wins.shares++;else if(d< -1e-6)wins.usd++;else wins.tie++;
+ }
+ // Even when details=false, compute token-by-token wins without touching test fitting.
+ if(!details){
+  const grouped=new Map<string,{sh:number;usd:number;n:number}>();
+  for(const e of errors){const v=grouped.get(e.token)||{sh:0,usd:0,n:0};
+   v.sh+=e.shares;v.usd+=e.usdc;v.n++;grouped.set(e.token,v)}
+  for(const v of grouped.values()){const diff=v.usd-v.sh;
+   if(diff>1e-6)wins.shares++;else if(diff< -1e-6)wins.usd++;else wins.tie++}
+ }
+ for(const e of errors){const v=marketScores.get(e.market)||{sh:0,usd:0,n:0};
+  v.sh+=e.shares;v.usd+=e.usdc;v.n++;marketScores.set(e.market,v)}
+ const marketsWins={shares:0,usd:0,tie:0};
+ for(const v of marketScores.values()){
+  const d=v.usd-v.sh;
+  if(d>1e-6)marketsWins.shares++;else if(d< -1e-6)marketsWins.usd++;else marketsWins.tie++;
+ }
+ return {burst_seconds:burstSeconds,min_training_price_span:minPriceSpan,
+  events_total:events.length,
+  multi_fill_groups:events.filter(x=>x.fill_count>1).length,
+  fills_in_multi_groups:events.reduce((s,x)=>s+(x.fill_count>1?x.fill_count:0),0),
+  eligible_tokens:eligible.length,eligible_markets:byMarket.size,heldout_events:errors.length,
+  fitted_beta:beta,models:{fixed_shares:model("shares"),
+   fixed_usdc:model("usdc"),learned_power:model("learned")},
+  token_wins:wins,market_wins:marketsWins,
+  tokens:details?observations:undefined
+ };
+}
+function rn1RollingScenario(rows:any[],lookback:number,minPriceSpan:number,burstSeconds:number){
+ const events=rn1SizingEvents(rows,burstSeconds),group=new Map<string,Rn1SizingObs[]>();
+ for(const x of events){const v=group.get(x.token)||[];v.push(x);group.set(x.token,v)}
+ const cases:{token:string;market:string;shares:number;usdc:number}[]=[];
+ for(const [token,arr] of group){
+  for(let i=lookback;i<arr.length;i++){
+   const x=arr[i],
+    prior=arr.slice(0,i).filter(v=>Math.floor(v.at)<Math.floor(x.at)).slice(-lookback);
+   if(prior.length<lookback)continue;
+   const prices=prior.map(v=>v.price);
+   if(Math.max(...prices)-Math.min(...prices)<minPriceSpan)continue;
+   const shares=rn1Median(prior.map(v=>v.shares))!,usd=rn1Median(prior.map(v=>v.notional))!;
+   cases.push({token,market:x.market,
+    shares:Math.abs(Math.log(x.shares/shares)),
+    usdc:Math.abs(Math.log(x.notional/usd))});
+  }
+ }
+ const tokens=new Map<string,{s:number;u:number}>();
+ for(const x of cases){
+  const a=tokens.get(x.token)||{s:0,u:0};a.s+=x.shares;a.u+=x.usdc;tokens.set(x.token,a);
+ }
+ const avg=(key:"shares"|"usdc")=>cases.length?cases.reduce((a,b)=>a+b[key],0)/cases.length:null;
+ return {lookback,burst_seconds:burstSeconds,training_min_price_span:minPriceSpan,
+  n_predictions:cases.length,tokens:tokens.size,markets:new Set(cases.map(x=>x.market)).size,
+  fixed_shares_mean_abs_log:avg("shares"),fixed_usdc_mean_abs_log:avg("usdc"),
+  token_wins:{shares:[...tokens.values()].filter(x=>x.s<x.u-1e-6).length,
+   usd:[...tokens.values()].filter(x=>x.u<x.s-1e-6).length,
+   tie:[...tokens.values()].filter(x=>Math.abs(x.s-x.u)<=1e-6).length}
+ };
+}
+async function rn1SizingHypotheses(){
+ const rows=await db.unsafe("select fingerprint,market_key,token_id,extract(epoch from trade_at)::float8 trade_epoch,\n fill_price::float8 price,shares::float8 shares\n from pi.rn1_quote_probe_fills\n where role='maker_inferred' and side='BUY'\n and shares>0 and fill_price between 0.005 and 0.995\n order by token_id,trade_at,fingerprint limit 10001");
+ const limited=rows.length>10000,sample=limited?rows.slice(0,10000):rows;
+ const variations=[
+  rn1ModelScenario(sample,0,0.03,true),
+  rn1ModelScenario(sample,0,0.01),
+  rn1ModelScenario(sample,0,0.05),
+  rn1ModelScenario(sample,1,0.03),
+  rn1ModelScenario(sample,10,0.03)
+ ];
+ const rolling=[
+  rn1RollingScenario(sample,3,0.03,0),
+  rn1RollingScenario(sample,5,0.03,0),
+  rn1RollingScenario(sample,3,0.03,1),
+  rn1RollingScenario(sample,3,0.01,0)
+ ];
+ return {source_fills:sample.length,truncated:limited,source_role:"maker_inferred",
+  primary:variations[0],sensitivities:variations.slice(1),rolling,
+  definitions:{
+   split:"For each token with >=6 events, calibrate on first floor(70%) by time, then test only strictly LATER timestamps at least 1 second beyond the last training fill. Training price span must exceed 3c (1c and 5c sensitivities).",
+   fixed_shares:"Predict constant number of shares = training token median(shares).",
+   fixed_usdc:"Predict constant executed USDC = training token median(shares*fill_price).",
+   learned_power:"Fit pooled, within-token log(shares) vs log(price) slope on TRAINING ONLY, excluding the entire held-out token market when predicting it. Token intercept from its training values.",
+   loss:"Absolute natural-log multiplicative ratio, measured on later fills. A median error factor of 7 means the actual value is typically about 7x the prediction or the inverse, not 7% error.",
+   bursts:"A same-token 1s or 10s group sums fills and uses their volume-weighted average price; it is a sensitivity proxy, NOT a verified parent order.",
+   rolling:"The previous 3/5 observed fills from strictly earlier seconds predict each next fill. Online overlapping outcomes are statistically dependent.",
+   constraints:[
+    "This is a small selectively observed live Maker-inferred sample; not the historical 756k all-role universe.",
+    "A Maker fill is a partial or complete EXECUTION, not a new or full private limit order. Unfilled and cancelled quotes remain invisible.",
+    "Same-second transaction ordering is unknown; holdouts and rolling tests exclude ambiguous earlier observations at the same second.",
+    "The 70/30 split is within the SAME tokens; there is NO new-token or true future-market generalization guarantee.",
+    "Comparing sizes conditional on observed fills introduces fill-selection and price/liquidity confounding.",
+    "Results are exploratory and not a validated sizing formula, probability of entry, profit, or bankroll management rule."
+   ]
+  }};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -1904,6 +2087,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_sports_impact")return send(await rn1SportsImpact(body));
   if(body?.action==="rn1_sports_robustness")return send(await rn1SportsRobustness());
   if(body?.action==="rn1_sizing_forensics")return send(await rn1SizingForensics());
+  if(body?.action==="rn1_sizing_hypotheses")return send(await rn1SizingHypotheses());
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
