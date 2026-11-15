@@ -4,7 +4,8 @@ alter table pi.trades add column if not exists outcome_index smallint,
   add column if not exists outcome_label text,
   add column if not exists event_slug text,
   add column if not exists market_slug text,
-  add column if not exists source_row_index integer;
+  add column if not exists source_row_index integer,
+  add column if not exists market_title text;
 
 create table if not exists pi.rn1_trade_pages(
  page_sha text primary key,
