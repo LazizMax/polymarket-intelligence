@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS pi.rn1_independent_price_pages (
  sampled_tokens integer NOT NULL,
  sampled_buy_fills integer NOT NULL,
  sample_market_count integer NOT NULL,
+ source_tokens integer CHECK(source_tokens>0),
  sample_event_slugs jsonb NOT NULL DEFAULT '[]'::jsonb,
  history_requests integer NOT NULL,
  history_success integer NOT NULL,
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS pi.rn1_independent_price_pages (
  checkpoint_key text NOT NULL,
  processed_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE pi.rn1_independent_price_pages ADD COLUMN IF NOT EXISTS source_tokens integer CHECK(source_tokens>0);
 ALTER TABLE pi.rn1_independent_price_pages ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON pi.rn1_independent_price_pages FROM anon,authenticated;
 INSERT INTO pi.rn1_independent_price_jobs(job_key,frozen_last_page,next_page)
