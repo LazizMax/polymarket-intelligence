@@ -75,10 +75,42 @@ async function migrate(maxItems:number){
   return {status:"error",error};
  }
 }
+// Priority transfer of only the two verified replay checkpoints; does not
+// advance or reset the ordinary lexicographic archive migration cursor.
+async function copyReplayCheckpoints(){
+ const jobs=await db.unsafe(`select snapshot_key checkpoint from pi.rn1_replay_jobs
+ union all select checkpoint_key checkpoint from pi.rn1_independent_price_jobs`);
+ const vault=await db.unsafe("select decrypted_secret from vault.decrypted_secrets where name='pi_migration_bridge_20261115'");
+ if(vault.length!==1||!vault[0].decrypted_secret)throw Error("Source Vault migration token unavailable");
+ const token=String(vault[0].decrypted_secret);
+ const results:any[]=[];
+ for(const row of jobs){
+  const name=String(row.checkpoint||"");
+  if(!/^(replay-v1\/checkpoints|independent-prices-v1\/state)\/[a-zA-Z0-9_.-]+$/.test(name))
+   throw Error("Unsafe or absent replay checkpoint");
+  const r=await fetch(URL+"/storage/v1/object/"+BUCKET+"/"+name.split("/").map(encodeURIComponent).join("/"),
+   {headers:{Authorization:"Bearer "+SERVICE,apikey:SERVICE},signal:AbortSignal.timeout(30000)});
+  if(!r.ok)throw Error("Private checkpoint source read failed "+r.status);
+  const data=new Uint8Array(await r.arrayBuffer());
+  const h=new Uint8Array(await crypto.subtle.digest("SHA-256",data));
+  const hash=[...h].map(x=>x.toString(16).padStart(2,"0")).join("");
+  const pushed=await fetch(DEST,{method:"POST",headers:{
+   "x-pi-migration-token":token,"x-pi-migration-action":"copy-object",
+   "x-pi-object-name":name,"x-pi-object-sha256":hash,"Content-Type":"application/octet-stream"
+  },body:data,signal:AbortSignal.timeout(45000)});
+  const response=await pushed.json().catch(()=>({error:"unparseable_response"}));
+  if(!pushed.ok||!response.ok)throw Error("Checkpoint destination rejected "+name+" "+JSON.stringify(response).slice(0,180));
+  results.push({checkpoint:name,bytes:data.length,sha256:hash});
+ }
+ return {status:"copied_verified",checkpoints:results};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return send({error:"method_not_allowed"},405);
  if(!await authorised(req))return send({error:"forbidden"},403);
  let data:any={};try{data=await req.json()}catch(_){}
+ if(data.action==="copy_replay_checkpoints"){
+  try{return send(await copyReplayCheckpoints())}catch(e){return send({error:String(e).slice(0,230)},500)}
+ }
  if(data.action!=="transfer_storage")return send({error:"bad_action"},400);
  return send(await migrate(Math.min(25,Math.max(1,Number.isInteger(data.count)?data.count:12))));
 });
