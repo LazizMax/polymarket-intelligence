@@ -71,7 +71,7 @@ async function copyRows(req:Request){
  JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
  WHERE n.nspname='pi' AND c.relname=$1 AND i.indisprimary ORDER BY k.ord`,[table]);
  if(!pks.length||!columns.length)return send({error:"missing_primary_key_or_columns"},400);
- const check=await sql.unsafe("select jsonb_typeof($1::jsonb) as kind, jsonb_array_length($1::jsonb) as n",[JSON.stringify(rows)]).catch(e=>[{error:String(e).slice(0,100)}]);
+ const check=await sql.unsafe("select jsonb_typeof($1::text::jsonb) as kind, jsonb_array_length($1::text::jsonb) as n",[JSON.stringify(rows)]).catch(e=>[{error:String(e).slice(0,100)}]);
  if(check[0]?.kind!=="array")return send({error:"receiver_json_param_nonarray",server_kind:check[0]?.kind,server_error:check[0]?.error,
   js_array:Array.isArray(rows),length:rows.length},400);
  const quote=(x:string)=>'"'+x.replaceAll('"','""')+'"';
@@ -79,7 +79,7 @@ async function copyRows(req:Request){
  const nonprimary=columns.map(x=>x.name).filter(x=>!primary.includes(x));
  // Source row JSON is a full typed PostgreSQL composite; upsert is idempotent.
  const command=`INSERT INTO pi.${quote(table)} OVERRIDING SYSTEM VALUE
- SELECT * FROM jsonb_populate_recordset(NULL::pi.${quote(table)},$1::jsonb)
+ SELECT * FROM jsonb_populate_recordset(NULL::pi.${quote(table)},$1::text::jsonb)
  ON CONFLICT (${primary.map(quote).join(",")}) DO ${nonprimary.length?
   "UPDATE SET "+nonprimary.map(c=>quote(c)+"=EXCLUDED."+quote(c)).join(","):
   "NOTHING"}`;
