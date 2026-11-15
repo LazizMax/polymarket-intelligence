@@ -229,7 +229,7 @@ async function arbitrage(body:any){
  const shares=number(body.shares,50,1,1000),feeReservePct=number(body.fee_reserve_pct,4,0,15);
  const limit=Math.round(number(body.limit,30,5,50));
  const g=new URL("https://gamma-api.polymarket.com/markets");
- for(const [k,v] of Object.entries({active:"true",closed:"false",limit:String(limit),order:"volume_24hr",ascending:"false"}))
+ for(const [k,v] of Object.entries({active:"true",closed:"false",limit:String(limit),order:"volume24hr",ascending:"false"}))
   g.searchParams.set(k,v);
  const response=await fetch(g,{headers:{accept:"application/json"},signal:AbortSignal.timeout(11000),cache:"no-store"});
  if(!response.ok)throw Error("Gamma HTTP "+response.status);
@@ -251,7 +251,7 @@ async function arbitrage(body:any){
   warning:"Aucun marché binaire YES/NO trouvé dans ce lot. Aucune conclusion sur la présence d'arbitrages."};
  const bookResponse=await fetch("https://clob.polymarket.com/books",{
   method:"POST",headers:{accept:"application/json","content-type":"application/json"},
-  body:JSON.stringify({params}),signal:AbortSignal.timeout(12000),cache:"no-store"
+  body:JSON.stringify(params),signal:AbortSignal.timeout(12000),cache:"no-store"
  });
  if(!bookResponse.ok)throw Error("CLOB HTTP "+bookResponse.status);
  const bookList=await bookResponse.json();
