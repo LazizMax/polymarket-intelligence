@@ -718,6 +718,45 @@ async function renderRN1(){
  }else c.append(node("p","Le diagnostic commencera dès que le collecteur aura accumulé ses premières données utilisables."));
  c.append(node("p","Les mécanismes encore à isoler sont : les prix limites réellement acceptés, la politique de couverture dans le temps, les rôles maker/taker et la rentabilité économique nette. Le diagnostic sera réévalué à chaque progression de la collecte.","foot"));
 
+ const independent=data.independent_price||null,ic=data.independent_coverage||{};
+ if(independent){
+  c.append(node("h3","Prix historiques indépendants : achats Maker"));
+  const ip=independent,forwardPrices=ip.market_price||{},
+   makerBuys=Number(ip.sampled_maker_fills||0),
+   covered=Number(ic.histories_with_prices||0),requested=Number(ic.requested_tokens||0);
+  const priceMetrics=node("div",null,"metrics");
+  priceMetrics.append(
+   metric("Progression de l'analyse",fmt(ip.pages_done||0)+" / "+fmt(ip.frozen_last_page||0)+" pages"),
+   metric("Achats Maker échantillonnés",fmt(makerBuys)),
+   metric("Événements / semaines couverts",fmt(ic.events||0)+" / "+fmt(ic.weeks||0)),
+   metric("Historiques de prix disponibles",requested>0?fmt(100*covered/requested,1)+" %":"—")
+  );
+  c.append(priceMetrics);
+  const evidence=[["60","1 minute"],["300","5 minutes"],["900","15 minutes"],["1800","30 minutes"],["3600","60 minutes"]];
+  for(const [h,label] of evidence){
+   const sample=forwardPrices[h]||{},
+    all=sample["maker|all"]||{},
+    under=sample["maker|underweight"]||{},
+    over=sample["maker|overweight"]||{};
+   const n=Number(all.n||0),qty=Number(all.shares||0);
+   const formatMove=m=>Number(m.shares||0)>0?
+    fmt(100*Number(m.weighted||0)/Number(m.shares),3)+" ¢ / part ("+fmt(m.n||0)+" achats)":"—";
+   c.append(node("p",label+" : "+fmt(n)+" achats Maker avec référence de marché ; "+
+    "variation pondérée "+formatMove(all)+
+    ". Côté moins accumulé : "+formatMove(under)+
+    " ; côté déjà dominant : "+formatMove(over)+".","foot"));
+  }
+  const count15=Number(forwardPrices["900"]?.["maker|all"]?.n||0);
+  c.append(node("p","Couverture Maker à 15 minutes : "+(makerBuys?fmt(100*count15/makerBuys,1)+" %":"non disponible")+
+   " des achats Maker échantillonnés. Les tokens sont sélectionnés de manière "+
+   "déterministe sur chaque page d'archives ; seuls les achats réellement exécutés "+
+   "et disposant d'un prix futur dans la fenêtre sont inclus. "+
+   "Les séries Polymarket CLOB sont publiques mais ne constituent pas les anciens "+
+   "meilleurs bids/asks ni des prix de sortie garantis. "+
+   "Leur observation ne prouve pas une sélection adverse exploitable ni un PnL net.","foot"));
+  if(ip.last_error)c.append(node("p","Contrôle historique des prix : "+String(ip.last_error),"foot"));
+ }
+
  const replay=data.full_replay||null;
  if(replay){
   c.append(node("h3","Relecture Maker/Taker des archives RN1"));
