@@ -1784,11 +1784,11 @@ async function rn1SportsImpact(body:any){
    selection:slug||null,window_seconds:windowSeconds,timeline,price_timeline:priceTimeline,
    price_token:token,
    caveats:[
-    "Seulement les matchs NBA finalisés avec trades présents dans le pilote pi.trades (4 000 trades, PAS les 756 000 fills complets).",
+    "Analyse du pilote historique de 4 000 exécutions Taker-only (filtre taker_only omis dans /v2/trades). Ce n'est PAS un échantillon représentatif des 756 000 exécutions, dont 89,2 % sont Maker.",
     "Unité statistique : fenêtre avec jeu observé ; label événement dans cette fenêtre, fill dans la fenêtre chronologique suivante. Ce n'est pas un ordre Maker nouvellement placé.",
     "Les périodes de jeu et l'activité de marché sont des variables confondantes : les fenêtres ne sont ni indépendantes ni appariées en liquidité.",
     "Changement de leader = passage du score non nul d'une équipe devant l'autre ; les égalités intermédiaires sont ignorées.",
-    "Rôle Maker/Taker non établi sur les 4 000 trades historiques ; voir RN1 · Déclencheurs pour les fills live annotés.",
+    "Les 4 000 exécutions proviennent d'un feed Taker-only implicite ; leur rôle individuel n'a pas été réaudité par la méthode Maker/Taker du lot 756k. Les sondes live vérifient des rôles sur un échantillon distinct.",
     "Prix graphiques : dernière-trade historique à la minute d'un token choisi, pas meilleur bid/ask ni prix de décision de RN1.",
     "Résultat descriptif, pas prédiction causale, simulation d'exécution ou recommandation de copie."
    ]};
@@ -1832,14 +1832,14 @@ async function rn1SportsRobustness(){
      100*Number(x.control_hits60)/Math.max(1,Number(x.control_windows))
   })),
   definitions:{
-   source:"Historical minute trade-price points selected around RN1 fills, ESPN timestamped plays, 4,000-trade pilot",
+   source:"Historical minute trade-price points selected around the legacy 4,000-trade taker-only pilot (taker_only omitted); ESPN wallclock plays. NOT representative of Maker execution.",
    matching:"Same token, 15/30/60-minute elapsed-game interval, same magnitude <1c / 1–3c / >=3c and movement direction; >=2 windows for scoring and non-scoring within each stratum",
    event:"At least one ESPN scoring play between two prior price observation timestamps",
    outcome:"At least one RN1 fill strictly after second price timestamp, within 30 or 60 seconds",
    constraints:["Price point selection was conditioned on past RN1 activity; sample is not a random universe.",
    "Conditioning on price may block the causal pathway of a scoring play, and may induce selection bias.",
    "Repeated token-minutes, overlapping game events, and fills are not independent observations.",
-   "The 4,000-trade pilot is incomplete relative to 756,000 archived fills, and has no verified historical Maker/Taker tags.",
+   "The legacy 4,000-trade sample used the implicit Taker-only API filter; it is nonrepresentative of 756,000 full-wallet executions (89.2% Maker). No per-row role re-audit was done.",
    "Negative adjusted association is neither proof of absence of a sporting-event effect nor a valid profitable contrarian signal.",
    "This test is read-only. Historical book depth, private orders, unfilled orders, and actual order-submission timestamps remain unknown."]
   }};
