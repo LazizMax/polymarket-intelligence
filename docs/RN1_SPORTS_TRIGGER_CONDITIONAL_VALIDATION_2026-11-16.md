@@ -1,12 +1,12 @@
-# RN1 — Contrôle conditionnel NBA : panier, prix, fill (16 novembre 2026)
+# RN1 — Contrôle conditionnel NBA sur le pilote Taker-only : panier, prix, fill (16 novembre 2026)
 
 ## Pourquoi cette étude
-Tester le signal initial `panier → davantage de fills RN1` sans confondre changement de score, volatilité de la cote, période du match, exposition du portefeuille et décision de placement d'un ordre privé.
+Tester le signal initial `panier → davantage de fills RN1 dans le pilote Taker-only` sans confondre changement de score, volatilité de la cote, période du match, exposition du portefeuille et décision de placement d'un ordre privé.
 
 ### Sources et bornes
-- Historique Polymarket RN1 : 756 000 fills archivés privés, mais **seulement 4 000 trades matérialisés** dans `pi.trades` permettent ce test fin. Les 756 000 fills ne sont **pas** simulés comme s'ils avaient une heure de trade et une cote capturées ici.
-- Historique NBA ESPN : **41 matchs complets**, 20 100 actions horodatées et 4 922 actions qui marquent au moment de la vérification. Sur ceux-ci, 23 matchs correspondent à des trades dans `pi.trades` (3 757 fills, 625 040,60 USDC de notionnel observé).
-- Prix : 153 tokens d'un **sous-échantillon sélectionné autour de trades RN1**, avec résolutions en général d'une minute. Ces prix historiques ne sont **pas** des carnets CLOB et ne révèlent aucune heure de dépôt Maker.
+- Historique Polymarket RN1 : 756 000 fills archivés privés, mais **seulement 4 000 trades matérialisés, issus du flux Taker-only implicite**, dans `pi.trades` permettent ce test fin. Le journal de requête des 20 pages ne spécifie pas `taker_only=false` : ces 4 000 fills ne représentent pas l'activité Maker, pourtant majoritaire dans les 756 000 fills complets (674 459 Maker, 89,2 %). Les 756 000 fills ne sont **pas** simulés comme s'ils avaient une heure de trade et une cote capturées ici.
+- Historique NBA ESPN : **41 matchs complets**, 20 100 actions horodatées et 4 922 actions qui marquent au moment de la vérification. Sur ceux-ci, 23 matchs correspondent à des trades dans `pi.trades` (**3 757 fills du pilote Taker-only**, 625 040,60 USDC de notionnel observé).
+- Prix : 153 tokens d'un **sous-échantillon sélectionné autour des trades Taker-only du pilote**, avec résolutions en général d'une minute. Ces prix historiques ne sont **pas** des carnets CLOB et ne révèlent aucune heure de dépôt Maker.
 - 18 510 intervalles de prix historiques exploitables pendant les matchs, dont **12 741** recouvrent au moins une action de jeu : 9 659 avec panier et 3 082 avec action sans panier. En dehors d'une action identifiable, 5 769 intervalles sont écartés des comparaisons principales.
 - Aucune opération de marché n'a été effectuée ; seule la recherche sur données publiques a été menée.
 
@@ -36,13 +36,13 @@ Ne conserver que les intervalles avec une action ESPN horodatée. Construire des
 Sur 30 minutes et une fenêtre d'outcome de 60 secondes, l'écart moyen **par match** est −4,95 pp (7 matchs positifs, 15 négatifs, 1 nul). Ce chiffre diffère de la moyenne par strate et de la différence brute des taux : pondérations et tailles d'échantillon sont différentes. En raison de la dépendance entre fenêtres et de la sélection initiale, ne pas le traiter comme une preuve causale.
 
 ### Lecture
-Le surcroît initial de fills après un panier **n'est pas robuste** à la comparaison à cote et moment similaires. La fréquence de remplissage d'ordres peut réagir à la volatilité et à la liquidité, y compris lorsque RN1 n'a pas modifié ses limites.
+Le surcroît initial de fills **Taker-only** après un panier **n'est pas robuste** à la comparaison à cote et moment similaires. La fréquence de remplissage d'ordres peut réagir à la volatilité et à la liquidité, y compris lorsque RN1 n'a pas modifié ses limites.
 
 Attention aussi à un point causal important : **le mouvement de cote peut être lui-même une conséquence du panier**. Conditionner sur ce mouvement supprime une partie éventuelle de l'effet total du panier, et peut créer un autre biais. Ce test cherche seulement une association supplémentaire, au-delà du prix observé, pas à identifier une causalité vraie.
 
 ### Ce que les données ne permettent toujours pas de prouver
 - **Maker ≠ heure de placement**. Les 756k archives ne donnent pas l'historique des ordres privés annulés/non exécutés.
-- **Taker ≠ tous les trades RN1**. Le rôle est vérifié uniquement sur un sous-échantillon live lié aux sondes CLOB ; les 4 000 trades du pilote ne portent pas une classification Maker/Taker historique fiable.
+- **Taker ≠ tous les trades RN1**. Le pilote de 4 000 trades a été collecté via l'API Taker-only par défaut ; il n'a pas subi de vérification individuelle des rôles et ne couvre donc pas le comportement Maker. Le rôle des 756 000 fills a été audité séparément, et l'échantillon live lié aux sondes CLOB distingue Maker inféré et Taker vérifié.
 - **Échantillon conditionné sur les propres trades RN1** ; les 153 tokens de prix ne forment pas un groupe témoin aléatoire.
 - **Résolution de prix en minute** ; manquent les mouvements du carnet en quelques secondes, les sauts de volatilité et les profondeurs au temps exact du score.
 - Les intervalles proches d'un panier et les fills successifs ne sont pas indépendants.
@@ -51,7 +51,7 @@ Attention aussi à un point causal important : **le mouvement de cote peut être
 ## Intégration logicielle
 - Backend privé `pi-dashboard` : action authentifiée `rn1_sports_robustness` qui calcule les trois granularités **sur demande**, distinctement de `rn1_sports_impact`.
 - Application GitHub Pages → **RN1 · Matchs** → **Validation conditionnelle** → **Calculer les comparaisons appariées**. Les effectifs, taux, écarts et résultats par match sont consultables. Pas de relecture des archives 756k.
-- Les collecteurs ESPN et CLOB conservent leur cadence et leurs garde-fous de données ; ce test est en lecture seule.
+- Les collecteurs ESPN et CLOB conservent leur cadence et leurs garde-fous de données ; ce test est en lecture seule et exclusivement interprétable sur le **sous-échantillon Taker-only**.
 
 ## Prochaine phase
 1. Reproduire ces métriques sur un nouvel ensemble de matchs NBA, en sélectionnant les marchés **avant** que RN1 y trade ; conserver les résultats de validation séparément des résultats de développement.
