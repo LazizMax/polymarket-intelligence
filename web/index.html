@@ -472,6 +472,51 @@ async function renderRN1(){
    metric("Trades RN1 avec carnet AVANT le trade",fmt(nmatch)),
    metric("Exécutions maker rapprochées",fmt(matched.inferred_maker_fills||0)));
   quotesCard.append(metricRow);
+  const inv=q.inventory||{},coverage=inv.coverage||{},
+   invStats=Array.isArray(inv.by_side)?inv.by_side:[],
+   invModels=Array.isArray(inv.models)?inv.models:[];
+  const complete=Number(coverage.complete_position_runs||0);
+  if(complete>0){
+   const inventoryPanel=node("div",null,"metrics");
+   const skews=invStats.reduce((a,x)=>a+Number(x.matched_fills||0),0);
+   const priorPair=invStats.reduce((a,x)=>a+Number(x.purchases_priced_below_previous_opposite_average||0),0);
+   inventoryPanel.append(
+    metric("Carnets avec positions RN1 vérifiées",fmt(complete)),
+    metric("Fills comparables au portefeuille précédent",fmt(skews)),
+    metric("Achats sous le coût moyen de l'issue opposée",fmt(priorPair))
+   );
+   quotesCard.append(node("h3","Positions réelles avant les achats"));
+   quotesCard.append(inventoryPanel);
+   const minority=invStats.find(x=>x.pretrade_inventory_side==="underweight"),
+    majority=invStats.find(x=>x.pretrade_inventory_side==="overweight");
+   if(minority||majority){
+    quotesCard.append(node("p","Exécutions maker sur l'issue sous-détenue : "+
+     fmt(minority?.matched_fills||0)+" ; sur l'issue déjà majoritaire : "+
+     fmt(majority?.matched_fills||0)+". Les positions proviennent de l'API publique, "+
+     "relevées avant les trades, et non du cumul approximatif des fills historiques.","foot"));
+   }
+   const runs=[...new Set(invModels.map(x=>x.period))];
+   if(runs.includes("train")&&runs.includes("holdout")){
+    const train=invModels.filter(x=>x.period==="train"&&Number(x.fills)>=20&&Number.isFinite(Number(x.mae_ticks)));
+    const best=train.sort((a,b)=>Number(a.mae_ticks)-Number(b.mae_ticks))[0];
+    const check=invModels.find(x=>x.period==="holdout"&&x.model_name===best?.model_name);
+    const base=invModels.find(x=>x.period==="holdout"&&x.model_name==="best_bid");
+    const titles={best_bid:"meilleur bid",one_tick_below:"bid moins 1 tick",two_ticks_below:"bid moins 2 ticks",
+     inventory_one_tick:"bid corrigé de l'inventaire (1 tick)",inventory_two_ticks:"bid corrigé de l'inventaire (2 ticks)",
+     pair_ceiling_1pct:"plafond paire à 1 %",pair_ceiling_2pct:"plafond paire à 2 %"};
+    if(best&&check&&base&&Number(check.fills)>=100&&Number(check.events)>=10){
+     quotesCard.append(node("p","Meilleure règle choisie sur la période d'entraînement : « "+
+      (titles[best.model_name]||best.model_name)+" ». Erreur moyenne hors période : "+
+      fmt(check.mae_ticks,2)+" ticks, contre "+fmt(base.mae_ticks,2)+
+      " ticks avec le meilleur bid seul (comparaison des prix exécutés, pas du profit).","foot"));
+    }else quotesCard.append(node("p","Les modèles conditionnés à l'inventaire sont en apprentissage. "+
+     "La comparaison hors période exige au moins 100 fills sur 10 événements sportifs différents.","foot"));
+   }
+  }else{
+   quotesCard.append(node("p","Positions publiques RN1 : capture synchronisée non encore validée. "+
+    "Le classement des prix selon son inventaire restera désactivé tant que le filtre des marchés et les deux issues ne sont pas vérifiés.","foot"));
+  }
+
   if(latest?.received_at){
    quotesCard.append(node("p","Dernier relevé : "+String(latest.received_at).slice(0,19)+
     " UTC · "+fmt(latest.market_count||0)+" marchés sportifs publics suivis, dont "+
