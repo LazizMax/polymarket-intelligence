@@ -2,8 +2,8 @@
 import postgres from "npm:postgres@3.4.3";
 import {quotePair} from "./arb-math.ts";
 import {replayTemporal,type TemporalSample} from "./arb-temporal.ts";
-const url = Deno.env.get("SUPABASE_URL") || "";
-const pub = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
+const url = "https://bxfvgywfiifnsbjgudzj.supabase.co"; // legacy identity provider for existing login
+const pub = "sb_publishable_CIPlaX8vTlmMDbLCBbtprA_A0aIUujT"; // public key of legacy identity provider; no service-role access
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
 if (!url || !pub || !dbUrl) throw Error("Supabase runtime config unavailable");
 const db = postgres(dbUrl,{ max:2, prepare:false, connect_timeout:10, idle_timeout:5 });
@@ -35,7 +35,7 @@ async function allowed(req:Request):Promise<boolean>{
  if(!response.ok)return false;
  const user=await response.json();
  if(typeof user?.id!=="string" || !/^[0-9a-f-]{36}$/.test(user.id))return false;
- const rows=await db.unsafe("select enabled from pi.dashboard_access where user_id=$1::uuid and enabled=true",[user.id]);
+ const rows=await db.unsafe("select enabled from pi.external_dashboard_access where user_id=$1::uuid and enabled=true",[user.id]);
  return rows.length===1;
 }
 async function overview(){
@@ -799,12 +799,66 @@ async function rn1EconomicAttribution(){
   count(*) filter(where abs(cash_return-(q0*p0+q1*p1))<=1)::int
    matching_redeemed_within_dollar
  from settled`);
+ const eventRisk=await db.unsafe(base+`
+ , event as(
+ select coalesce(nullif(event_slug,''),market_key) event_key,
+ sum(gross) gross,sum(paired_gross) paired,
+ count(*)::int markets
+ from checked where reconciled
+ group by 1
+ ), ranked as(
+ select *, row_number() over(order by gross desc) profit_rank,
+ row_number() over(order by gross asc) loss_rank,
+ count(*) over() total_events
+ from event)
+ select count(*)::int events,sum(markets)::int markets,
+ avg(gross)::float8 mean_gross_per_event,
+ stddev_samp(gross)::float8 sd_gross_per_event,
+ (avg(gross)-1.96*stddev_samp(gross)/sqrt(count(*)::numeric))::float8
+  approx_gross_event_mean_95_low,
+ (avg(gross)+1.96*stddev_samp(gross)/sqrt(count(*)::numeric))::float8
+  approx_gross_event_mean_95_high,
+ avg(paired)::float8 mean_pair_per_event,
+ (avg(paired)-1.96*stddev_samp(paired)/sqrt(count(*)::numeric))::float8
+  approx_pair_event_mean_95_low,
+ (avg(paired)+1.96*stddev_samp(paired)/sqrt(count(*)::numeric))::float8
+  approx_pair_event_mean_95_high,
+ count(*) filter(where gross>0)::int positive_events,
+ count(*) filter(where paired>0)::int positive_pair_events,
+ sum(gross) filter(where profit_rank<=ceil(total_events*0.01))::float8 top_1pct_gross,
+ sum(gross) filter(where loss_rank<=ceil(total_events*0.01))::float8 bottom_1pct_gross,
+ max(gross)::float8 best_event_gross,min(gross)::float8 worst_event_gross
+ from ranked`);
+ const oneSided=await db.unsafe(`
+ with cash as materialized(
+ select market_key,sum(reported_usdc_size) filter(where kind='REDEEM') redeemed,
+ sum(reported_usdc_size) filter(where kind='MERGE') merged
+ from pi.rn1_full_activity_metrics
+ where kind in('REDEEM','MERGE') group by 1)
+ select count(*)::int markets,
+ count(*) filter(where coalesce(c.redeemed,0)>0)::int markets_with_redemption,
+ count(*) filter(where coalesce(c.redeemed,0)=0)::int markets_without_redemption,
+ count(*) filter(where coalesce(c.redeemed,0)>0 and
+ abs(coalesce(c.redeemed,0)+coalesce(c.merged,0)-greatest(m.buy0_shares,m.buy1_shares))<=1)::int
+ matching_redeemed,
+ sum(m.buy0_cost+m.buy1_cost) filter(where coalesce(c.redeemed,0)=0)::float8
+  cost_without_observed_redemption,
+ sum(m.buy0_cost+m.buy1_cost) filter(where coalesce(c.redeemed,0)>0)::float8
+  cost_with_redemption,
+ sum(coalesce(c.redeemed,0)+coalesce(c.merged,0)) filter(where coalesce(c.redeemed,0)>0)::float8
+  returned_with_redemption
+ from pi.rn1_full_market_metrics m
+ left join cash c using(market_key)
+ where m.wallet=$1 and m.min_trade_at>='2026-09-21T00:00:00+00'
+ and m.max_trade_at<'2026-11-12T00:00:00+00'
+ and ((m.buy0_shares>0 and m.buy1_shares=0) or
+ (m.buy1_shares>0 and m.buy0_shares=0))`,[RN1]);
  const total=summary[0]||{},weeks=weekly||[];
  return {
   scope:"conditional_reconciled_two_sided_gross_before_fees",
   fixed_first_trade_cutoff:"2026-09-21T00:00:00Z",
   fixed_last_trade_cutoff:"2026-11-12T00:00:00Z",
-  summary:total,weekly:weeks,by_skew:skewImpact,official:official[0]||{},
+  summary:total,weekly:weeks,by_skew:skewImpact,official:official[0]||{},event_risk:eventRisk[0]||{},one_sided:oneSided[0]||{},
   caveats:[
    "Only 2-sided markets with REDEEM and a payout matching one observed outcome's share count within 1 USD are counted. Single-sided markets, unresolved positions and nonreconciled markets are excluded.",
    "Gross economic result excludes exchange fees, rebates, rewards, transfers and any buy/sell flow not present in the public sources.",
@@ -815,6 +869,254 @@ async function rn1EconomicAttribution(){
  };
 }
 
+// Independent native Polymarket cumulative wallet accounting. Observed PnL
+// is not a causal estimate of a copy-trading strategy or a return on capital.
+async function rn1OfficialVerdict(){
+ const row=await db.unsafe(`
+ with a as(
+  select record,start_at from (
+   select record,observed_at start_at from pi.rn1_official_pnl_points
+   where wallet=$1 and observed_at<='2026-09-21 00:00:00+00'
+   order by observed_at desc limit 1) x
+ ), b as(
+  select record,end_at from(
+   select record,observed_at end_at from pi.rn1_official_pnl_points
+   where wallet=$1 and observed_at<='2026-11-12 00:00:00+00'
+   order by observed_at desc limit 1) y
+ )
+ select a.start_at::text start_at,b.end_at::text end_at,
+ ((b.record->>'economic_pnl')::numeric-(a.record->>'economic_pnl')::numeric)::float8 economic_delta,
+ ((b.record->>'realized_market_pnl')::numeric-(a.record->>'realized_market_pnl')::numeric)::float8 market_delta,
+ ((b.record->>'unrealized_pnl')::numeric-(a.record->>'unrealized_pnl')::numeric)::float8 unrealized_delta,
+ ((b.record->>'maker_rebate')::numeric-(a.record->>'maker_rebate')::numeric)::float8 maker_rebates,
+ ((b.record->>'taker_rebate')::numeric-(a.record->>'taker_rebate')::numeric)::float8 taker_rebates,
+ ((b.record->>'reward_income')::numeric-(a.record->>'reward_income')::numeric)::float8 reward_delta,
+ ((b.record->>'fees_paid')::numeric-(a.record->>'fees_paid')::numeric)::float8 fees_paid_delta,
+ ((b.record->>'volume_usdc')::numeric-(a.record->>'volume_usdc')::numeric)::float8 trading_turnover,
+ (select count(*)::int from pi.rn1_official_pnl_points where wallet=$1) total_points,
+ (select max(observed_at)::text from pi.rn1_official_pnl_points where wallet=$1) last_at
+ from a cross join b`,[RN1]);
+ const weekly=await db.unsafe(`
+ with points as(
+ select observed_at,(record->>'economic_pnl')::numeric economic,
+ (record->>'realized_market_pnl')::numeric market,
+ (record->>'volume_usdc')::numeric turnover
+ from pi.rn1_official_pnl_points where wallet=$1
+ ), w as(
+ select generate_series('2026-09-21'::timestamptz,
+  '2026-11-09'::timestamptz,'7 days') week
+ ), boundaries as(
+ select w.week,
+ (select p.economic from points p where p.observed_at<=w.week order by observed_at desc limit 1) start_econ,
+ (select p.economic from points p where p.observed_at<=least(w.week+interval '7 days','2026-11-12'::timestamptz) order by observed_at desc limit 1) end_econ,
+ (select p.market from points p where p.observed_at<=w.week order by observed_at desc limit 1) start_market,
+ (select p.market from points p where p.observed_at<=least(w.week+interval '7 days','2026-11-12'::timestamptz) order by observed_at desc limit 1) end_market,
+ (select p.turnover from points p where p.observed_at<=w.week order by observed_at desc limit 1) start_turn,
+ (select p.turnover from points p where p.observed_at<=least(w.week+interval '7 days','2026-11-12'::timestamptz) order by observed_at desc limit 1) end_turn
+ from w)
+ select week::date::text week,
+ (end_econ-start_econ)::float8 economic_delta,
+ (end_market-start_market)::float8 market_delta,
+ (end_turn-start_turn)::float8 turnover
+ from boundaries order by week`,[RN1]);
+ const risk=await db.unsafe(`
+ with p as(
+ select observed_at,(record->>'economic_pnl')::numeric economic
+ from pi.rn1_official_pnl_points where wallet=$1
+ and observed_at between '2026-09-21 00:00+00'::timestamptz
+  and '2026-11-12 00:00+00'::timestamptz
+ ), ranked as(
+ select observed_at,economic,
+ economic-lag(economic) over(order by observed_at) daily_delta,
+ max(economic) over(order by observed_at rows unbounded preceding) running_peak
+ from p)
+ select count(*)::int points,
+ count(*) filter(where daily_delta>0)::int profitable_days,
+ count(*) filter(where daily_delta<0)::int losing_days,
+ min(daily_delta)::float8 worst_day,
+ max(daily_delta)::float8 best_day,
+ max(running_peak-economic)::float8 max_observed_drawdown
+ from ranked`,[RN1]);
+ return {
+  source:"Polymarket Data API v2 user-pnl cumulative native atoms; not an on-chain audit",
+  cohort_start:"2026-09-21T00:00:00Z",cohort_end:"2026-11-12T00:00:00Z",
+  summary:row[0]||{},weekly,observed_risk:risk[0]||{},
+  limitations:[
+   "Official economic PnL reflects trading, incentives and mark-to-market; this is NOT return on deployed capital.",
+   "Fee counters and rebates may already be included in aggregate PnL. Never sum all components to economic PnL.",
+   "PnL period measures the whole wallet; the 2-sided redeem cohort is conditional and NOT the same universe.",
+   "These are historical filled outcomes; a copy trader cannot assume identical Maker fills or maker rebates."
+  ]};
+}
+// Dedicated RN1 market-selection and fill-setup atlas.
+// Distinct frames are labelled: all materialized market fills versus frozen 756k
+// raw-fill profiler; event timing is a separately selected Gamma enrichment.
+async function rn1SetupPatterns(){
+ const q={
+ coverage:`select
+  (select count(*)::int from pi.rn1_full_market_metrics) markets,
+  (select count(distinct event_slug)::int from pi.rn1_full_market_metrics) events,
+  (select sum(fills)::bigint from pi.rn1_full_market_metrics) materialized_fills,
+  (select sum(buy0_cost+buy1_cost)::float8 from pi.rn1_full_market_metrics) nominal_buys,
+  (select status from pi.rn1_pattern_jobs limit 1) profile_status,
+  (select pages_done from pi.rn1_pattern_jobs limit 1) profile_pages,
+  (select fills_done from pi.rn1_pattern_jobs limit 1) profiled_fills,
+  (select count(*)::int from pi.rn1_pattern_market_entries) profiled_markets,
+  (select count(*)::int from pi.rn1_event_schedule where status='ok') scheduled_events,
+  (select count(*)::int from pi.rn1_event_schedule) selected_events`,
+ sports:`select pi.rn1_sport_group(event_slug) sport,
+ count(*)::int markets,count(distinct event_slug)::int events,
+ sum(fills)::bigint fills,sum(buy0_cost+buy1_cost)::float8 buy_usdc
+ from pi.rn1_full_market_metrics group by 1 order by fills desc`,
+ kinds:`select pi.rn1_market_group(title) kind,
+ count(*)::int markets,count(distinct event_slug)::int events,
+ sum(fills)::bigint fills,sum(buy0_cost+buy1_cost)::float8 buy_usdc
+ from pi.rn1_full_market_metrics group by 1 order by fills desc`,
+ leagues:`select split_part(event_slug,'-',1) league,
+ pi.rn1_sport_group(event_slug) sport,count(*)::int markets,
+ count(distinct event_slug)::int events,
+ sum(fills)::bigint fills,sum(buy0_cost+buy1_cost)::float8 buy_usdc
+ from pi.rn1_full_market_metrics group by 1,2 order by fills desc limit 48`,
+ sport_kind:`select pi.rn1_sport_group(event_slug) sport,
+ pi.rn1_market_group(title) kind,
+ count(*)::int markets,sum(fills)::bigint fills,
+ sum(buy0_cost+buy1_cost)::float8 buy_usdc
+ from pi.rn1_full_market_metrics group by 1,2 order by fills desc`,
+ depth:`select case
+ when fills=1 then '1'
+ when fills between 2 and 4 then '2–4'
+ when fills between 5 and 9 then '5–9'
+ when fills between 10 and 24 then '10–24'
+ when fills between 25 and 49 then '25–49'
+ when fills between 50 and 99 then '50–99'
+ else '100+' end bracket,count(*)::int markets,
+ sum(fills)::bigint fills,sum(buy0_cost+buy1_cost)::float8 buy_usdc
+ from pi.rn1_full_market_metrics group by 1 order by min(fills)`,
+ market_open_hour:`select extract(hour from min_trade_at at time zone 'UTC')::int as utc_hour,
+ count(*)::int markets,sum(fills)::bigint lifetime_fills
+ from pi.rn1_full_market_metrics group by 1 order by 1`,
+ frozen_bins:`select d.dimension,v.key,
+ sum((v.value->>'fills')::bigint)::bigint fills,
+ sum((v.value->>'usdc')::numeric)::float8 buy_usdc,
+ sum((v.value->>'shares')::numeric)::float8 shares
+ from pi.rn1_pattern_page_stats p
+ cross join lateral (values
+  ('price',p.summary->'price'),('notional',p.summary->'notional'),
+  ('utc_hour',p.summary->'utc_hour'),('utc_weekday',p.summary->'utc_weekday'),
+  ('market_type',p.summary->'market_type'),('side',p.summary->'side')) d(dimension,items)
+ cross join lateral jsonb_each(d.items) v(key,value)
+ group by 1,2 order by d.dimension, v.key`,
+ price_by_sport:`select pi.rn1_sport_group(split_part(v.key,'|',1)) sport,
+ split_part(v.key,'|',2) price_bin,
+ sum((v.value->>'fills')::bigint)::bigint fills,
+ sum((v.value->>'usdc')::numeric)::float8 buy_usdc
+ from pi.rn1_pattern_page_stats p
+ cross join lateral jsonb_each(p.summary->'league_price') v(key,value)
+ group by 1,2 order by 1,2`,
+ price_by_type:`select split_part(v.key,'|',1) kind,
+ split_part(v.key,'|',2) price_bin,
+ sum((v.value->>'fills')::bigint)::bigint fills,
+ sum((v.value->>'usdc')::numeric)::float8 buy_usdc
+ from pi.rn1_pattern_page_stats p
+ cross join lateral jsonb_each(p.summary->'type_price') v(key,value)
+ group by 1,2 order by 1,2`,
+ entry_stats:`select count(*)::int markets,
+ count(*) filter(where first0_at is not null and first1_at is not null)::int both_sides,
+ count(*) filter(where first_side=0)::int first_outcome0,
+ count(*) filter(where first_side=1)::int first_outcome1,
+ percentile_cont(0.5) within group(order by first_price)::float8 median_first_price,
+ percentile_cont(0.5) within group(order by first_price*first_qty)::float8 median_first_notional,
+ percentile_cont(0.5) within group(order by
+  extract(epoch from greatest(first0_at,first1_at)-least(first0_at,first1_at))/60)
+  filter(where first0_at is not null and first1_at is not null)::float8
+  median_minutes_until_both_sides
+ from pi.rn1_pattern_market_entries`,
+ first_price_bins:`select (least(19,floor(first_price*20)::int)*5)::int lower_pct,
+ count(*)::int markets,
+ sum(first_qty*first_price)::float8 first_fill_usdc
+ from pi.rn1_pattern_market_entries group by 1 order by 1`,
+ first_notional_bins:`select case when first_qty*first_price<5 then '<5'
+ when first_qty*first_price<20 then '5–20'
+ when first_qty*first_price<50 then '20–50'
+ when first_qty*first_price<100 then '50–100'
+ when first_qty*first_price<250 then '100–250'
+ when first_qty*first_price<500 then '250–500'
+ when first_qty*first_price<1000 then '500–1000'
+ when first_qty*first_price<5000 then '1000–5000' else '5000+' end bracket,
+ count(*)::int markets
+ from pi.rn1_pattern_market_entries group by 1`,
+ entry_by_sport:`select pi.rn1_sport_group(event_slug) sport,
+ count(*)::int markets,
+ count(*) filter(where first0_at is not null and first1_at is not null)::int both_sides,
+ percentile_cont(0.5) within group(order by first_price)::float8 median_first_price,
+ percentile_cont(0.5) within group(order by first_qty*first_price)::float8 median_first_usdc,
+ percentile_cont(0.5) within group(order by
+  extract(epoch from greatest(first0_at,first1_at)-least(first0_at,first1_at))/60)
+  filter(where first0_at is not null and first1_at is not null)::float8 median_pair_lag_min
+ from pi.rn1_pattern_market_entries group by 1 order by markets desc`,
+ start_time_coverage:`select selection,status,count(*)::int events,
+ sum(event_fills)::bigint events_fills
+ from pi.rn1_event_schedule group by 1,2 order by 1,2`,
+ event_timing:`with e as(
+ select event_slug,min(first_at) first_fill_at,
+ sum(fills)::bigint observed_fills
+ from pi.rn1_pattern_market_entries
+ where event_slug in(select event_slug from pi.rn1_event_schedule where status='ok')
+ group by event_slug),
+ sample as(select s.selection,pi.rn1_sport_group(s.event_slug) sport,
+ e.observed_fills,extract(epoch from e.first_fill_at-s.start_at)/60 minutes
+ from pi.rn1_event_schedule s join e using(event_slug)
+ where s.status='ok' and s.start_at is not null),
+ bins as(select *,
+ case when minutes < -60 then 'Avant -60 min'
+      when minutes < 0 then 'Avant -60 à 0 min'
+      when minutes < 5 then '0–5 min'
+      when minutes < 15 then '5–15 min'
+      when minutes < 30 then '15–30 min'
+      when minutes < 60 then '30–60 min'
+      else '60+ min' end timing from sample)
+ select selection,sport,timing,count(*)::int events,sum(observed_fills)::bigint observed_fills,
+ percentile_cont(0.5) within group(order by minutes)::float8 median_min_from_start
+ from bins group by 1,2,3 order by 1,2,3`,
+ event_timing_summary:`with e as(
+ select event_slug,min(first_at) first_fill_at,
+ sum(fills)::bigint observed_fills
+ from pi.rn1_pattern_market_entries
+ where event_slug in(select event_slug from pi.rn1_event_schedule where status='ok')
+ group by event_slug)
+ select s.selection,count(*)::int events,
+ sum(e.observed_fills)::bigint observed_fills,
+ percentile_cont(0.5) within group(order by extract(epoch from e.first_fill_at-s.start_at)/60)::float8 median_minutes,
+ count(*) filter(where e.first_fill_at<s.start_at)::int pregame,
+ count(*) filter(where e.first_fill_at>=s.start_at and e.first_fill_at<s.start_at+interval '5 minutes')::int first_5m,
+ count(*) filter(where e.first_fill_at>=s.start_at+interval '5 minutes' and e.first_fill_at<s.start_at+interval '30 minutes')::int next_25m,
+ count(*) filter(where e.first_fill_at>=s.start_at+interval '30 minutes')::int after_30m
+ from pi.rn1_event_schedule s join e using(event_slug) where s.status='ok'
+ group by s.selection order by s.selection`,
+ top_starts:`with e as(
+ select event_slug,min(first_at) first_fill_at,sum(fills)::bigint observed_fills
+ from pi.rn1_pattern_market_entries
+ where event_slug in(select event_slug from pi.rn1_event_schedule where status='ok')
+ group by event_slug)
+ select s.event_slug,s.selection,s.start_at::text scheduled_at,e.first_fill_at::text first_fill_at,
+ round((extract(epoch from e.first_fill_at-s.start_at)/60)::numeric,2)::float8 minutes_from_start,
+ e.observed_fills
+ from pi.rn1_event_schedule s join e using(event_slug) where s.status='ok'
+ order by e.observed_fills desc limit 18`
+ };
+ const keys=Object.keys(q);
+ const results=await Promise.all(keys.map(k=>db.unsafe((q as any)[k])));
+ const out:any={};
+ keys.forEach((k,i)=>out[k]=(k==="coverage"||k==="entry_stats")?(results[i][0]||{}):results[i]);
+ out.disclaimers=[
+ "Deux bases de dénominateurs : les agrégats de marchés évoluent avec la collecte live ; les histogrammes détaillés portent uniquement sur le lot figé de 756 000 fills et avancent par pages.",
+ "Horaires : premiers FILLs observés, jamais heure de dépôt du limit order. startTime Gamma est le démarrage annoncé, non une preuve d'horodatage exact de chaque événement.",
+ "L'échantillon de calendriers est construit volontairement en 600 événements très actifs ET 600 événements tirés séparément. Ne jamais confondre les distributions de ces groupes avec celle des 27 000+ événements.",
+ "Les indices 0/1 désignent les issues du marché, qui peuvent être des équipes ; ce ne sont pas nécessairement YES et NO textuels.",
+ "Cotes et tailles sont celles des transactions remplies, PAS celles des ordres annulés ou non remplis. Les rôles Maker/Taker sont globalement audités mais pas ventilés dans les nouvelles coupes de prix."
+ ];
+ return out;
+}
 async function rn1ReverseEngineering(){
  // Full public-source collection is distinct from the old 4k taker-only pilot.
  // All percentages below describe observed fills, not trader's alpha or true current inventory.
@@ -935,6 +1237,7 @@ async function rn1ReverseEngineering(){
  summary->'coverage' as price_history_coverage,
  summary->'event_cluster_evidence' as event_cluster_evidence,
  summary->'event_paired_differences' as event_paired_differences,
+ summary->'event_maker_taker_contrast' as event_maker_taker_contrast,
  last_success_at::text as last_success_at,last_error
  from pi.rn1_independent_price_jobs
  where job_key='rn1_independent_price_v1'
@@ -1007,19 +1310,42 @@ async function rn1ReverseEngineering(){
   maker_under_adjusted,
  (sum((summary->'market_price'->'900'->'maker|overweight'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
   /nullif(sum((summary->'market_price'->'900'->'maker|overweight'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8
-  maker_over_adjusted
+  maker_over_adjusted,
+ sum((summary->'market_price'->'900'->'taker|all'->>'n')::numeric)::int taker_reference_fills,
+ (sum((summary->'market_price'->'900'->'taker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
+ / nullif(sum((summary->'market_price'->'900'->'taker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8 taker_adjusted_markout,
+ sum((summary->'market_price'->'900'->'maker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))::float8 maker_adjusted_numerator,
+ sum((summary->'market_price'->'900'->'maker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0))::float8 maker_adjusted_denominator
  from pi.rn1_independent_price_pages where source_tokens is not null
  group by 1 order by 1
  `);
 
+ const independentLeaveOneWeekOut=await db.unsafe(`
+ with weekly as(
+ select date_trunc('week',min_trade_at)::date::text week,
+ count(*)::int pages,
+ sum((summary->'market_price'->'900'->'maker|all'->>'n')::numeric)::bigint maker_fills,
+ sum((summary->'market_price'->'900'->'maker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0)) move_sum,
+ sum((summary->'market_price'->'900'->'maker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)) shares_sum
+ from pi.rn1_independent_price_pages
+ where source_tokens>0 and sampled_tokens>0
+ group by 1)
+ select excluded.week excluded_week,
+ coalesce(sum(w.pages),0)::int other_pages,
+ coalesce(sum(w.maker_fills),0)::bigint other_maker_fills,
+ (sum(w.move_sum)/nullif(sum(w.shares_sum),0))::float8 other_maker_adjusted_markout
+ from weekly excluded left join weekly w on w.week<>excluded.week
+ group by excluded.week order by excluded.week
+ `);
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
  const economics=await rn1EconomicAttribution();
+ const official_verdict=await rn1OfficialVerdict();
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,official_verdict,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_leave_one_week_out:independentLeaveOneWeekOut,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
@@ -1262,6 +1588,17 @@ async function rn1Research(){
     "First-observed BUY lag is NOT the trader's true hedge latency if earlier trades are outside the sample."]};
 }
 
+
+// Observed price-momentum / RN1 fill associations; no order-placement or causal inference.
+async function rn1TriggerWindows(body:any){
+ const runLimit=Math.round(number(body.runs,600,100,1500));
+ const sql="\nwith recent_runs as (\n  select id,received_at,quotes\n  from pi.rn1_quote_probe_runs\n  order by id desc limit $1\n), snapshots as (\n select r.id run_id,(e->>'asset_id') token_id,(e->>'market_key') market_key,\n        (e->>'origin') origin,(e->>'mid')::numeric mid,\n        (e->>'spread')::numeric spread,\n        to_timestamp((e->>'book_at')::numeric/1000) book_at,r.received_at\n from recent_runs r cross join lateral jsonb_array_elements(r.quotes) e\n where (e->>'book_valid')::boolean=true\n), fresh as (\n select * from snapshots\n where received_at>=book_at and received_at-book_at<=interval '15 seconds'\n   and spread between 0 and 0.10 and mid between 0.01 and 0.99\n), previous as (\n select *,lag(mid) over(partition by token_id order by book_at,run_id) prev_mid,\n          lag(book_at) over(partition by token_id order by book_at,run_id) prev_at\n from fresh\n), slots as (\n select *,\n   case when mid-prev_mid>=0.03 then 'big_up'\n        when mid-prev_mid>=0.01 then 'up_1_3c'\n        when mid-prev_mid<=-0.03 then 'big_down'\n        when mid-prev_mid<=-0.01 then 'down_1_3c'\n        else 'stable' end price_move\n from previous\n where prev_mid is not null\n   and book_at-prev_at between interval '10 seconds' and interval '3 minutes'\n), fills as (\n select run_id,token_id,\n        count(*) filter(where lag_seconds>=0 and lag_seconds<60) n,\n        count(*) filter(where lag_seconds>=0 and lag_seconds<60\n                        and role='maker_inferred') maker,\n        count(*) filter(where lag_seconds>=0 and lag_seconds<60\n                        and role='taker_verified') taker\n from pi.rn1_quote_probe_fills group by run_id,token_id\n)\nselect s.origin,s.price_move,count(*)::int samples,\n       count(distinct s.token_id)::int tokens,\n       count(distinct s.market_key)::int markets,\n       count(*) filter(where coalesce(f.n,0)>0)::int filled_slots,\n       coalesce(sum(f.n),0)::int fills,\n       coalesce(sum(f.maker),0)::int maker_fills,\n       coalesce(sum(f.taker),0)::int taker_fills,\n       round(100.0*count(*) filter(where coalesce(f.n,0)>0)/count(*),2)::float8 as fill_rate_pct\nfrom slots s left join fills f on f.run_id=s.run_id and f.token_id=s.token_id\ngroup by s.origin,s.price_move order by s.origin,s.price_move";
+ const rows=await db.unsafe(sql,[runLimit]);
+ const state=await db.unsafe("select status,completed_runs::int as completed_runs,matched_fills::int as matched_fills,last_success_at::text as last_success_at from pi.rn1_quote_probe_state limit 1");
+ return {rows,coverage:{...state[0],max_runs_requested:runLimit},window_seconds:60,
+  warnings:["Fenêtres token-minute conditionnelles aux marchés observés, pas des trades indépendants.","L'échantillon rn1_recent est sélectionné en fonction des fills récents ; sports_control n'est pas un groupe témoin apparié.","maker_inferred n'est pas un registre d'ordres privés ; l'heure du dépôt Maker est inconnue.","Filtre : carnet valide, âge <=15 s, spread <=10 cents, mid entre 1% et 99%, historique précédent de 10 à 180 s ; pas de contrôle des événements de jeu."]};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -1291,6 +1628,8 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="arb_observatory")return send(await arbObservatory());
   if(body?.action==="rn1_research")return send(await rn1Research());
   if(body?.action==="rn1_reverse_engineering")return send(await rn1ReverseEngineering());
+  if(body?.action==="rn1_setup_patterns")return send(await rn1SetupPatterns());
+  if(body?.action==="rn1_trigger_windows")return send(await rn1TriggerWindows(body));
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
