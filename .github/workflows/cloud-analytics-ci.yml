@@ -98,7 +98,7 @@ jobs:
                       where n.nspname='pi' and c.relkind='r' and c.relrowsecurity"""
                   )
                   secured = cur.fetchone()[0]
-                  assert secured == 22, f"Expected RLS on all 22 tables, got {secured}"
+                  assert secured == 23, f"Expected RLS on all 23 tables, got {secured}"
                   cur.execute("select has_schema_privilege('anon','pi','usage')")
                   assert cur.fetchone()[0] is False, "anon must not see private schema"
                   # Exercise the actual SQL embedded in the wallet endpoint, not
