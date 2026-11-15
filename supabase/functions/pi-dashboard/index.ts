@@ -395,13 +395,21 @@ async function rn1ReverseEngineering(){
  sum(amount_present)::double precision events_with_reported_amount
  from pi.rn1_full_activity_metrics where wallet=$1
  group by kind order by sum(events) desc limit 20`,[RN1]);
+ const role=await db.unsafe(`
+ select count(*) filter(where role_status='verified')::int as verified_pages,
+ count(*) filter(where role_status in('pending','error'))::int as pending_pages,
+ count(*) filter(where role_status='partial')::int as incomplete_pages,
+ coalesce(sum(maker_fills) filter(where role_status='verified'),0)::double precision as maker_fills,
+ coalesce(sum(taker_fills) filter(where role_status='verified'),0)::double precision as taker_fills
+ from pi.rn1_full_archive_pages where stream='trades_all'`);
+
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,role_audit:role[0]||{},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
