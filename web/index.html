@@ -441,11 +441,11 @@ async function renderRN1(){
  const c=node("section",null,"card");
 
  c.append(node("h2","Ce que révèle l'historique collecté"));
- const role=data.role_audit||{},mk=Number(role.maker_fills||0),tk=Number(role.taker_fills||0);
- const audited=mk+tk;
+ const role=data.role_audit||{},makerAudited=Number(role.maker_fills||0),takerAudited=Number(role.taker_fills||0);
+ const audited=makerAudited+takerAudited;
  if(audited>0){
   const rstats=node("div",null,"metrics");
-  rstats.append(metric("Exécutions maker (audit Polymarket)",fmt(100*mk/audited,1)+" %"),
+  rstats.append(metric("Exécutions maker (audit Polymarket)",fmt(100*makerAudited/audited,1)+" %"),
    metric("Exécutions vérifiées pour leur rôle",fmt(audited)),
    metric("Pages vérifiées",fmt(role.verified_pages||0)));
   c.append(rstats);
