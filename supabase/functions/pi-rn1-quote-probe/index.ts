@@ -56,16 +56,21 @@ function rawTrades(body:any){
  return body.data as any[];
 }
 function getFreshMarkets(rows:any[],timeSec:number){
- const aggregate=new Map<string,number>();
+ const aggregate=new Map<string,{last:number,notional:number}>();
  for(const t of rows){
   const k=String(t?.condition_id??"").toLowerCase();
   const ts=Number(t?.timestamp);
   if(!conditionRE.test(k)||!Number.isFinite(ts)||ts<timeSec-3600||ts>timeSec+10)continue;
   const shares=Number(t?.size),price=Number(t?.price);
-  aggregate.set(k,(aggregate.get(k)||0)+
-   (Number.isFinite(shares)&&Number.isFinite(price)?Math.max(0,shares*price):0));
+  const prev=aggregate.get(k)||{last:0,notional:0};
+  prev.last=Math.max(prev.last,ts);
+  prev.notional+=Number.isFinite(shares)&&Number.isFinite(price)?Math.max(0,shares*price):0;
+  aggregate.set(k,prev);
  }
- return [...aggregate.entries()].sort((a,b)=>b[1]-a[1]).slice(0,12).map(x=>x[0]);
+ // Most recent first; a huge position from 45 minutes ago must not displace
+ // small newly active markets while RN1 is switching to a new sporting event.
+ return [...aggregate.entries()].sort((a,b)=>b[1].last-a[1].last||
+  b[1].notional-a[1].notional).slice(0,12).map(x=>x[0]);
 }
 async function selectMarkets(fullTrades:any[]):Promise<Target[]>{
  const nowSec=Math.floor(Date.now()/1000);
@@ -78,6 +83,7 @@ async function selectMarkets(fullTrades:any[]):Promise<Target[]>{
   const data=await fetchJSON(url.toString(),{headers:{accept:"application/json"}});
   if(!Array.isArray(data))throw Error("Gamma condition-list is invalid");
   preferred=data.map((m:any)=>targetFromGamma(m,"rn1_recent")).filter((x:Target|null):x is Target=>x!==null);
+  preferred.sort((a,b)=>recent.indexOf(a.market_key)-recent.indexOf(b.market_key));
  }
  // This control set is preselected WITHOUT RN1 fills, so never claim that the
  // control markets represent RN1's actual candidate/order universe.
