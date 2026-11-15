@@ -815,6 +815,85 @@ async function rn1EconomicAttribution(){
  };
 }
 
+// Independent native Polymarket cumulative wallet accounting. Observed PnL
+// is not a causal estimate of a copy-trading strategy or a return on capital.
+async function rn1OfficialVerdict(){
+ const row=await db.unsafe(`
+ with a as(
+  select record,start_at from (
+   select record,observed_at start_at from pi.rn1_official_pnl_points
+   where wallet=$1 and observed_at<='2026-09-21 00:00:00+00'
+   order by observed_at desc limit 1) x
+ ), b as(
+  select record,end_at from(
+   select record,observed_at end_at from pi.rn1_official_pnl_points
+   where wallet=$1 and observed_at<='2026-11-12 00:00:00+00'
+   order by observed_at desc limit 1) y
+ )
+ select a.start_at::text start_at,b.end_at::text end_at,
+ ((b.record->>'economic_pnl')::numeric-(a.record->>'economic_pnl')::numeric)::float8 economic_delta,
+ ((b.record->>'realized_market_pnl')::numeric-(a.record->>'realized_market_pnl')::numeric)::float8 market_delta,
+ ((b.record->>'unrealized_pnl')::numeric-(a.record->>'unrealized_pnl')::numeric)::float8 unrealized_delta,
+ ((b.record->>'maker_rebate')::numeric-(a.record->>'maker_rebate')::numeric)::float8 maker_rebates,
+ ((b.record->>'taker_rebate')::numeric-(a.record->>'taker_rebate')::numeric)::float8 taker_rebates,
+ ((b.record->>'reward_income')::numeric-(a.record->>'reward_income')::numeric)::float8 reward_delta,
+ ((b.record->>'fees_paid')::numeric-(a.record->>'fees_paid')::numeric)::float8 fees_paid_delta,
+ ((b.record->>'volume_usdc')::numeric-(a.record->>'volume_usdc')::numeric)::float8 trading_turnover,
+ (select count(*)::int from pi.rn1_official_pnl_points where wallet=$1) total_points,
+ (select max(observed_at)::text from pi.rn1_official_pnl_points where wallet=$1) last_at
+ from a cross join b`,[RN1]);
+ const weekly=await db.unsafe(`
+ with points as(
+ select observed_at,(record->>'economic_pnl')::numeric economic,
+ (record->>'realized_market_pnl')::numeric market,
+ (record->>'volume_usdc')::numeric turnover
+ from pi.rn1_official_pnl_points where wallet=$1
+ ), w as(
+ select generate_series('2026-09-21'::timestamptz,
+  '2026-11-09'::timestamptz,'7 days') week
+ ), boundaries as(
+ select w.week,
+ (select p.economic from points p where p.observed_at<=w.week order by observed_at desc limit 1) start_econ,
+ (select p.economic from points p where p.observed_at<=least(w.week+interval '7 days','2026-11-12'::timestamptz) order by observed_at desc limit 1) end_econ,
+ (select p.market from points p where p.observed_at<=w.week order by observed_at desc limit 1) start_market,
+ (select p.market from points p where p.observed_at<=least(w.week+interval '7 days','2026-11-12'::timestamptz) order by observed_at desc limit 1) end_market,
+ (select p.turnover from points p where p.observed_at<=w.week order by observed_at desc limit 1) start_turn,
+ (select p.turnover from points p where p.observed_at<=least(w.week+interval '7 days','2026-11-12'::timestamptz) order by observed_at desc limit 1) end_turn
+ from w)
+ select week::date::text week,
+ (end_econ-start_econ)::float8 economic_delta,
+ (end_market-start_market)::float8 market_delta,
+ (end_turn-start_turn)::float8 turnover
+ from boundaries order by week`,[RN1]);
+ const risk=await db.unsafe(`
+ with p as(
+ select observed_at,(record->>'economic_pnl')::numeric economic
+ from pi.rn1_official_pnl_points where wallet=$1
+ and observed_at between '2026-09-21 00:00+00'::timestamptz
+  and '2026-11-12 00:00+00'::timestamptz
+ ), ranked as(
+ select observed_at,economic,
+ economic-lag(economic) over(order by observed_at) daily_delta,
+ max(economic) over(order by observed_at rows unbounded preceding) running_peak
+ from p)
+ select count(*)::int points,
+ count(*) filter(where daily_delta>0)::int profitable_days,
+ count(*) filter(where daily_delta<0)::int losing_days,
+ min(daily_delta)::float8 worst_day,
+ max(daily_delta)::float8 best_day,
+ max(running_peak-economic)::float8 max_observed_drawdown
+ from ranked`,[RN1]);
+ return {
+  source:"Polymarket Data API v2 user-pnl cumulative native atoms; not an on-chain audit",
+  cohort_start:"2026-09-21T00:00:00Z",cohort_end:"2026-11-12T00:00:00Z",
+  summary:row[0]||{},weekly,observed_risk:risk[0]||{},
+  limitations:[
+   "Official economic PnL reflects trading, incentives and mark-to-market; this is NOT return on deployed capital.",
+   "Fee counters and rebates may already be included in aggregate PnL. Never sum all components to economic PnL.",
+   "PnL period measures the whole wallet; the 2-sided redeem cohort is conditional and NOT the same universe.",
+   "These are historical filled outcomes; a copy trader cannot assume identical Maker fills or maker rebates."
+  ]};
+}
 async function rn1ReverseEngineering(){
  // Full public-source collection is distinct from the old 4k taker-only pilot.
  // All percentages below describe observed fills, not trader's alpha or true current inventory.
@@ -1039,10 +1118,11 @@ async function rn1ReverseEngineering(){
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
  const economics=await rn1EconomicAttribution();
+ const official_verdict=await rn1OfficialVerdict();
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_leave_one_week_out:independentLeaveOneWeekOut,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,official_verdict,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_leave_one_week_out:independentLeaveOneWeekOut,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
