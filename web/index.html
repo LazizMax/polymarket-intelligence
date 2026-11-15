@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="sizing">RN1 · Money management</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -409,6 +409,110 @@ async function renderRN1Activity(target){
 
 
 
+
+
+async function renderRN1Sizing(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Money management","Tailles d'exécutions et inventaire avant fill : ce qui est mesuré, et ce qu'on ne peut pas déduire de sa bankroll."));
+ let data;
+ try{data=await api("rn1_sizing_forensics")}
+ catch(e){target.append(node("p","Analyse de taille indisponible : "+String(e?.message||e),"red"));return}
+ const hist=data.histogram||[],roles=data.role_summary||[],sizing=data.maker_breakdown||[];
+ const full=hist[0]||{},verified=data.full_role_audit||{},probe=data.probe||{};
+ target.append(banner("DEUX UNIVERS DISTINCTS : (1) 756 000 achats historiques, toutes exécutions Maker et Taker confondues ; (2) un sous-échantillon LIVE avec carnet et positions observés avant le fill. Aucun de ces montants n'est la bankroll libre de RN1, ni la taille de ses ordres Maker non exécutés."));
+ const overview=node("div",null,"metrics");
+ const totalBuy=Number(full.archive_total_usdc||0),large=hist.filter(x=>x.bucket==="1000–5000"||x.bucket==="5000+");
+ const largePct=large.reduce((s,x)=>s+Number(x.volume_pct||0),0),largeCount=large.reduce((s,x)=>s+Number(x.fills||0),0);
+ const checked=Number(verified.maker_fills||0)+Number(verified.taker_fills||0);
+ overview.append(
+  metric("Fills BUY · lot gelé",fmt(full.archive_fills||0)),
+  metric("Notionnel cumulé d'achats","$"+fmt(totalBuy,0)),
+  metric("Volume via fills ≥1 000 $",fmt(largePct,1)+" %"),
+  metric("Maker dans pages auditées",checked?fmt(100*Number(verified.maker_fills)/checked,1)+" %":"—")
+ );
+ target.append(overview);
+ const hCard=node("section",null,"card");
+ hCard.append(node("h2","Distribution historique des tailles · 756 000 achats"));
+ hCard.append(node("p","Un fill est une exécution, pas nécessairement un ordre indépendant : une limite peut être partiellement exécutée plusieurs fois. Les montants ci-dessous représentent du chiffre d'affaires brut d'achat, pas le capital engagé simultanément.","foot"));
+ const legend=node("p","Bleu : pourcentage des fills · Vert : pourcentage des USDC échangés","small");
+ hCard.append(legend);
+ const bars=node("div");bars.style.cssText="display:flex;flex-direction:column;gap:12px;margin-top:14px";
+ for(const item of hist){
+  const line=node("div");line.style.cssText="display:grid;grid-template-columns:105px minmax(0,1fr);gap:14px;align-items:center";
+  line.append(node("div",item.bucket+" $","name"));
+  const both=node("div");both.style.cssText="display:grid;grid-template-columns:1fr;gap:5px";
+  for(const [pct,color,label] of [[Number(item.fills_pct),"#8fc0ff","Fills"],[Number(item.volume_pct),"#4fe4c4","Volume"]]){
+   const segment=node("div");segment.style.cssText="display:grid;grid-template-columns:minmax(0,1fr) 100px;align-items:center;gap:9px";
+   const track=node("div");track.style.cssText="height:10px;border-radius:6px;background:#26394a;overflow:hidden";
+   const fill=node("div");fill.style.cssText="height:100%;width:"+Math.max(0,Math.min(100,pct))+"%;border-radius:6px;background:"+color;
+   track.append(fill);segment.append(track,node("span",fmt(pct,2)+" % "+label,"small"));both.append(segment);
+  }
+  line.append(both);bars.append(line);
+ }
+ hCard.append(bars);
+ hCard.append(node("p",fmt(largeCount)+" exécutions seulement ont un montant de 1 000 $ ou plus, mais concentrent "+fmt(largePct,2)+" % du notionnel historique. Les 756 000 lignes sont toutes des BUY dans le flux archivé ; les redemptions/merges et autres mouvements sont suivis à part.","foot"));
+ target.append(hCard);
+ const liveCard=node("section",null,"card");
+ liveCard.append(node("h2","Tailles et inventaire avant exécution · sondes live"));
+ liveCard.append(node("p","Pour chaque fill retenu, nous avons un relevé des positions sur les deux issues du même marché effectué AVANT le carnet de cotation et AVANT le fill. Seules les observations complètes et causalement ordonnées sont conservées.","foot"));
+ const state=node("p","Dernière sonde réussie : "+String(probe.last_success_at||"—").slice(0,16).replace("T"," ")+" UTC · "+fmt(probe.completed_runs||0)+" cycles au total. Les effectifs ci-dessous correspondent uniquement aux fills qualifiés.","small");
+ liveCard.append(state);
+ const tWrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),hr=node("tr");
+ ["Rôle du fill","Fills validés","Médiane $","P90 $","P99 $","Ratio médian mise / positions","Réduit écart YES/NO","Augmente écart YES/NO"].forEach(x=>hr.append(node("th",x)));
+ head.append(hr);table.append(head);
+ const tb=node("tbody");
+ for(const r of roles){
+  const tr=node("tr");
+  tr.append(
+   node("td",r.role==="maker_inferred"?"Maker inféré":"Taker vérifié","name"),
+   node("td",fmt(r.fills)),
+   node("td","$"+fmt(r.median_usdc,2)),
+   node("td","$"+fmt(r.p90_usdc,2)),
+   node("td","$"+fmt(r.p99_usdc,2)),
+   node("td",r.median_size_to_prior_cost===null?"—":fmt(100*Number(r.median_size_to_prior_cost),2)+" %"),
+   node("td",fmt(r.reduced_gap)),
+   node("td",fmt(r.increased_gap))
+  );tb.append(tr);
+ }
+ table.append(tb);tWrap.append(table);liveCard.append(tWrap);
+ liveCard.append(node("p","Ratio médian : nouveau coût du fill / somme des coûts d'entrée des positions encore OUVERTES sur les deux issues du même marché, avant le fill. Ce n'est ni un pourcentage de bankroll ni une limite de risque. Le déséquilibre mesure les parts, pas la valeur USDC.","foot"));
+ target.append(liveCard);
+ const explore=node("section",null,"card");
+ explore.append(node("h2","Explorer les facteurs possibles des tailles Maker"));
+ explore.append(node("p","Compare les montants exécutés selon la cote, le déséquilibre préalable ou le coût des positions du marché. Ces associations ne sont pas une formule de sizing validée.","foot"));
+ let dim="price";
+ const filter=node("div",null,"filters");
+ const selWrap=node("label","Découpage"),sel=node("select");
+ for(const [v,name] of [["price","Prix d'exécution"],["inventory","Inventaire relatif avant fill"],["prior_market_cost","Coût des positions ouvertes"]]){
+  const op=node("option",name);op.value=v;sel.append(op);
+ }
+ sel.value=dim;sel.addEventListener("change",()=>{dim=sel.value;drawBreakdown()});
+ selWrap.append(sel);filter.append(selWrap);explore.append(filter);
+ const breakdown=node("div");explore.append(breakdown);
+ function drawBreakdown(){
+  breakdown.replaceChildren();
+  const rows=sizing.filter(x=>x.dimension===dim);
+  if(!rows.length){breakdown.append(node("p","Aucune observation validée pour ce découpage.","foot"));return}
+  const wrap=node("div",null,"tablewrap"),table=node("table"),th=node("thead"),header=node("tr");
+  ["Catégorie","Fills Maker","Marchés","Médiane $","P90 $","Médiane de parts","Mise / coût ouvert médian"].forEach(x=>header.append(node("th",x)));
+  th.append(header);table.append(th);
+  const tb=node("tbody");
+  for(const r of rows){
+   const tr=node("tr");tr.append(
+    node("td",r.bucket,"name"),node("td",fmt(r.fills)),node("td",fmt(r.markets)),
+    node("td","$"+fmt(r.median_usdc,2)),node("td","$"+fmt(r.p90_usdc,2)),
+    node("td",fmt(r.median_shares,2)),
+    node("td",r.median_ratio===null?"—":fmt(100*Number(r.median_ratio),2)+" %")
+   );tb.append(tr);
+  }
+  table.append(tb);wrap.append(table);breakdown.append(wrap);
+ }
+ drawBreakdown();target.append(explore);
+ const limits=node("section",null,"card");limits.append(node("h2","Précautions d'interprétation"));
+ for(const warning of data.definitions?.warnings||[])limits.append(node("p","• "+warning,"foot"));
+ limits.append(node("p","Objectif de recherche : expliquer pourquoi RN1 utilise des tailles différentes à partir des cotes, de l'inventaire et de la liquidité ; aucun modèle de taille d'ordre ou de capital à risque n'est encore validé hors échantillon.","foot"));
+ target.append(limits);
+}
 
 async function renderRN1Sports(){
  const target=$("content");
@@ -1759,7 +1863,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else if(tab==="sizing")await renderRN1Sizing();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
