@@ -67,3 +67,17 @@ def test_event_level_cluster_uncertainty_is_private_and_causal():
     assert "Incertitude regroupée par événement sportif" in UI
     assert "eventN>=30" in UI
     assert "Il exclut les pages précédemment terminées" in UI
+
+def test_within_event_paired_contrast_has_same_event_and_causal_caveats():
+    assert "function eventPairedDifferences(state:State)" in SRC
+    assert 'String(h)+"|maker|underweight"' in SRC
+    assert 'String(h)+"|maker|overweight"' in SRC
+    assert "evs.map(ev=>({under:ev[underKey],over:ev[overKey]}))" in SRC
+    assert "p.under.y/p.under.x-p.over.y/p.over.x" in SRC
+    assert "differences.reduce((a,d)=>a+(d-mean)**2,0)/(n-1)" in SRC
+    assert 'data.action==="refresh_paired_evidence"' in SRC
+    assert "checkpoint_key=$3" in SRC
+    assert "event_paired_differences" in API
+    assert "Comparaison à l'intérieur d'un même événement" in UI
+    assert "Chaque événement compte une seule fois" in UI
+    assert "n>=30" in UI
