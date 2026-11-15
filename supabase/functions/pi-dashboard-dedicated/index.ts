@@ -992,7 +992,7 @@ async function rn1SetupPatterns(){
  else '100+' end bracket,count(*)::int markets,
  sum(fills)::bigint fills,sum(buy0_cost+buy1_cost)::float8 buy_usdc
  from pi.rn1_full_market_metrics group by 1 order by min(fills)`,
- market_open_hour:`select extract(hour from min_trade_at at time zone 'UTC')::int hour,
+ market_open_hour:`select extract(hour from min_trade_at at time zone 'UTC')::int as utc_hour,
  count(*)::int markets,sum(fills)::bigint lifetime_fills
  from pi.rn1_full_market_metrics group by 1 order by 1`,
  frozen_bins:`select d.dimension,v.key,
