@@ -1,0 +1,30 @@
+name: RN1 research smoke tests
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/functions/pi-rn1-replay/**'
+      - 'supabase/functions/pi-dashboard/**'
+      - 'web/index.html'
+      - 'sql/04*_rn1_*'
+      - 'tests/test_rn1_*'
+      - '.github/workflows/rn1-research-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rn1-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install lightweight test runner
+        run: python -m pip install pytest
+      - name: Verify replay source, evidence and UI caveats
+        run: |
+          pytest -q             tests/test_rn1_private_large_replay.py             tests/test_rn1_large_cohort_evidence.py             tests/test_rn1_identical_model_cohort.py             tests/test_rn1_postfill_markouts.py             tests/test_rn1_inventory_transitions.py
