@@ -101,7 +101,8 @@ jobs:
                                     "030_rn1_maker_role_audit.sql",
                                     "032_rn1_sequence_flow_fingerprint.sql",
                                     "034_rn1_price_edge_cohort.sql",
-                                    "035_rn1_live_quote_probe.sql"):
+                                    "035_rn1_live_quote_probe.sql",
+                                    "037_rn1_quote_pretrade_inventory.sql"):
                       cur.execute(Path("sql", migration).read_text())
                   cur.execute(
                       """select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
