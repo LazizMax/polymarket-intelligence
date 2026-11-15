@@ -28,7 +28,7 @@ Les positions où le coût, la clôture ou les montants ne sont pas assez fiable
 - Tables privées `pi.closed_position_roi` et `pi.roi_import_state` ; RLS actif, aucun accès direct des visiteurs.
 - API privée `pi-dashboard`, actions `roi` (lire données déjà agrégées) et `roi_request` (prioriser l'import).
 - Import `pi-ingest` : 200 lignes par page, cursor opaque, génération par actualisation. Reprise sur erreur sans marquer l'historique complet ; anciens scans exclus pendant un nouvel import.
-- Cron `pi-closed-roi-backfill-5min` : une page par cycle sur les wallets demandés, avec secret dans Supabase Vault.
+- Cron `pi-closed-roi-auto-2min` : import automatique de tous les wallets, par deux pages maximum toutes les deux minutes ; réexamens récents au plus tard toutes les 6 heures par wallet (selon la file), audit complet tous les 30 jours. Secret conservé dans Supabase Vault. [Détails](AUTO_ROI_REFRESH_V1.md).
 - L'interface affiche l'avancement, les ROI par position paginés, le nombre de valeurs valides et inconnues, ainsi que la moyenne, médiane, ROI pondéré et PnL.
 - Les sommes ne sont pas qualifiées de **ROI global complet** si l'historique est partiel ou si un coût manque.
 
