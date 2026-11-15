@@ -154,7 +154,7 @@ jobs:
                   queries=re.findall(r"await db\.unsafe\(`([\s\S]*?)`,\[RN1\]\)",strategy)
                   assert len(queries)==5, f"Expected 5 RN1 strategy SQL queries; found {len(queries)}"
                   for query in queries:
-                      cur.execute(query.replace("$1","%s"),(wallet,))
+                      cur.execute(query.replace("$1","%s"),tuple(wallet for _ in range(query.count("$1"))))
                       cur.fetchall()
           con.close()
           PY
