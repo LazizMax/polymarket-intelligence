@@ -774,6 +774,37 @@ async function renderRN1(){
     "pas encore une validation hors échantillon. Les achats du même événement "+
     "sont corrélés et les références historiques ne garantissent aucun prix de sortie.","foot"));
   }
+  const clustered=ip.event_cluster_evidence||{};
+  const evt15=clustered["900|maker|all"]||{},
+   eventN=Number(evt15.events||0),
+   eventFills=Number(evt15.fills||0),
+   coveredWeeks=Number(ic.weeks||0);
+  if(eventN>0){
+   c.append(node("h3","Incertitude regroupée par événement sportif"));
+   const ci=document.createElement("div");ci.className="metrics";
+   ci.append(
+    metric("Événements regroupés, horizon 15 min",fmt(eventN)),
+    metric("Achats avec suivi dans ce sous-échantillon",fmt(eventFills)),
+    metric("Semaines historiques représentées",fmt(coveredWeeks))
+   );
+   c.append(ci);
+   const low=Number(evt15.ci_low),high=Number(evt15.ci_high);
+   const useful=eventN>=30&&Number.isFinite(low)&&Number.isFinite(high);
+   c.append(node("p",useful?
+    "Intervalle indicatif à 95 % sur le prix futur moyen à 15 min "+
+    "(événements regroupés) : "+fmt(100*low,3)+" à "+fmt(100*high,3)+
+    " centimes par part. Cet intervalle ne corrige pas le biais de "+
+    "remplissage, la sélection des références futures ou le calendrier.":
+    "Contrôle statistique encore insuffisant : moins de 30 événements "+
+    "avec prix futur sont disponibles depuis son activation. Aucun avantage "+
+    "statistiquement confirmé.","foot"));
+   c.append(node("p","Le contrôle par événement a été ajouté en cours de relecture, "+
+    "à partir de la page "+fmt(evt15.coverage_start_page||0)+
+    ". Il exclut les pages précédemment terminées et n'est pas encore "+
+    "comparable à l'ensemble des mesures historiques. "+
+    "Même un intervalle positif n'établirait pas une rentabilité après frais "+
+    "ni une possibilité réelle de reproduire les fills Maker.","foot"));
+  }
   const count15=Number(forwardPrices["900"]?.["maker|all"]?.n||0);
   c.append(node("p","Couverture Maker à 15 minutes : "+(makerBuys?fmt(100*count15/makerBuys,1)+" %":"non disponible")+
    " des achats Maker échantillonnés. Les tokens sont sélectionnés de manière "+
