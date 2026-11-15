@@ -62,7 +62,7 @@ async function migrate(maxItems:number){
    const updated=await sql.unsafe(`update pi.migration_export_state
     set object_cursor=$2,objects_copied=objects_copied+1,
     bytes_copied=bytes_copied+$3,last_success_at=now(),updated_at=now(),
-    lease_until=now()+interval '115 seconds',last_error=null where job_key=$1
+    lease_until=now()+interval '115 seconds',last_error=null,error_attempts=0 where job_key=$1
     and object_cursor=$4 returning object_cursor`,[JOB,name,data.length,last]);
    if(updated.length!==1)throw Error("Export cursor changed unexpectedly");
    last=name;copied++;bytes+=data.length;
@@ -71,7 +71,7 @@ async function migrate(maxItems:number){
   return {status:"running",copied,bytes,last:copied?last:""};
  }catch(e){
   const error=String(e).slice(0,230);
-  await sql.unsafe("update pi.migration_export_state set status='error',last_error=$2,lease_until=null,updated_at=now() where job_key=$1",[JOB,error]);
+  await sql.unsafe("update pi.migration_export_state set status=case when error_attempts+1>=5 then 'error' else 'running' end,error_attempts=error_attempts+1,last_error=$2,lease_until=now()+interval '30 seconds',updated_at=now() where job_key=$1",[JOB,error]);
   return {status:"error",error};
  }
 }
