@@ -24,7 +24,7 @@ async function getEvent(job:any){
    headers:{accept:"application/json"},signal:AbortSignal.timeout(19000)});
  if(!response.ok)throw Error("gamma_http_"+response.status);
  const raw=await response.text();
- if(raw.length>1250000||raw.length<2)throw Error("unexpected_gamma_response_size");
+ if(raw.length>8500000||raw.length<2)throw Error("unexpected_gamma_response_size");
  const obj=JSON.parse(raw);
  if(!obj||typeof obj!=="object"||String(obj.slug||"")!==slug)
   throw Error("gamma_event_slug_mismatch");
