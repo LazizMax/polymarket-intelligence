@@ -97,11 +97,30 @@ async function copyRows(req:Request){
  });
  return send({ok:true,table,accepted:rows.length,already_copied:applied===-1});
 }
+// Read back the two causal RN1 replay state checkpoints from destination
+// Storage (not just migration metadata), and verify exact stored byte digests.
+async function verifyCriticalCheckpoints(){
+ const rows=await sql.unsafe(`SELECT object_name,sha256,byte_count FROM pi.migration_objects
+  WHERE bucket_id=$1 AND (object_name LIKE 'replay-v1/checkpoints/%'
+     OR object_name LIKE 'independent-prices-v1/state/%') ORDER BY object_name`,[BUCKET]);
+ if(rows.length!==2)return {ok:false,error:"unexpected_checkpoint_count",count:rows.length};
+ const results=[];
+ for(const r of rows){
+  const url=URL+"/storage/v1/object/"+BUCKET+"/"+String(r.object_name).split("/").map(encodeURIComponent).join("/");
+  const fetched=await fetch(url,{headers:{Authorization:"Bearer "+SERVICE,apikey:SERVICE},
+   signal:AbortSignal.timeout(30000)});
+  if(!fetched.ok)return {ok:false,error:"checkpoint_read_error",status:fetched.status};
+  const bytes=new Uint8Array(await fetched.arrayBuffer());
+  const verified=bytes.length===Number(r.byte_count)&&await digest(bytes)===r.sha256;
+  results.push({object:r.object_name,bytes:bytes.length,verified});
+ }
+ return {ok:results.every(r=>r.verified),results};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return send({error:"method_not_allowed"},405);
  if(!await authorised(req))return send({error:"forbidden"},403);
  const action=req.headers.get("x-pi-migration-action");
- if(!["copy-object","copy-rows"].includes(action||""))return send({error:"action_not_supported"},400);
- try{return action==="copy-object"?await copyObject(req):await copyRows(req)}
+ if(!["copy-object","copy-rows","verify-critical"].includes(action||""))return send({error:"action_not_supported"},400);
+ try{return action==="copy-object"?await copyObject(req):action==="copy-rows"?await copyRows(req):send(await verifyCriticalCheckpoints())}
  catch(e){return send({error:"transfer_failed",message:String(e).slice(0,180)},500)}
 });
