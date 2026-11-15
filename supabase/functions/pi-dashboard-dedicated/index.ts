@@ -1007,11 +1007,33 @@ async function rn1ReverseEngineering(){
   maker_under_adjusted,
  (sum((summary->'market_price'->'900'->'maker|overweight'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
   /nullif(sum((summary->'market_price'->'900'->'maker|overweight'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8
-  maker_over_adjusted
+  maker_over_adjusted,
+ sum((summary->'market_price'->'900'->'taker|all'->>'n')::numeric)::int taker_reference_fills,
+ (sum((summary->'market_price'->'900'->'taker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))
+ / nullif(sum((summary->'market_price'->'900'->'taker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)),0))::float8 taker_adjusted_markout,
+ sum((summary->'market_price'->'900'->'maker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0))::float8 maker_adjusted_numerator,
+ sum((summary->'market_price'->'900'->'maker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0))::float8 maker_adjusted_denominator
  from pi.rn1_independent_price_pages where source_tokens is not null
  group by 1 order by 1
  `);
 
+ const independentLeaveOneWeekOut=await db.unsafe(`
+ with weekly as(
+ select date_trunc('week',min_trade_at)::date::text week,
+ count(*)::int pages,
+ sum((summary->'market_price'->'900'->'maker|all'->>'n')::numeric)::bigint maker_fills,
+ sum((summary->'market_price'->'900'->'maker|all'->>'weighted')::numeric*source_tokens/nullif(sampled_tokens,0)) move_sum,
+ sum((summary->'market_price'->'900'->'maker|all'->>'shares')::numeric*source_tokens/nullif(sampled_tokens,0)) shares_sum
+ from pi.rn1_independent_price_pages
+ where source_tokens>0 and sampled_tokens>0
+ group by 1)
+ select excluded.week excluded_week,
+ coalesce(sum(w.pages),0)::int other_pages,
+ coalesce(sum(w.maker_fills),0)::bigint other_maker_fills,
+ (sum(w.move_sum)/nullif(sum(w.shares_sum),0))::float8 other_maker_adjusted_markout
+ from weekly excluded left join weekly w on w.week<>excluded.week
+ group by excluded.week order by excluded.week
+ `);
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
@@ -1019,7 +1041,7 @@ async function rn1ReverseEngineering(){
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,independent_price:independentPrices[0]||null,independent_coverage:independentCoverage[0]||{},independent_weekly:independentWeekly,independent_leave_one_week_out:independentLeaveOneWeekOut,independent_adjusted:independentAdjusted,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
