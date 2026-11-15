@@ -403,13 +403,47 @@ async function rn1ReverseEngineering(){
  coalesce(sum(taker_fills) filter(where role_status='verified'),0)::double precision as taker_fills
  from pi.rn1_full_archive_pages where stream='trades_all'`);
 
+
+ const sequenceJob=await db.unsafe(`
+ select cohort_last_page::float8 as cohort_last_page,
+ next_page::float8 as next_page,
+ pages_done::float8 as pages_done,observed_fills::float8 as observed_fills,
+ valid_fills::float8 as valid_fills,status,
+ last_success_at::text as last_success_at,completed_at::text as completed_at,last_error
+ from pi.rn1_sequence_jobs where job_key='rn1_executed_flow'`);
+ const sequenceStats=await db.unsafe(`
+ select coalesce(sample_half,'total') as sample_half,
+ count(*)::int as pages,
+ coalesce(sum((stats->>'fills')::int),0)::float8 as fills,
+ coalesce(sum((stats->>'buy_fills')::int),0)::float8 as buys,
+ coalesce(sum((stats->>'sell_fills')::int),0)::float8 as sells,
+ coalesce(sum((stats->>'comparable_buy_fills')::int),0)::float8 as comparable_buys,
+ coalesce(sum((stats->>'underweight_buys')::int),0)::float8 as underweight_buys,
+ coalesce(sum((stats->>'overweight_buys')::int),0)::float8 as overweight_buys,
+ coalesce(sum((stats->>'neutral_buys')::int),0)::float8 as neutral_buys,
+ coalesce(sum((stats->>'reduces_gap_buys')::int),0)::float8 as gap_reducing_buys,
+ coalesce(sum((stats->>'increases_gap_buys')::int),0)::float8 as gap_expanding_buys,
+ coalesce(sum((stats->>'overcorrects_buys')::int),0)::float8 as overcorrecting_buys,
+ coalesce(sum((stats->>'first_opposite_fills')::int),0)::float8 as first_opposite_fills,
+ coalesce(sum((stats->>'repeat_same_outcome_300s')::int),0)::float8 as same_outcome_repeats_5min,
+ coalesce(sum((stats->>'same_outcome_same_price_300s')::int),0)::float8 as repeated_price_unchanged,
+ coalesce(sum((stats->>'same_outcome_price_up_300s')::int),0)::float8 as repeated_price_up,
+ coalesce(sum((stats->>'same_outcome_price_down_300s')::int),0)::float8 as repeated_price_down,
+ coalesce(sum((stats->'lag_buckets'->>0)::int),0)::float8 as opposite_lag_under_1min,
+ coalesce(sum((stats->'lag_buckets'->>1)::int),0)::float8 as opposite_lag_1to5min,
+ coalesce(sum((stats->'lag_buckets'->>2)::int),0)::float8 as opposite_lag_5to15min,
+ coalesce(sum((stats->'lag_buckets'->>3)::int),0)::float8 as opposite_lag_15to60min,
+ coalesce(sum((stats->'lag_buckets'->>4)::int),0)::float8 as opposite_lag_over_60min
+ from pi.rn1_sequence_page_stats
+ group by rollup(sample_half) order by sample_half`);
+
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,role_audit:role[0]||{},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,role_audit:role[0]||{},sequence:{job:sequenceJob[0]||null,stats:sequenceStats},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
