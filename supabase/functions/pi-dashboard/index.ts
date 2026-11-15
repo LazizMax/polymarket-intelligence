@@ -2053,6 +2053,97 @@ async function rn1SizingHypotheses(){
   }};
 }
 
+
+function rn1MarketFold(s:string):number{
+ let hash=2166136261;
+ for(let i=0;i<s.length;i++){hash^=s.charCodeAt(i);hash=Math.imul(hash,16777619)}
+ return (hash>>>0)%5;
+}
+function rn1CrossMarketFit(rows:any[]){
+ const names=[
+ "global_fixed_shares","global_fixed_usdc",
+ "price_bucket_shares","price_bucket_usdc",
+ "price_inventory_shares","price_inventory_usdc",
+ "price_cost_shares","price_cost_usdc","fraction_open_market_cost"
+ ] as const;
+ const models=names.map(name=>({name,errors:[] as number[],market_errors:new Map<string,number[]>()}));
+ const pb=(p:number)=>Math.max(0,Math.min(4,Math.floor(p*5)));
+ const state=(x:any)=>Number(x.own)<Number(x.other)?"under":Number(x.own)>Number(x.other)?"over":"equal";
+ const costBucket=(v:number)=>v<500?"0":v<2000?"1":v<10000?"2":"3";
+ const samples=rows.filter(x=>Number(x.price)>0&&Number(x.price)<1
+  &&Number(x.shares)>0&&Number(x.usd)>0&&Number(x.prior_cost)>0);
+ const foldCount:number[]=[];
+ const allPerMarket=new Map<string,number[]>();
+ for(let fold=0;fold<5;fold++){
+  const train=samples.filter(x=>rn1MarketFold(String(x.market_key))!==fold),
+   test=samples.filter(x=>rn1MarketFold(String(x.market_key))===fold);
+  foldCount.push(test.length);
+  if(train.length<5||!test.length)continue;
+  const globalShares=rn1Median(train.map(x=>Number(x.shares)))!,
+   globalUsd=rn1Median(train.map(x=>Number(x.usd)))!,
+   fraction=rn1Median(train.map(x=>Number(x.usd)/Number(x.prior_cost)))!;
+  const buckets=new Map<string,any[]>();
+  for(const x of train){
+   for(const key of ["p"+pb(Number(x.price)),
+     "i"+pb(Number(x.price))+state(x),
+     "c"+pb(Number(x.price))+costBucket(Number(x.prior_cost))]){
+    const values=buckets.get(key)||[];values.push(x);buckets.set(key,values);
+   }
+  }
+  const medFor=(key:string)=>{
+   const a=buckets.get(key)||[];
+   return a.length>=5?{shares:rn1Median(a.map(x=>Number(x.shares)))!,
+    usd:rn1Median(a.map(x=>Number(x.usd)))!}:null;
+  };
+  for(const x of test){
+   const price=Number(x.price),cost=Number(x.prior_cost),
+    b=pb(price),bucket=medFor("p"+b)||{shares:globalShares,usd:globalUsd},
+    inv=medFor("i"+b+state(x))||bucket,
+    exposure=medFor("c"+b+costBucket(cost))||bucket;
+   const predictors=[
+    globalShares,globalUsd,bucket.shares,bucket.usd,
+    inv.shares,inv.usd,exposure.shares,exposure.usd,fraction*cost];
+   let merror=allPerMarket.get(String(x.market_key));
+   if(!merror){merror=Array(names.length).fill(0);allPerMarket.set(String(x.market_key),merror)}
+   for(let k=0;k<names.length;k++){
+    const real=k===0||k===2||k===4||k===6?Number(x.shares):Number(x.usd);
+    const error=Math.abs(Math.log(real/predictors[k]));
+    models[k].errors.push(error);
+    const arr=models[k].market_errors.get(String(x.market_key))||[];
+    arr.push(error);models[k].market_errors.set(String(x.market_key),arr);
+    merror[k]+=error;
+   }
+  }
+ }
+ const outcome=models.map(m=>{
+  const v=m.errors,med=rn1Median(v),
+   avg=(arr:number[])=>arr.reduce((s,x)=>s+x,0)/arr.length,
+   perMarket=[...m.market_errors.values()].map(avg);
+  return {model:m.name,n:v.length,mean_abs_log_error:v.length?avg(v):null,
+   median_abs_log_error:med,median_error_factor:med===null?null:Math.exp(med),
+   equal_market_mean_abs_log_error:perMarket.length?avg(perMarket):null};
+ }).sort((a,b)=>Number(a.mean_abs_log_error)-Number(b.mean_abs_log_error));
+ const first=outcome[0]?.model||null;
+ return {n_fills:samples.length,markets:new Set(samples.map(x=>x.market_key)).size,
+  tokens:new Set(samples.map(x=>x.token_id)).size,
+  fold_n:foldCount,models:outcome,lowest_mean_log_model:first,
+  definitions:[
+   "Five deterministic folds by MARKET, not token: both outcomes of a market always enter the same held-out fold.",
+   "Training from other markets only. This is cross-MARKET validation but not time-causal because train markets may contain later timestamps.",
+   "Source restricted to Maker-inferred fills with both outcomes in a public position snapshot <=60 seconds before the fill, and positive previously-open cost.",
+   "Fixed shares and USDC calibrate global medians. Price buckets are five 20-cent bands. Inventory state = underweight/overweight/equal in shares. Market-cost buckets = <500 / 500–2k / 2k–10k / >=10k USDC.",
+   "At least five observations are required within a training bucket; rarer buckets back off to the price bucket and then the global model.",
+   "Market-cost fraction model uses median(fill_USDC / prior OPEN market cost) from training markets. It is NOT a fraction of wallet bankroll.",
+   "Log error and median error factor evaluate observed fill sizes ONLY. No latent parent-order quantity, hit probability or order cancellations are available.",
+   "Performance differences across exploratory model variants are not causal, multiple hypotheses were tried, and large errors prohibit copying the rule."
+  ]};
+}
+async function rn1SizingMarketValidation(){
+ const rows=await db.unsafe("with positions as(\n select r.id run_id,x->>'market_key' market_key,x->>'token_id' token_id,\n  (x->>'current_size')::numeric size,(x->>'entry_cost_usdc')::numeric cost\n from pi.rn1_quote_probe_runs r\n cross join lateral jsonb_array_elements(r.positions) x\n where r.position_status='complete'\n  and r.position_observed_at<=r.received_at\n),f as(\n select t.fingerprint,t.market_key,t.token_id,\n  t.fill_price::float8 price,t.shares::float8 shares,\n  (t.shares*t.fill_price)::float8 usd,\n  extract(epoch from(t.trade_at-r.position_observed_at))::float8 age,\n  sum(positions.cost)::float8 prior_cost,\n  coalesce(sum(positions.size) filter(where positions.token_id=t.token_id),0)::float8 own,\n  coalesce(sum(positions.size) filter(where positions.token_id<>t.token_id),0)::float8 other,\n  count(positions.token_id)::int outcomes,\n  count(distinct positions.token_id)::int distinct_tokens\n from pi.rn1_quote_probe_fills t join pi.rn1_quote_probe_runs r on r.id=t.run_id\n left join positions on positions.run_id=r.id and positions.market_key=t.market_key\n where t.role='maker_inferred' and t.side='BUY'\n  and t.shares>0 and t.fill_price between .005 and .995\n  and r.position_status='complete'\n  and r.position_observed_at<=r.received_at and r.received_at<t.trade_at\n group by t.fingerprint,t.market_key,t.token_id,t.fill_price,t.shares,t.trade_at,r.position_observed_at\n)\nselect fingerprint,market_key,token_id,price,shares,usd,age,prior_cost,own,other\nfrom f where outcomes=2 and distinct_tokens=2 and prior_cost>0 and age<=60\norder by fingerprint desc limit 2501");
+ const truncated=rows.length>2500;
+ return {truncated,...rn1CrossMarketFit(truncated?rows.slice(0,2500):rows)};
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -2088,6 +2179,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_sports_robustness")return send(await rn1SportsRobustness());
   if(body?.action==="rn1_sizing_forensics")return send(await rn1SizingForensics());
   if(body?.action==="rn1_sizing_hypotheses")return send(await rn1SizingHypotheses());
+  if(body?.action==="rn1_sizing_market_validation")return send(await rn1SizingMarketValidation());
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
