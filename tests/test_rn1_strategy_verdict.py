@@ -30,7 +30,7 @@ def test_market_pair_gross_is_separate_from_net():
     direction=Decimal("-277216.97")
     assert returned-bought==gross
     assert pair+direction==gross
-    assert "paired_gross_proxy" in VERDICT or "composante de paire" in VERDICT
+    assert "+1 326 424,98 USDC" in VERDICT
     assert "pas un ROI sur capital" in VERDICT
 
 def test_official_pnl_source_is_private_auth_and_lossless():
@@ -62,5 +62,5 @@ def test_event_clustering_and_missing_redemptions_must_not_be_ignored():
     assert "markets_without_redemption" in API
     assert "cost_without_observed_redemption" in API
     assert "Ne pas attribuer automatiquement une perte définitive" in UI
-    assert "moyenne" in VERDICT.lower()
+    assert "intervalle" in VERDICT.lower()
     assert "0 sur 1 891" in VERDICT
