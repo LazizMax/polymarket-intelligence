@@ -2,6 +2,7 @@
 // Backend writes private pi schema, with no credentials exposed in the browser.
 import postgres from "npm:postgres@3.4.3";
 import { closedRoi } from "./roi-math.ts";
+import { closesPageComplete } from "./roi-sync.ts";
 
 const connectionString = Deno.env.get("SUPABASE_DB_URL");
 if (!connectionString) throw new Error("SUPABASE_DB_URL is not configured");
@@ -114,7 +115,7 @@ async function refresh(wallet: string) {
   const points = normalizePoints(data);
   if (points.length === 0) throw new Error("No daily PnL data for this wallet");
   const summary = pnlStats(points);
-  const previous = await db.unsafe("select exists(select 1 from pi.wallet_pnl_daily where wallet=$1) as has_data", [wallet]);
+  const previous = await db.unsafe("select exists(select 1 from pi.wallet_pnl_daily where wallet=$1) as has_data,max(day)::text as last_day from pi.wallet_pnl_daily where wallet=$1", [wallet]);
   const alreadyStored = previous[0]?.has_data === true;
   // Reimport a 7-day revision window; full backfill only on first collection.
   // The full returned series is still used to recalculate summary metrics.
@@ -137,6 +138,13 @@ async function refresh(wallet: string) {
           "Observed PnL only (not capital return); missing days: " + summary.missing_days]);
     }
   });
+  // New PnL observation is a useful hint to check freshly closed markets
+  // at the next ROI tick; intraday changes are also caught by 6-hour polling.
+  if (summary && previous[0]?.last_day && summary.day > String(previous[0].last_day)) {
+    await db.unsafe(
+      "update pi.roi_import_state set last_recent_at=null,request_priority=true,updated_at=now() where wallet=$1 and sync_mode='idle'",
+      [wallet]);
+  }
   return { wallet, daily_observations: points.length, rows_upserted: batch.length,
     last_day: summary?.day ?? null, missing_days: summary?.missing_days ?? null,
     dd_usdc: summary?.dd_usdc ?? null, capital_roi: null };
@@ -177,74 +185,108 @@ async function scheduled(limit: number) {
   return {attempted:report.length,ok:report.filter((r)=>r.status==="done").length,errors:report.filter((r)=>r.status==="failed").length,report};
 }
 // Each page contains positions, NOT individual order fills. No ROI for still-held shares.
-async function refreshClosedPositions(wallet:string,maxPages=1){
+// All tracked wallets are automatically onboarded. Full initial history is
+// acquired once; 14-day overlap scans detect new and revised closes, and
+// monthly full audits reconcile older corrections and deleted API rows.
+async function refreshClosedPositions(wallet:string,maxPages=2){
  if(!ADDRESS.test(wallet))throw new Error("Invalid wallet");
- await db.unsafe("insert into pi.roi_import_state(wallet,request_priority) values ($1,true) on conflict(wallet) do nothing",[wallet]);
  let pages=0,rows=0,done=false;
  for(let n=0;n<maxPages;n++){
-  const states=await db.unsafe("select generation,next_cursor,exhausted from pi.roi_import_state where wallet=$1",[wallet]);
-  if(!states.length||states[0].exhausted){done=true;break;}
-  const generation=Number(states[0].generation),oldCursor=states[0].next_cursor as string|null;
+  const states=await db.unsafe(
+   "select generation,next_cursor,exhausted,sync_mode,checkpoint_at,scan_started_at from pi.roi_import_state where wallet=$1",
+   [wallet]);
+  if(!states.length||states[0].sync_mode==="idle"){done=true;break;}
+  const st=states[0],generation=Number(st.generation),oldCursor=st.next_cursor as string|null;
+  const mode=String(st.sync_mode);
   const args:Record<string,string>={user:wallet,status:"CLOSED",sort_by:"TIMESTAMP",sort_direction:"DESC",limit:"200"};
   if(oldCursor)args.cursor=oldCursor;
   const response=await get("/v2/positions",args);
-  if(!Array.isArray(response?.data)||typeof response?.pagination!=="object")throw new Error("Invalid closed-positions API envelope");
+  if(!Array.isArray(response?.data)||!response?.pagination||typeof response.pagination!=="object")
+   throw new Error("Invalid Polymarket closed-positions envelope");
+  if(response.data.length>200)throw new Error("Unexpected position page size");
   const hasMore=response.pagination.has_more===true;
-  const next=typeof response.pagination.next_cursor==="string"&&response.pagination.next_cursor.length>0 ? response.pagination.next_cursor:null;
-  if(hasMore&&!next)throw new Error("Missing next_cursor: cannot mark complete");
+  const next=typeof response.pagination.next_cursor==="string"&&response.pagination.next_cursor.length>0
+   ?response.pagination.next_cursor:null;
+  if(hasMore&&!next)throw new Error("Missing next cursor");
   if(hasMore&&next===oldCursor)throw new Error("Cursor did not advance");
-  const nowRows:any[]=[];
+  const newRows:any[]=[];
+  const sourceTimestamps:(number|null)[]=[];
   for(const raw of response.data){
    const token=String(raw.token_id??"");
-   if(String(raw.proxy_wallet??"").toLowerCase()!==wallet||!(/^[0-9]+$/).test(token))throw new Error("Invalid closed-position identity");
+   if(String(raw.proxy_wallet??"").toLowerCase()!==wallet||!/^[0-9]+$/.test(token))
+    throw new Error("Unexpected closed-position identity");
    const x=closedRoi(raw);
-   const numeric=(value:unknown)=>number(value);
    const epoch=(value:unknown)=>{
-     const ts=numeric(value);return ts!==null&&ts>=946684800&&ts<4102444800?new Date(ts*1000).toISOString():null;
+    const ts=number(value);
+    return ts!==null&&ts>=946684800&&ts<4102444800?new Date(ts*1000).toISOString():null;
    };
-   nowRows.push({
+   const when=epoch(raw.last_event_at);
+   sourceTimestamps.push(when?Date.parse(when):null);
+   newRows.push({
     token_id:token,condition_id:String(raw.condition_id??"").slice(0,100),
-    title:String(raw.title??"").slice(0,500),
-    outcome:String(raw.outcome??"").slice(0,80),
+    title:String(raw.title??"").slice(0,500),outcome:String(raw.outcome??"").slice(0,80),
     market_slug:String(raw.slug??"").slice(0,240),
-    first_entry_at:epoch(raw.first_entry_at),last_event_at:epoch(raw.last_event_at),
-    lifetime_shares:numeric(raw.total_size),avg_entry_price:numeric(raw.avg_price),
+    first_entry_at:epoch(raw.first_entry_at),last_event_at:when,
+    lifetime_shares:number(raw.total_size),avg_entry_price:number(raw.avg_price),
     estimated_entry_cost_usdc:x.cost,realized_pnl_usdc:x.pnl,
     estimated_roi_pct:x.roi,valid_cost:x.valid,quality_reason:x.reason,
-    source_percent_realized_pnl:numeric(raw.percent_realized_pnl)
+    source_percent_realized_pnl:number(raw.percent_realized_pnl)
    });
   }
+  // Never stop a cursor early unless the entire page is dated and sorted.
+  const complete=closesPageComplete(mode,hasMore,sourceTimestamps,
+   st.checkpoint_at?new Date(st.checkpoint_at).getTime():null);
   await db.begin(async(tx)=>{
-   if(nowRows.length)await tx.unsafe(
-    "insert into pi.closed_position_roi(wallet,token_id,generation,condition_id,title,outcome,market_slug,first_entry_at,last_event_at,lifetime_shares,avg_entry_price,estimated_entry_cost_usdc,realized_pnl_usdc,estimated_roi_pct,valid_cost,quality_reason,source_percent_realized_pnl,collected_at) select $1,x.token_id,$3,x.condition_id,x.title,x.outcome,x.market_slug,x.first_entry_at,x.last_event_at,x.lifetime_shares,x.avg_entry_price,x.estimated_entry_cost_usdc,x.realized_pnl_usdc,x.estimated_roi_pct,x.valid_cost,x.quality_reason,x.source_percent_realized_pnl,now() from jsonb_to_recordset(($2::text)::jsonb) as x(token_id text,condition_id text,title text,outcome text,market_slug text,first_entry_at timestamptz,last_event_at timestamptz,lifetime_shares numeric,avg_entry_price numeric,estimated_entry_cost_usdc numeric,realized_pnl_usdc numeric,estimated_roi_pct numeric,valid_cost boolean,quality_reason text,source_percent_realized_pnl numeric) on conflict(wallet,token_id) do update set generation=excluded.generation,condition_id=excluded.condition_id,title=excluded.title,outcome=excluded.outcome,market_slug=excluded.market_slug,first_entry_at=excluded.first_entry_at,last_event_at=excluded.last_event_at,lifetime_shares=excluded.lifetime_shares,avg_entry_price=excluded.avg_entry_price,estimated_entry_cost_usdc=excluded.estimated_entry_cost_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,estimated_roi_pct=excluded.estimated_roi_pct,valid_cost=excluded.valid_cost,quality_reason=excluded.quality_reason,source_percent_realized_pnl=excluded.source_percent_realized_pnl,collected_at=now()",
-    [wallet,JSON.stringify(nowRows),generation]);
+   if(newRows.length)await tx.unsafe(
+    "insert into pi.closed_position_roi(wallet,token_id,generation,condition_id,title,outcome,market_slug,first_entry_at,last_event_at,lifetime_shares,avg_entry_price,estimated_entry_cost_usdc,realized_pnl_usdc,estimated_roi_pct,valid_cost,quality_reason,source_percent_realized_pnl,collected_at,last_seen_scan_at) select $1,x.token_id,$3,x.condition_id,x.title,x.outcome,x.market_slug,x.first_entry_at,x.last_event_at,x.lifetime_shares,x.avg_entry_price,x.estimated_entry_cost_usdc,x.realized_pnl_usdc,x.estimated_roi_pct,x.valid_cost,x.quality_reason,x.source_percent_realized_pnl,now(),now() from jsonb_to_recordset(($2::text)::jsonb) as x(token_id text,condition_id text,title text,outcome text,market_slug text,first_entry_at timestamptz,last_event_at timestamptz,lifetime_shares numeric,avg_entry_price numeric,estimated_entry_cost_usdc numeric,realized_pnl_usdc numeric,estimated_roi_pct numeric,valid_cost boolean,quality_reason text,source_percent_realized_pnl numeric) on conflict(wallet,token_id) do update set generation=excluded.generation,condition_id=excluded.condition_id,title=excluded.title,outcome=excluded.outcome,market_slug=excluded.market_slug,first_entry_at=excluded.first_entry_at,last_event_at=excluded.last_event_at,lifetime_shares=excluded.lifetime_shares,avg_entry_price=excluded.avg_entry_price,estimated_entry_cost_usdc=excluded.estimated_entry_cost_usdc,realized_pnl_usdc=excluded.realized_pnl_usdc,estimated_roi_pct=excluded.estimated_roi_pct,valid_cost=excluded.valid_cost,quality_reason=excluded.quality_reason,source_percent_realized_pnl=excluded.source_percent_realized_pnl,collected_at=now(),last_seen_scan_at=now()",
+    [wallet,JSON.stringify(newRows),generation]);
    const advance=await tx.unsafe(
-    "update pi.roi_import_state set next_cursor=$3,exhausted=$4,request_priority=case when $4 then false else request_priority end,pages_fetched=pages_fetched+1,rows_seen=rows_seen+$5,last_attempt_at=now(),last_success_at=now(),last_error=null,last_complete_at=case when $4 then now() else last_complete_at end,updated_at=now() where wallet=$1 and generation=$2 and next_cursor is not distinct from $6 returning wallet",
-    [wallet,generation,next,!hasMore,nowRows.length,oldCursor]);
-   if(!advance.length)throw new Error("Concurrent snapshot scan detected");
-   if(!hasMore)await tx.unsafe("delete from pi.closed_position_roi where wallet=$1 and generation<>$2",[wallet,generation]);
+    "update pi.roi_import_state set next_cursor=case when $4::boolean then null else $3 end,exhausted=$4,sync_mode=case when $4::boolean then 'idle' else sync_mode end,request_priority=case when $4::boolean then false else request_priority end,pages_fetched=pages_fetched+1,rows_seen=rows_seen+$5,last_attempt_at=now(),last_success_at=now(),consecutive_failures=0,last_error=null,last_complete_at=case when $4::boolean and $7 in ('initial','full') then now() else last_complete_at end,last_full_audit_at=case when $4::boolean and $7 in ('initial','full') then now() else last_full_audit_at end,last_recent_at=case when $4::boolean then now() else last_recent_at end,updated_at=now() where wallet=$1 and generation=$2 and next_cursor is not distinct from $6 and sync_mode=$7 returning wallet",
+    [wallet,generation,next,complete,newRows.length,oldCursor,mode]);
+   if(!advance.length)throw new Error("Concurrent ROI scan advanced the cursor");
+   if(complete&&mode==="full"&&st.scan_started_at)
+    await tx.unsafe(
+     "delete from pi.closed_position_roi where wallet=$1 and generation=$2 and (last_seen_scan_at is null or last_seen_scan_at < $3::timestamptz)",
+     [wallet,generation,st.scan_started_at]);
+   if(complete&&mode==="initial")
+    await tx.unsafe("delete from pi.closed_position_roi where wallet=$1 and generation<>$2",[wallet,generation]);
   });
-  pages++;rows+=nowRows.length;done=!hasMore;
+  pages++;rows+=newRows.length;done=complete;
   if(done)break;
  }
  return {wallet,pages,rows,complete:done};
 }
 async function syncQueuedRoi(){
+ // Automatically discover even NEW tracked wallets without any browser clicks.
+ await db.unsafe(
+  "insert into pi.roi_import_state(wallet,request_priority) select wallet,false from pi.wallets on conflict(wallet) do nothing");
  const next=await db.unsafe(
-  "select wallet from pi.roi_import_state where exhausted=false and (last_attempt_at is null or last_attempt_at<now()-interval '90 seconds') order by request_priority desc,last_attempt_at asc nulls first limit 1"
- );
- if(!next.length)return {status:"idle"};
+  "select wallet,sync_mode,request_priority from pi.roi_import_state where (consecutive_failures<5 or last_attempt_at<now()-interval '24 hours') and ((sync_mode<>'idle' and (last_attempt_at is null or last_attempt_at<now()-interval '90 seconds')) or (sync_mode='idle' and (last_recent_at is null or last_recent_at<now()-interval '6 hours' or last_full_audit_at is null or last_full_audit_at<now()-interval '30 days'))) order by request_priority desc,case when sync_mode='idle' then 0 else 1 end,last_attempt_at asc nulls first limit 1");
+ if(!next.length)return {status:"idle",reason:"No due wallets"};
  const wallet=String(next[0].wallet);
+ if(next[0].sync_mode==="idle"){
+  const audit=await db.unsafe(
+   "update pi.roi_import_state set sync_mode=case when last_full_audit_at is null or last_full_audit_at<now()-interval '30 days' then 'full' else 'recent' end,exhausted=false,next_cursor=null,scan_started_at=now(),checkpoint_at=now()-interval '14 days',pages_fetched=0,rows_seen=0,last_attempt_at=null,last_error=null,updated_at=now() where wallet=$1 and sync_mode='idle' returning sync_mode",
+   [wallet]);
+  if(!audit.length)return {status:"race_lost",wallet};
+ }
  const job=await db.unsafe(
-   "insert into pi.ingestion_jobs(wallet,stream,status,started_at) values ($1,'closed_position_roi','running',now()) returning id",[wallet]);
+  "insert into pi.ingestion_jobs(wallet,stream,status,started_at) values ($1,'closed_position_roi','running',now()) returning id",
+  [wallet]);
  try{
-  const result=await refreshClosedPositions(wallet,1);
-  await db.unsafe("update pi.ingestion_jobs set status='done',finished_at=now(),updated_at=now(),pages_fetched=$2,rows_fetched=$3 where id=$1",[job[0].id,result.pages,result.rows]);
+  const result=await refreshClosedPositions(wallet,2);
+  await db.unsafe(
+   "update pi.ingestion_jobs set status='done',finished_at=now(),updated_at=now(),pages_fetched=$2,rows_fetched=$3 where id=$1",
+   [job[0].id,result.pages,result.rows]);
   return result;
  }catch(e){
   const message=e instanceof Error?e.message.slice(0,180):"Unknown position feed failure";
-  await db.unsafe("update pi.roi_import_state set last_error=$2,last_attempt_at=now(),updated_at=now() where wallet=$1",[wallet,message]);
-  await db.unsafe("update pi.ingestion_jobs set status='failed',error_message=$2,finished_at=now(),updated_at=now() where id=$1",[job[0].id,message]);
+  await db.unsafe(
+   "update pi.roi_import_state set consecutive_failures=consecutive_failures+1,last_error=$2,last_attempt_at=now(),updated_at=now() where wallet=$1",
+   [wallet,message]);
+  await db.unsafe(
+   "update pi.ingestion_jobs set status='failed',error_message=$2,finished_at=now(),updated_at=now() where id=$1",
+   [job[0].id,message]);
   return {wallet,error:message};
  }
 }
