@@ -172,6 +172,25 @@ Deno.serve(async(req:Request)=>{
  if(!await authorized(req))return send({error:"Unauthorized"},401);
  try{
   const body=await req.json().catch(()=>({}));
+  if(body?.action==="nba_source_probe"){
+   const urls=[
+    "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20261113",
+    "https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20261113",
+    "https://cdn.espn.com/core/basketball/game?xhr=1&gameId=401909976",
+    "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+   ];
+   const sources=[];
+   for(const u of urls){
+    try{
+     const r=await fetch(u,{signal:AbortSignal.timeout(7000)});
+     const txt=await r.text();
+     let keys:string[]=[];
+     if(r.ok){try{keys=Object.keys(JSON.parse(txt)).slice(0,12)}catch{}}
+     sources.push({host:new URL(u).host,status:r.status,bytes:txt.length,keys});
+    }catch(e){sources.push({host:new URL(u).host,error:String(e).slice(0,100)})}
+   }
+   return send({sources});
+  }
   if(body?.action!=="nba_event_sync")return send({error:"Unsupported action"},400);
   await queueRecent();
   const picks=await claim(Math.min(6,Math.max(1,Number(body?.count)||4)));
