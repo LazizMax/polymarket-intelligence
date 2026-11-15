@@ -732,6 +732,7 @@ async function renderRN1(){
    metric("Historiques de prix disponibles",requested>0?fmt(100*covered/requested,1)+" %":"—")
   );
   c.append(priceMetrics);
+  const adjustedRows=Array.isArray(data.independent_adjusted)?data.independent_adjusted:[];
   const evidence=[["60","1 minute"],["300","5 minutes"],["900","15 minutes"],["1800","30 minutes"],["3600","60 minutes"]];
   for(const [h,label] of evidence){
    const sample=forwardPrices[h]||{},
@@ -741,19 +742,26 @@ async function renderRN1(){
    const n=Number(all.n||0),qty=Number(all.shares||0);
    const formatMove=m=>Number(m.shares||0)>0?
     fmt(100*Number(m.weighted||0)/Number(m.shares),3)+" ¢ / part ("+fmt(m.n||0)+" achats)":"—";
-   c.append(node("p",label+" : "+fmt(n)+" achats Maker avec référence de marché ; "+
-    "variation pondérée "+formatMove(all)+
-    ". Côté moins accumulé : "+formatMove(under)+
-    " ; côté déjà dominant : "+formatMove(over)+".","foot"));
+   const corrected=adjustedRows.find(x=>x.horizon===h);
+   const adjFmt=(value,count)=>corrected&&Number(count||0)>0&&
+    value!==null&&Number.isFinite(Number(value))?
+    fmt(100*Number(value),3)+" ¢/part":"—";
+   c.append(node("p",label+" : "+fmt(n)+" achats Maker avec prix historique futur. "+
+    "Variation corrigée de la probabilité d'échantillonnage : "+
+    adjFmt(corrected?.adjusted_quantity_markout,corrected?.observed_fills)+
+    " (moyenne brute "+formatMove(all)+"). "+
+    "Côté moins accumulé : "+adjFmt(corrected?.adjusted_under_markout,corrected?.under_fills)+
+    " ; côté déjà dominant : "+adjFmt(corrected?.adjusted_over_markout,corrected?.over_fills)+
+    ".","foot"));
   }
   const historyWeeks=Array.isArray(data.independent_weekly)?data.independent_weekly:[];
   if(historyWeeks.length){
    c.append(node("h3","Stabilité des prix historiques, par semaine"));
    for(const week of historyWeeks){
     const n=Number(week.maker_reference_fills||0),
-     weighted=Number(week.maker_weighted_markout),
-     under=Number(week.maker_underweight_markout),
-     over=Number(week.maker_overweight_markout);
+     weighted=Number(week.maker_adjusted_markout),
+     under=Number(week.maker_under_adjusted),
+     over=Number(week.maker_over_adjusted);
     const textVal=(v,filled)=>filled>0&&Number.isFinite(v)?
      fmt(100*v,3)+" ¢/part":"—";
     c.append(node("p","Semaine du "+String(week.week||"")+" : "+
@@ -771,6 +779,10 @@ async function renderRN1(){
    " des achats Maker échantillonnés. Les tokens sont sélectionnés de manière "+
    "déterministe sur chaque page d'archives ; seuls les achats réellement exécutés "+
    "et disposant d'un prix futur dans la fenêtre sont inclus. "+
+   "La correction tient compte du nombre de tokens candidats sur chaque page "+
+   "(pondération inverse de la probabilité de sélection) ; elle ne corrige PAS "+
+   "les prix futurs manquants, la dépendance entre événements, l'impact de RN1 "+
+   "sur les prix ou la sélection des seules exécutions remplies. "+
    "Les séries Polymarket CLOB sont publiques mais ne constituent pas les anciens "+
    "meilleurs bids/asks ni des prix de sortie garantis. "+
    "Leur observation ne prouve pas une sélection adverse exploitable ni un PnL net.","foot"));
