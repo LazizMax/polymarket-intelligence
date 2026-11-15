@@ -263,10 +263,27 @@ async function tick(){
   return {status:"error",page:pageNo,error:msg};
  }
 }
+// Refresh event contrasts from an already verified private checkpoint.
+// This DOES NOT process any new trade page and does not change the cursor.
+async function refreshPairedEvidence(){
+ const rows=await db.unsafe("select checkpoint_key,pages_done from pi.rn1_independent_price_jobs where job_key=$1",[JOB]);
+ const row=rows[0];if(!row?.checkpoint_key)return {status:"no_checkpoint"};
+ const state:State=JSON.parse(await readStorage(String(row.checkpoint_key)));
+ const evidence=eventPairedDifferences(state);
+ const result=await db.unsafe(`update pi.rn1_independent_price_jobs
+ set summary=jsonb_set(summary,'{event_paired_differences}',($2::text)::jsonb,true),
+ updated_at=now()
+ where job_key=$1 and checkpoint_key=$3 returning status,pages_done`,
+ [JOB,JSON.stringify(evidence),row.checkpoint_key]);
+ if(!result.length)return {status:"cursor_changed"};
+ return {status:result[0].status,pages:result[0].pages_done,
+  event_15m:evidence["900"],note:"recomputed from existing checkpoint without reprocessing source"};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"not_found"},404);
  if(!await allowed(req))return response({error:"unauthorized"},403);
  let data:any={};try{data=await req.json()}catch(_){}
+ if(data.action==="refresh_paired_evidence")return response(await refreshPairedEvidence());
  if(data.action!=="independent_price_tick")return response({error:"invalid_action"},400);
  const pages=Math.min(3,Math.max(1,Number.isInteger(data.pages)?data.pages:1));
  const results:any[]=[];
