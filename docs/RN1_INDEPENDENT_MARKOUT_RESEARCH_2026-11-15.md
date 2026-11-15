@@ -51,3 +51,22 @@ These measurements are not net PnL, realized profits, observed bid/ask advantage
 5. Combine with market outcome/REDEEM/MERGE and fees, and estimate realistic maker order fills from separately collected LIVE orderbooks; no historical unfilled order set exists.
 
 Reproducible SQL: [`sql/rn1_independent_price_markouts.sql`](../sql/rn1_independent_price_markouts.sql).
+
+## Addendum: event-clustered statistical uncertainty (live v4)
+
+The independent-price worker now records in the **private, gzip-compressed checkpoint**, rather than a large SQL table, a compact accumulation of fill-weighted markout numerator and exposure denominator for each distinct sporting `event_slug`, for each of five horizons and three Maker strata (all/underweight/overweight). When no event slug is present, a market identifier is used as a fallback and marked conceptually as a weaker clustering key.
+
+For each event cluster `j` let `Y_j = Σ_i w_i × shares_i × (future_public_price_i − fill_price_i)` and `X_j = Σ_i w_i × shares_i`, with page-token inclusion weight `w_i=N_page/n_page`. The estimator is `mu = Σ_jY_j/Σ_jX_j`; an event-clustered approximate standard error is
+
+```text
+ se(mu) = sqrt( G/(G-1) × Σ_j (Y_j - mu×X_j)^2 / (Σ_j X_j)^2 )
+ 95%-approx interval = mu ± 1.96 × se(mu)
+```
+
+This is a **cluster-robust diagnostic only**. It does not establish a valid causal edge if fills are selected by liquidity/price availability, if different events share a common risk driver, or if RN1's trades move the quoted time-series prices. At minimum the dashboard requires 30 independent event clusters to display the approximate range. Even a range excluding zero is not evidence of *net tradable alpha*.
+
+**Critical coverage caveat:** This event accumulation was introduced in the middle of the running replay (starting with source page **677**); it is not backfilled for the ~79 pages processed before code v4. Thus the event-level `fills` and `events` counts are purposely smaller than the full sampled `Maker` totals. The snapshot remains live and accumulates new processed pages without restarting completed ones. Never mix it with total-sample event counts or present it as a full-period confidence interval.
+
+First verified operation: page 677 succeeded with 7 sporting-event clusters and 20 eligible Maker fills, estimated mean +$0.04016 per share and indicative interval +$0.00948 to +$0.07083. A few pages later, event count 25 / 89 fills, interval −$0.02536 to +$0.05234 **crossing zero**. This demonstrates how unstable very early event-cluster estimates are; it is **not** a stable or significant edge.
+
+For any final investment/copy decision, confirm multiple disjoint time periods, sufficient separate events and unaffected-outcome price references, known probability of order fill, fees and capital exposure. Neither statistical clustering nor correction for token sampling addresses those execution constraints.
