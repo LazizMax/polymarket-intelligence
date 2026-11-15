@@ -431,8 +431,10 @@ async function renderRN1(){
     " · plus ancien événement collecté : "+(st?.oldest_observed_at||"—"),"foot");
   status.append(note);
   if(st?.last_error)status.append(node("p",label+" — "+String(st.last_error),"red"));
+  if(st?.metrics_paused_at)status.append(banner(label+" : les pages complètes continuent d'être archivées, mais les statistiques SQL détaillées sont partielles depuis le "+
+   String(st.metrics_paused_at).slice(0,19)+" UTC pour préserver l'espace disque."));
  }
- status.append(node("p","Le nombre total de transactions n'est pas fourni par l'API. La collecte n'est considérée complète que lorsque chaque flux indique explicitement la fin de son historique. Une limite de stockage protège la base Supabase partagée avec Fit Tracker.","foot"));
+ status.append(node("p","Le nombre total de transactions n'est pas fourni par l'API. La collecte n'est considérée complète que lorsque chaque flux indique explicitement la fin de son historique. Une limite de stockage protège le projet partagé avec Fit Tracker. Les archives continuent même lorsque le budget SQL de statistiques est atteint ; dans ce cas les indicateurs détaillés ne couvrent qu’une partie des données.","foot"));
  status.append(button("Actualiser l'avancement",()=>renderRN1().catch(showError),"secondary"));
  target.append(status);
  const market=data.market||{};
