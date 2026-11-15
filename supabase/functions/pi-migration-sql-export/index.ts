@@ -67,14 +67,14 @@ async function migrateBatch(){
   if(!pushed.ok||!output.ok)throw Error("Destination row batch rejected "+JSON.stringify(output).slice(0,230));
   const advanced=await db.unsafe(`update pi.migration_table_export_state
    set cursor_pk=$2::text::jsonb,rows_copied=rows_copied+$3,batches_done=batches_done+1,
-   lease_until=null,last_success_at=now(),updated_at=now(),last_error=null
+   lease_until=null,last_success_at=now(),updated_at=now(),last_error=null,error_attempts=0
    where table_name=$1 and cursor_pk is not distinct from $4::text::jsonb returning rows_copied`,
    [table,JSON.stringify(nextCursor),rows.length,cursor===null?null:JSON.stringify(cursor)]);
   if(advanced.length!==1)throw Error("Source cursor changed unexpectedly");
   return {status:"running",table,rows:rows.length,total:advanced[0].rows_copied};
  }catch(e){
   const msg=String(e).slice(0,260);
-  await db.unsafe("update pi.migration_table_export_state set status='error',last_error=$2,lease_until=null,updated_at=now() where table_name=$1",[table,msg]);
+  await db.unsafe("update pi.migration_table_export_state set status=case when error_attempts+1>=5 then 'error' else 'running' end,error_attempts=error_attempts+1,last_error=$2,lease_until=now()+interval '30 seconds',updated_at=now() where table_name=$1",[table,msg]);
   return {status:"error",table,message:msg};
  }
 }
