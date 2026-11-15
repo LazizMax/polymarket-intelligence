@@ -911,6 +911,19 @@ async function rn1ReverseEngineering(){
  from bins group by rollup(sample_half),skew_bin
  order by sample_half,skew_bin`);
 
+ const fullReplay=await db.unsafe(`
+ select status,frozen_last_page::float8 as frozen_last_page,
+ pages_done::float8 as pages_done,fills_done::float8 as fills_done,
+ maker_fills::float8 as maker_fills,taker_fills::float8 as taker_fills,
+ unknown_fills::float8 as unknown_fills,
+ summary->'inventory'->'maker' as maker_inventory,
+ summary->'pair'->'maker' as maker_pair,
+ summary->'forward' as maker_forward_proxy,
+ summary->'coverage' as proxy_missing_coverage,
+ last_success_at::text as last_success_at,last_error
+ from pi.rn1_replay_jobs where job_key='rn1_full_chronology_v1'
+ `);
+
  const bytes=await db.unsafe(`
  select pg_database_size(current_database())::double precision as project_database_bytes,
  (select coalesce(sum(raw_gzip_bytes),0)::double precision from pi.rn1_full_streams) as private_archive_bytes`);
@@ -918,7 +931,7 @@ async function rn1ReverseEngineering(){
  const completed=streams.length===2&&streams.every((s:any)=>s.status==="source_exhausted");
  return {status:completed?"source_exhausted_verified":"collection_in_progress",
   data_scope:"V2 public wallet trades: start=1, taker_only=false, 1,000 rows/page; activity: start=1, 1,000 rows/page",
-  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
+  streams,market:market[0]||{},activity,economics,role_audit:role[0]||{},full_replay:fullReplay[0]||null,sequence:{job:sequenceJob[0]||null,stats:sequenceStats,skew:sequenceSkew},storage:bytes[0]||{},
   inference:[
    {name:"Part des achats effectués sur les deux issues",verification:"observed"},
    {name:"Déséquilibre des quantités entre issues",verification:"observed"},
