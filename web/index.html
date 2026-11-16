@@ -560,6 +560,49 @@ async function renderRN1Engine(){
   historicalCard.append(node("p","Diagnostic historique indisponible : "+String(e?.message||e),"foot"));
  }
  target.append(historicalCard);
+ const onchainCard=node("section",null,"card");
+ onchainCard.append(node("h2","Ordres Maker réellement signés · blockchain Polygon"));
+ onchainCard.append(node("p","Ici les identifiants sont récupérés depuis les événements publics OrderFilled du contrat Polymarket V2, puis rapprochés des prix et quantités des fills archivés. Ce ne sont PAS des regroupements statistiques par seconde.","foot"));
+ try{
+  const onchain=await api("rn1_onchain_orders_report"),scan=onchain.scan||{},signed=onchain.summary||{};
+  const stats=node("div",null,"metrics");
+  stats.append(
+   metric("Fills Maker liés à un ordre signé",fmt(scan.actual_order_fills||0)+" / "+fmt(scan.archive_maker_fills||0)),
+   metric("Ordres signés distincts",fmt(signed.signed_orders||0)),
+   metric("Ordres exécutés dans plusieurs transactions",fmt(signed.orders_multiple_transactions||0)),
+   metric("Ordres exécutés à plusieurs prix",fmt(signed.orders_multiple_execution_prices||0))
+  );
+  onchainCard.append(stats);
+  const pc=Number(scan.block_progress_pct)||0;
+  onchainCard.append(node("p","Scan blockchain : "+fmt(pc,2)+" % des blocs ciblés · "+fmt(scan.chunks_done||0)+" plages traitées · statut : "+String(scan.status||"inconnu")+". Correspondances rejetées : "+fmt(scan.tx_unmatched||0)+".","foot"));
+  const track=node("div",null);
+  track.style.cssText="height:12px;width:100%;border-radius:12px;overflow:hidden;background:var(--line)";
+  const fill=node("div",null);
+  fill.style.cssText="height:100%;width:"+Math.min(100,Math.max(0,pc))+"%;background:#21a782;transition:width .3s ease";
+  track.append(fill);onchainCard.append(track);
+  onchainCard.append(node("p","Durée entre le premier et le dernier fill d'un même ordre : médiane "+fmt(signed.median_repeated_order_span_seconds||0,1)+" secondes parmi les ordres exécutés dans plusieurs transactions. "+fmt(signed.observed_span_at_least_1min||0)+" ordres ont au moins 60 s entre premier et dernier fill observé.","foot"));
+  const examples=onchain.examples||[];
+  if(examples.length){
+   onchainCard.append(node("h3","Exemples réels d'ordres réexécutés"));
+   const listing=node("div",null,"grid2");
+   for(const item of examples.slice(0,6)){
+    const itemCard=node("div",null,"card");
+    itemCard.style.cssText="padding:12px;background:var(--panel2);border:1px solid var(--line)";
+    itemCard.append(node("h3",item.event_slug||"Marché"));
+    itemCard.append(node("p",fmt(item.verified_fills||0)+" fills · "+fmt(item.transaction_count||0)+" transactions · "+fmt(item.execution_price_count||0)+" prix observés","small"));
+    itemCard.append(node("p","Intervalle des fills : "+fmt(item.observed_fill_span_seconds||0)+" s · notionnel exécuté brut "+fmt(item.gross_notional||0,2)+" USDC","foot"));
+    const id=String(item.order_hash||"");
+    itemCard.append(node("p","Ordre "+id.slice(0,10)+"…"+id.slice(-8),"foot"));
+    listing.append(itemCard);
+   }
+   onchainCard.append(listing);
+  }
+  if(scan.status==="paused_error"||scan.status==="paused_quota")onchainCard.append(banner("Le scan est suspendu : "+String(scan.last_error||scan.status)+". Les résultats déjà vérifiés restent accessibles et inchangés."));
+  onchainCard.append(banner("Prudence : un ordre signé observé n'est pas nécessairement un ordre entier. Nous ne voyons que ses exécutions, jamais l'heure exacte de création, la profondeur jamais exécutée ni les annulations. Un même ordre peut être exécuté à plusieurs prix."));
+ }catch(e){
+  onchainCard.append(node("p","Analyse des ordres blockchain indisponible : "+String(e?.message||e),"foot"));
+ }
+ target.append(onchainCard);
  const oracleCard=node("section",null,"card");
  oracleCard.append(node("h2","Oracle externe · collecte & preuve temporelle"));
  let oracle=null;
