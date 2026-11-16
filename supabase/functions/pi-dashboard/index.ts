@@ -2355,7 +2355,7 @@ from checked
  * A received vendor odds sample is not an oracle proven to be used by RN1.
  * No provider secrets are exposed and M1/M2 are not fitted without coverage. */
 async function rn1OracleEvidence(){
- const [overview]=await db.unsafe(String.raw\`
+ const [overview]=await db.unsafe(String.raw`
 select s.status,s.calls_today,s.day_utc::text,
  extract(epoch from s.last_call_at)::float8 last_call_epoch,
  extract(epoch from s.last_success_at)::float8 last_success_epoch,
@@ -2379,12 +2379,12 @@ cross join lateral(
  (select count(*)::int from series where abs(away_fair_probability-prev)>=0.005)updates_large
  from pi.rn1_external_odds_observations obs
 )o
-where s.singleton=1\`);
+where s.singleton=1`);
  const stats=overview||{};
  let matching:any={eligible_quote_windows:0,events_with_valid_temporal_alignment:0,rn1_recent_windows:0,observed_maker_fill_windows:0};
  let latest:any[]=[];
  if(Number(stats.observations)>0){
-  const q=await db.unsafe(String.raw\`
+  const q=await db.unsafe(String.raw`
 with moneyline as(
  select r.id run_id,r.received_at,q->>'market_key' market_key,
  q->>'event_slug' event_slug,
@@ -2423,16 +2423,16 @@ select count(*)::int eligible_quote_windows,
  least(abs(p0-away_fair_probability)+abs(p1-home_fair_probability),
        abs(p0-home_fair_probability)+abs(p1-away_fair_probability)))::float8
  median_unordered_yes_no_distance
-from eligible\`);
+from eligible`);
   matching=q[0]||matching;
-  latest=await db.unsafe(String.raw\`
+  latest=await db.unsafe(String.raw`
 select event_slug,bookmaker,home_team,away_team,home_fair_probability,away_fair_probability,
  home_american,away_american,
  extract(epoch from start_at)::float8 start_epoch,
  extract(epoch from first_seen_at)::float8 received_epoch,
  extract(epoch from book_updated_at)::float8 bookmaker_updated_epoch
 from pi.rn1_external_odds_observations
-order by first_seen_at desc limit 12\`);
+order by first_seen_at desc limit 12`);
  }
  return {
   status:"research_data_only",
