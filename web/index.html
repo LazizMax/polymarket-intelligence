@@ -464,6 +464,36 @@ async function renderRN1Engine(){
    metric("Actions NBA historisées",fmt(a.nba_plays||0))
   );
   historicalCard.append(stats);
+  // Live Maker-first reconstruction; unlike the legacy pilot this comes from
+  // verified maker/taker roles in the immutable full-history archive.
+  try{
+   const maker=await api("rn1_maker_historical_report"),co=maker.cohort||{},sc=maker.heldout||{},ev=maker.event_control||{};
+   historicalCard.append(node("h3","Reconstruction Maker · cohorte réelle (lecture seule)"));
+   const makerStats=node("div",null,"metrics");
+   makerStats.append(
+    metric("Pages historiques normalisées",fmt(co.pages||0)+" / "+fmt(co.archive_pages||0)),
+    metric("Exécutions Maker classées",fmt(co.maker||0)),
+    metric("Maker + Taker avec prix antérieur",fmt(co.price_matches||0)),
+    metric("Fills rapprochés d'une action de match",fmt(co.score_matches||0))
+   );
+   historicalCard.append(makerStats);
+   const regimes=maker.regimes||[];
+   const tiles=node("div",null,"grid2");
+   const regimeNames={drop:"Baisse >1 point / 5min",quiet:"Stable ±1 point / 5min",rise:"Hausse >1 point / 5min"};
+   for(const r of regimes){
+    const tile=node("div",null,"card");
+    tile.style.cssText="padding:12px;background:var(--panel2);border:1px solid var(--line)";
+    tile.append(node("h3",regimeNames[r.regime]||r.regime));
+    tile.append(node("p","Fill Maker : "+fmt(r.maker_pct,2)+" % · Fill Taker : "+fmt(r.taker_pct,2)+" %","small"));
+    tile.append(node("p",fmt(r.minutes||0)+" minutes contrôlées","foot"));
+    tiles.append(tile);
+   }
+   historicalCard.append(tiles);
+   historicalCard.append(node("p","Validation 5 plis, événements séparés : "+fmt(sc.minutes||0)+" minutes · "+fmt(sc.positives||0)+" fenêtres Maker positives · log-loss constante "+fmt(sc.baseline_logloss,6)+" vs volatilité "+fmt(sc.volatility_logloss,6)+". Matchs comparables : "+fmt(ev.comparable_events||0)+", dont "+fmt(ev.volatile_more||0)+" davantage de fills en période volatile.","foot"));
+   historicalCard.append(banner("Attention : un fill Maker est une EXÉCUTION, jamais la preuve du moment où RN1 a placé, déplacé ou annulé un ordre. Les minutes sans fill ne prouvent pas l’absence d’un ordre. Le gain prédictif est exploratoire, pas une EV ni un ROI."));
+  }catch(e){
+   historicalCard.append(node("p","Reconstruction Maker indisponible : "+String(e?.message||e),"foot"));
+  }
   historicalCard.append(node("p","Dans l'ancien pilote de "+fmt(pilot.pilot_rows||0)+" achats, "+fmt(pilot.with_strict_prior_60s||0)+" ont une cotation Polymarket horodatée AVANT le trade (≤ 60 s). Ce pilote privilégie les TAKERS : il ne permet PAS d’inférer la politique Maker.","foot"));
   const steps=node("p","Méthode : réutiliser les archives compressées → aligner l'état du marché et le score avant chaque décision → ajouter des fenêtres sans trade → comparer les règles sur de nouveaux matchs → tester ensuite un éventuel oracle avec des données bookmakers historiques.","foot");
   historicalCard.append(steps);
