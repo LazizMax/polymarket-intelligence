@@ -3,7 +3,7 @@
 // private order-placement timestamps from execution timestamps.
 export async function rn1MakerHistoricalReport(db:any) {
  const sql=String.raw;
- const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory,bursts,bookOverlap,burstCohorts]=await Promise.all([
+ const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory,bursts,bookOverlap,burstCohorts,txLots,burstHash,txCohorts,txIntegrity]=await Promise.all([
   db.unsafe(`select (select count(*)::integer from pi.rn1_maker_historical_pages) pages,
     (select coalesce(sum(maker_fills),0)::integer from pi.rn1_maker_historical_pages) maker,
     (select coalesce(sum(taker_fills),0)::integer from pi.rn1_maker_historical_pages) taker,
@@ -141,13 +141,37 @@ export async function rn1MakerHistoricalReport(db:any) {
     coalesce(sum(fill_count) filter(where fill_count>1),0)::integer fills_in_multi,
     round(100.0*coalesce(sum(notional) filter(where fill_count>1),0)/nullif(sum(notional),0),2)::float8 multi_notional_pct
    from pi.rn1_maker_historical_bursts where role='maker'
-   group by 1 order by 1`)
+   group by 1 order by 1`),
+ db.unsafe(`select role,count(*)::integer transactions,sum(fill_count)::integer fills,
+ count(*) filter(where fill_count>1)::integer multi_fill_transactions,
+ count(*) filter(where price_levels>1)::integer multi_price_transactions,
+ coalesce(sum(fill_count) filter(where fill_count>1),0)::integer fills_in_multifill_transactions,
+ round(100.0*coalesce(sum(notional) filter(where fill_count>1),0)/nullif(sum(notional),0),3)::float8 multi_fill_notional_pct,
+ max(fill_count)::integer max_fills_per_transaction
+ from pi.rn1_maker_historical_transaction_lots group by role order by role`),
+ db.unsafe(`select role,
+ count(*) filter(where fill_count>1)::integer multi_fill_bursts,
+ count(*) filter(where fill_count>1 and blockchain_transactions=1)::integer single_transaction_bursts,
+ count(*) filter(where fill_count>1 and blockchain_transactions>1)::integer multiple_transaction_bursts,
+ coalesce(sum(fill_count) filter(where fill_count>1 and blockchain_transactions>1),0)::integer fills_multi_transaction_bursts
+ from pi.rn1_maker_historical_burst_hash_evidence group by role order by role`),
+ db.unsafe(`select case when first_at>='2026-11-09 20:39:27+00'::timestamptz then 'recent' else 'earlier' end period,
+ count(*)::integer transactions,
+ count(*) filter(where fill_count>1)::integer multi_fill_transactions,
+ count(*) filter(where price_levels>1)::integer multi_price_transactions,
+ round(100.0*coalesce(sum(notional) filter(where fill_count>1),0)/nullif(sum(notional),0),2)::float8 multi_fill_notional_pct
+ from pi.rn1_maker_historical_transaction_lots
+ where role='maker' group by 1 order by 1`),
+ db.unsafe(`select (select count(*)::integer from pi.rn1_maker_tx_audit_pages) verified_pages,
+ (select coalesce(sum(hashes_matched),0)::integer from pi.rn1_maker_tx_audit_pages) verified_fills,
+ (select count(*)::integer from pi.rn1_maker_historical_fills where transaction_hash is null) missing_hashes`)
  ]);
  return {status:"exploratory",source:"verified_full_archive",cohort:coverage[0]||{},
- regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},bursts,book_overlap:bookOverlap[0]||{},burst_cohorts:burstCohorts,
+ regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},bursts,book_overlap:bookOverlap[0]||{},burst_cohorts:burstCohorts,tx_lots:txLots,burst_hash:burstHash,tx_cohorts:txCohorts,tx_integrity:txIntegrity[0]||{},
  limitations:[
  "Maker describes executed role, not placement/cancellation of a private order.",
  "A burst is same-token, same-side, same-price contiguous execution (<=1 second apart), not a verified parent order.",
+ "A blockchain transaction hash is an execution batch, not a private CLOB order ID; several transactions may fill the same resting order.",
  "The price series is Polymarket indicative history, not archived bid/ask.",
  "Only minutes bounded by observed first and last fills per token are eligible; controls remain selected.",
  "ESPN play timestamps are retrospective and do not establish RN1 information arrival.",
