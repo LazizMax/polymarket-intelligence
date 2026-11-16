@@ -72,6 +72,68 @@ export async function rn1OnchainOrdersReport(db:any){
     ]};
 }
 
+export async function rn1OriginalOrderCalldataReport(db:any){
+ const [progress,cohorts,ladder,age,examples]=await Promise.all([
+ db.unsafe(`select cohort,status,count(*)::integer transactions,
+  coalesce(sum(matched_orders),0)::integer matched_orders
+  from pi.rn1_maker_calldata_sample_txs group by cohort,status order by cohort,status`),
+ db.unsafe(`select sampled_cohort,count(*)::integer orders,count(distinct event_slug)::integer events,
+  round(percentile_cont(.5) within group(order by signed_order_shares)::numeric,2)::float8 signed_shares_median,
+  round(percentile_cont(.5) within group(order by filled_shares)::numeric,2)::float8 filled_shares_median,
+  round(percentile_cont(.5) within group(order by age_to_first_fill_seconds)::numeric,2)::float8 age_median_s,
+  round(percentile_cont(.9) within group(order by age_to_first_fill_seconds)::numeric,2)::float8 age_p90_s,
+  round(percentile_cont(.5) within group(order by observed_fill_ratio)::numeric,4)::float8 fill_ratio_median,
+  round(100.0*avg((observed_fill_ratio>=.999)::int)::numeric,2)::float8 pct_near_full,
+  round(100.0*avg((observed_fill_ratio<.5)::int)::numeric,2)::float8 pct_under_half
+  from pi.rn1_maker_calldata_execution_analysis group by sampled_cohort order by sampled_cohort`),
+ db.unsafe(`with creation_batches as (
+  select a.source_transaction_hash,c.token_id,a.declared_created_ms,
+   count(*) signed_orders,count(distinct round(a.signed_price,3)) levels,
+   min(a.signed_order_shares) min_size,max(a.signed_order_shares) max_size,
+   max(a.signed_price)-min(a.signed_price) price_width
+  from pi.rn1_maker_calldata_execution_analysis a
+   join pi.rn1_maker_calldata_signed_orders c using(order_hash)
+  where a.sampled_cohort='multi_level'
+  group by 1,2,3
+ )
+ select count(*)::integer timestamp_groups,
+   count(*) filter(where levels>=2)::integer simultaneous_price_groups,
+   count(*) filter(where levels>=3)::integer groups_three_or_more_levels,
+   count(*) filter(where levels>=2 and max_size-min_size<=.01)::integer identical_share_ladders,
+   round(percentile_cont(.5) within group(order by price_width) filter(where levels>=2)::numeric,4)::float8 median_price_width
+ from creation_batches`),
+ db.unsafe(`select case when age_to_first_fill_seconds<1 then '<1s'
+   when age_to_first_fill_seconds<5 then '1-5s'
+   when age_to_first_fill_seconds<30 then '5-30s'
+   when age_to_first_fill_seconds<120 then '30s-2min'
+   when age_to_first_fill_seconds<600 then '2-10min' else '10min+' end age_band,
+   sampled_cohort,count(*)::integer orders
+   from pi.rn1_maker_calldata_execution_analysis
+   group by 1,2 order by sampled_cohort,1`),
+ db.unsafe(`select order_hash,event_slug,sampled_cohort,
+  round(signed_order_shares,3)::float8 signed_shares,
+  round(filled_shares,3)::float8 observed_filled_shares,
+  round(100*observed_fill_ratio,2)::float8 observed_fill_pct,
+  round(signed_price,4)::float8 price,
+  round(age_to_first_fill_seconds,2)::float8 signed_to_first_fill_seconds,
+  declared_created_at::text declared_created_at,
+  first_fill_at::text first_fill_at
+  from pi.rn1_maker_calldata_execution_analysis
+  where sampled_cohort='random_tx'
+  order by age_to_first_fill_seconds desc limit 6`)
+ ]);
+ return {source:"cryptographic_eip712_calldata_verified",progress,cohorts,
+  ladder:ladder[0]||{},age_distribution:age,examples,
+  limitations:[
+   "The Order.timestamp is the signer-declared millisecond time; posting to the CLOB and cancellation times are not observable.",
+   "The signed BUY takerAmount is the full requested token quantity; a fill can be partial.",
+   "This is a bounded, transaction-selected sample. The multi-level and persistent cohorts are deliberately oversampled.",
+   "Observed fill ratio is a lower-bound because only archived fills within this window are included.",
+   "Identical signed timestamps and prices in the same Polygon match support batch order creation, but not simultaneous CLOB placement.",
+   "No orderbook queue, fees, counterfactual outcomes or profitability is inferred."
+  ]};
+}
+
 export async function rn1SignedOrderDetail(db:any,body:any){
  const orderHash=String(body?.order_hash||"").toLowerCase();
  if(!/^0x[0-9a-f]{64}$/.test(orderHash))return {error:"Identifiant d'ordre invalide"};
@@ -90,6 +152,12 @@ export async function rn1SignedOrderDetail(db:any,body:any){
    round(shares,6)::float8 shares,round(price*shares,6)::float8 notional
    from pi.rn1_maker_historical_fills where maker_order_hash=$1 and role='maker'
    order by trade_at,maker_order_log_index,transaction_hash limit 150`,[orderHash]);
- return {status:"confirmed_onchain",order:orders[0],fills,limit:150,
+ const original=await db.unsafe(`select declared_created_ms,
+   to_timestamp(declared_created_ms/1000.0)::text declared_created_at,
+   round(signed_buy_amount/1000000,3)::float8 signed_usdc,
+   round(signed_receive_shares/1000000,3)::float8 signed_shares,
+   round(signed_price,6)::float8 signed_price,sampled_cohort
+   from pi.rn1_maker_calldata_signed_orders where order_hash=$1`,[orderHash]);
+ return {status:"confirmed_onchain",order:orders[0],original_order:original[0]||null,fills,limit:150,
    disclaimer:"Execution events only: creation, cancellations, remaining unfilled quantity and order-book queue are unknown."};
 }
