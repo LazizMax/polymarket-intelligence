@@ -137,6 +137,52 @@ export async function rn1EngineForensics(db:any){
    observed_epoch:r.time});
   if(counterexamples.length>=8)break;
  }
+ // Within-market/within-snapshot paired outcome experiment: a cleaner test of a
+ // simple "always buy the underweight side" rule than unconditional fill counts.
+ const grouped=new Map<string,Datum[]>();
+ for(const r of rows){
+  const key=r.market+"|"+r.time;
+  const a=grouped.get(key)||[];a.push(r);grouped.set(key,a);
+ }
+ let paired=0,any=0,both=0,one=0,imbalanced=0,under=0,over=0;
+ const eligible:{event:string;under:number}[]=[];
+ for(const group of grouped.values()){
+  if(group.length!==2||group[0].token===group[1].token)continue;
+  paired++;const [a,b]=group;
+  if(a.y||b.y)any++;
+  if(a.y&&b.y){both++;continue;}
+  if(!a.y&&!b.y)continue;
+  one++;
+  const imbalance=Math.abs(a.own-b.own)/(a.own+b.own+1);
+  if(imbalance<=0.1||a.own===b.own)continue;
+  imbalanced++;
+  const correct=(a.y===1&&a.own<b.own)||(b.y===1&&b.own<a.own);
+  if(correct)under++;else over++;
+  eligible.push({event:a.event,under:correct?1:0});
+ }
+ const byMirrorEvent=new Map<string,{n:number;under:number}>();
+ for(const t of eligible){const q=byMirrorEvent.get(t.event)||{n:0,under:0};q.n++;q.under+=t.under;byMirrorEvent.set(t.event,q);}
+ const me=[...byMirrorEvent.values()];
+ let mirrorCI:null|{low:number;high:number}=null;
+ if(me.length>=5){
+  let seed=0x5B117B;const sample=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
+  const res:number[]=[];
+  for(let k=0;k<300;k++){
+   let n=0,u=0;
+   for(let j=0;j<me.length;j++){const e=me[Math.floor(sample()*me.length)];n+=e.n;u+=e.under;}
+   res.push(u/Math.max(1,n));
+  }
+  res.sort((a,b)=>a-b);
+  mirrorCI={low:res[Math.floor(.025*(res.length-1))],high:res[Math.floor(.975*(res.length-1))]};
+ }
+ const mirror_test={
+  paired_windows:paired,at_least_one_fill:any,both_sides_filled:both,exactly_one_side_filled:one,
+  imbalance_threshold:0.1,one_side_and_imbalanced:imbalanced,
+  filled_underweight:under,filled_overweight:over,
+  underweight_rate:imbalanced?under/imbalanced:null,
+  event_bootstrap_ci:mirrorCI,event_count:me.length,
+  conclusion:"Ce test porte sur les fills observés, pas sur les limites initialement posées. Une préférence faible ne valide pas une règle d'inventaire."
+ };
  const first=Math.min(...rows.map(r=>r.time)),last=Math.max(...rows.map(r=>r.time));
  const seenRecent=rows.filter(r=>r.origin==="rn1_recent"),seenControls=rows.filter(r=>r.origin!=="rn1_recent");
  const group=(d:Datum[])=>({windows:d.length,observed_fills:d.reduce((a,r)=>a+r.y,0)});
@@ -147,7 +193,7 @@ export async function rn1EngineForensics(db:any){
   overview:{eligible_windows:rows.length,observed_fill_windows:rows.reduce((a,r)=>a+r.y,0),
    events:new Set(rows.map(r=>r.event)).size,markets:new Set(rows.map(r=>r.market)).size,
    first_epoch:first,last_epoch:last,source_recent:group(seenRecent),source_controls:group(seenControls)},
-  folds:split,scores,inventory_gain:inventoryGain,inventory_bands,counterexamples,
+  folds:split,scores,inventory_gain:inventoryGain,inventory_bands,mirror_test,counterexamples,
   caveats:[
    "Prévision d'une EXÉCUTION Maker inférée visible, pas du placement/annulation d'un ordre privé.",
    "Fenêtres sans fill étiquetées 'aucun fill rapproché observé' : l'archive des fills live est partielle; certaines négatives sont incertaines.",
