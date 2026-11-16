@@ -448,6 +448,53 @@ async function renderRN1Engine(){
   b.append(node("p",item[2],"foot"));state.append(b);
  }
  status.append(state);target.append(status);
+ // Independent bookmaker reference: only data that our system really received
+ // before the Polymarket quote can eventually enter an oracle hypothesis.
+ const oracleCard=node("section",null,"card");
+ oracleCard.append(node("h2","Oracle externe · collecte & preuve temporelle"));
+ let oracle=null;
+ try{oracle=await api("rn1_oracle_evidence")}catch(e){
+  oracleCard.append(node("p","État du pipeline oracle indisponible : "+String(e?.message||e),"foot"));
+ }
+ if(oracle){
+  const o=oracle.collector||{},m=oracle.matching||{};
+  const stateLabel={
+   missing_api_key:"Clé fournisseur manquante — collecte inactive",
+   ready:"Relevés reçus — tests de synchronisation en cours",
+   collecting:"Collecte externe en cours",
+   paused_cap:"Stockage externe plafonné",
+   rate_limited:"Quota journalier épuisé",
+   provider_error:"Erreur du fournisseur (aucune cote inventée)"
+  }[o.status]||"En attente de données";
+  oracleCard.append(node("p",stateLabel,"foot"));
+  const stats=node("div",null,"metrics");
+  stats.append(
+   metric("Cotes de bookmaker enregistrées",fmt(o.observations||0)),
+   metric("Événements indépendants",fmt(o.distinct_events||0)),
+   metric("Événements recoupés dans le temps",fmt(m.events_with_valid_temporal_alignment||0)),
+   metric("Variations de cote ≥0,5 point",fmt(o.observed_price_transitions||0))
+  );
+  oracleCard.append(stats);
+  oracleCard.append(node("p","Comparaisons valables sur l'heure de réception : "+fmt(m.eligible_quote_windows||0)+" fenêtres Polymarket moneyline, dont "+fmt(m.observed_maker_fill_windows||0)+" avec au moins un fill Maker inféré rapproché. Ce n'est PAS encore un test de l'oracle.","foot"));
+  if(o.last_success_epoch){
+   oracleCard.append(node("p","Dernier relevé : "+new Date(Number(o.last_success_epoch)*1000).toISOString().slice(0,16).replace("T"," ")+" UTC · Appels API ce jour : "+fmt(o.calls_today||0)+"/24 · Limite de stockage : 5 000 observations.","foot"));
+  }
+  if(o.status==="missing_api_key"){
+   oracleCard.append(banner("Le moteur externe est installé mais ne fait AUCUNE requête sans clé. Sur le projet Supabase, configurer le secret RN1_ODDS_API_KEY avec une clé personnelle du fournisseur TheOddsAPI. Ne pas saisir la clé ici ni dans GitHub. La formule gratuite est limitée à la NBA moneyline et ne fournit pas d'archives historiques."));
+   const link=node("a","Voir l'API de cotes et son offre gratuite");link.href="https://theoddsapi.com/quickstart.html";link.target="_blank";link.rel="noopener noreferrer";oracleCard.append(link);
+  }
+  const info=node("p","M1 (oracle) et M2 (hybride) demeurent NON IDENTIFIABLES : une simple différence de probabilité ne démontre pas la cause de ses décisions. Il faut des cotes reçues avant le trade, un alignement contractuel et des tests sur événements nouveaux.","foot");
+  oracleCard.append(info);
+  if((oracle.latest||[]).length){
+   const recent=node("div");recent.append(node("h3","Dernières probabilités indépendantes observées"));
+   for(const r of oracle.latest.slice(0,8)){
+    const line=r.event_slug+" · "+r.bookmaker+" · "+new Date(Number(r.received_epoch)*1000).toISOString().slice(0,16).replace("T"," ")+" UTC · "+r.away_team+" "+fmt(100*Number(r.away_fair_probability),1)+" % / "+r.home_team+" "+fmt(100*Number(r.home_fair_probability),1)+" %";
+    recent.append(node("p",line,"foot"));
+   }
+   oracleCard.append(recent);
+  }
+ }
+ target.append(oracleCard);
  const bm=node("section",null,"card");
  bm.append(node("h2","Quel mécanisme prédit le mieux les exécutions observées ?"));
  bm.append(node("p","Validation croisée en 5 groupes d'événements ; chaque match entier reste hors de l'apprentissage du modèle qui le prédit. Probabilité d'au moins un fill Maker rapproché dans les 60 secondes.","foot"));
