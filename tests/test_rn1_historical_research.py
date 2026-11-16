@@ -22,7 +22,8 @@ def test_coverage_and_truthful_data_limits():
     assert "Taker-only" in EDGE or "Taker-only" in REPORT
 
 def test_no_invented_oracle_evidence():
-    assert "pas un oracle bookmaker indépendant" in UI
+    assert "un oracle bookmaker indépendant" in UI
+    assert "ne doit jamais être présentée" in UI
     assert "Le produit historique contient" not in UI
     assert "The Odds API" in REPORT
     assert "holdout" in REPORT.lower() or "événement" in REPORT
