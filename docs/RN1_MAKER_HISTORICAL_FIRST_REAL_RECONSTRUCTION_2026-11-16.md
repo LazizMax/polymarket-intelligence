@@ -28,6 +28,15 @@ Agrégation à poids égal **par événement** (minimum 20 minutes dans les deux
 
 **Interprétation prudente :** l'exécution Maker plus fréquente après une variation de prix peut être un effet de la volatilité et du passage d'ordres déjà posés, sans aucune réaction de placement du bot. Les labels sont des **fills**, pas des ordres créés/annulés, et les données de carnet ne prouvent pas un ordre originel. Les minutes sans fill sont des contrôles d'exécution, pas des contrôles prouvant l'absence d'ordres. Ces taux ne sont pas des prédictions validées, des causalités, une EV ou un ROI.
 
+## Premier benchmark hors événement (5 folds déterministes)
+Sur les **18 213 minutes** avec momentum 5 minutes valide, dont **442 positives** : séparation par hash du `event_slug` (un même match ne peut pas figurer à l'entraînement et en validation d'un même fold). Un estimateur des taux `volatile / quiet` avec lissage de Laplace est comparé à un taux global constant, tous deux entraînés uniquement sur les autres folds.
+
+- **Log-loss constante : 0,114274**
+- **Log-loss volatilité absolue : 0,113611**
+- **Gain = +0,000663** seulement.
+
+Ce benchmark est un **modèle de probabilité de fill**, PAS une reconstruction des ordres affichés. Il manque bootstrap par match, test temporel purgé, spreads, inventaires, modèle de temps-de-fill, et contrôle des tokens cotés sous-échantillonnés. Ne pas l'interpréter comme une EV de trading.
+
 ## Prochain travail bloquant
 1. Comparer événement-holdout et test chronologique purgé, avec fréquences des tokens, phase de match, période, comportement d'inventaire et clustering intra-événement.
 2. Étendre par **cohortes ciblées** aux pages historiques pertinentes, sans matérialiser les 2 millions de fills dans Postgres : base de 630 Mo avant ce premier lot, besoin de garder la marge de stockage.
