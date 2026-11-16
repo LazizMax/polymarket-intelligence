@@ -2145,6 +2145,190 @@ async function rn1SizingMarketValidation(){
  return {truncated,...rn1CrossMarketFit(truncated?rows.slice(0,2500):rows)};
 }
 
+
+/** Read-only RN1 exposure evidence over the most recent 2,000 COMPLETED 8-market probe runs.
+ * Never identify this rotating selection with all wallet holdings or available bankroll.
+ * All YES/NO amounts are cost basis of CURRENT positions, not account cash or market value. */
+async function rn1ExposureForensics(){
+ const base=String.raw\`
+with recent_runs as (
+ select id,received_at,position_observed_at,positions,quotes
+ from pi.rn1_quote_probe_runs
+ where position_status='complete'
+   and position_observed_at is not null and position_observed_at<=received_at
+ order by received_at desc,id desc limit 2000
+),
+p as (
+ select r.id run_id,extract(epoch from r.received_at)::float8 observed_epoch,
+  x->>'market_key' market_key,
+  max((x->>'current_size')::numeric)filter(where x->>'outcome_index'='0')::float8 shares_0,
+  max((x->>'current_size')::numeric)filter(where x->>'outcome_index'='1')::float8 shares_1,
+  sum((x->>'entry_cost_usdc')::numeric)::float8 entry_cost,
+  count(*)::int token_rows,
+  count(*)filter(where x->>'returned_by_api'='true')::int api_tokens
+ from recent_runs r cross join lateral jsonb_array_elements(r.positions) x
+ group by r.id,r.received_at,x->>'market_key'
+),
+q as(
+ select r.id run_id,x->>'market_key' market_key,
+  max(x->>'event_slug') event_slug,
+  max(x->>'market_type') market_type
+ from recent_runs r cross join lateral jsonb_array_elements(r.quotes)x
+ group by r.id,x->>'market_key'
+),
+m as(
+ select p.*,q.event_slug,q.market_type
+ from p left join q using(run_id,market_key)
+ where token_rows=2 and shares_0>=0 and shares_1>=0 and entry_cost>=0
+)
+\`;
+ const overviewQuery=base+String.raw\`
+select count(*)::int snapshots,count(distinct run_id)::int runs,
+ count(distinct market_key)::int markets,count(distinct event_slug)::int events,
+ count(*)filter(where shares_0>0 and shares_1>0)::int both_active,
+ count(*)filter(where (shares_0>0)<>(shares_1>0))::int one_active,
+ count(*)filter(where shares_0=0 and shares_1=0)::int neither_active,
+ count(*)filter(where api_tokens=2)::int both_api_confirmed,
+ count(*)filter(where api_tokens=1)::int one_api_confirmed,
+ count(*)filter(where api_tokens=0)::int none_api_confirmed,
+ count(*)filter(where event_slug is null)::int without_event,
+ percentile_cont(.5)within group(order by entry_cost)::float8 median_market_cost,
+ percentile_cont(.9)within group(order by entry_cost)::float8 p90_market_cost,
+ percentile_cont(.99)within group(order by entry_cost)::float8 p99_market_cost,
+ max(entry_cost)::float8 peak_market_cost,
+ percentile_cont(.5)within group(order by
+   abs(shares_0-shares_1)/nullif(shares_0+shares_1,0))::float8 median_directional_share_fraction,
+ min(observed_epoch)::float8 first_epoch,max(observed_epoch)::float8 last_epoch
+from m
+\`;
+ const basketQuery=base+String.raw\`
+,baskets as(select run_id,sum(entry_cost) selected_cost,count(*)::int markets from m group by run_id)
+select count(*)::int runs,min(markets)::int minimum_markets,
+ max(markets)::int maximum_markets,
+ percentile_cont(.5)within group(order by selected_cost)::float8 median_selected_cost,
+ percentile_cont(.9)within group(order by selected_cost)::float8 p90_selected_cost,
+ max(selected_cost)::float8 max_selected_cost
+from baskets
+\`;
+ const eventQuery=base+String.raw\`
+,ev as(select run_id,max(observed_epoch) epoch,event_slug,
+ count(*)::int selected_markets,sum(entry_cost)::float8 event_selected_cost
+ from m where event_slug is not null group by run_id,event_slug)
+select event_slug,count(*)::int snapshots,
+ max(selected_markets)::int max_selected_markets,
+ max(event_selected_cost)::float8 observed_peak_cost,
+ (array_agg(event_selected_cost order by epoch desc))[1]::float8 latest_selected_cost,
+ max(epoch)::float8 last_epoch
+from ev group by event_slug
+order by observed_peak_cost desc limit 14
+\`;
+ const eventOverviewQuery=base+String.raw\`
+,ev as(select run_id,event_slug,count(*)::int selected_markets,
+ sum(entry_cost)::float8 event_selected_cost
+ from m where event_slug is not null group by run_id,event_slug)
+select count(*)::int event_snapshots,
+ count(*)filter(where selected_markets>=2)::int multi_market_event_snapshots,
+ count(*)filter(where selected_markets>=3)::int three_market_event_snapshots,
+ max(selected_markets)::int max_markets_same_event,
+ percentile_cont(.5)within group(order by event_selected_cost)::float8 median_selected_event_cost,
+ percentile_cont(.9)within group(order by event_selected_cost)::float8 p90_selected_event_cost,
+ max(event_selected_cost)::float8 peak_selected_event_cost
+from ev
+\`;
+ const marketQuery=base+String.raw\`
+select market_key,max(event_slug)event_slug,max(market_type)market_type,
+ count(*)::int observations,
+ max(entry_cost)::float8 observed_peak_cost,
+ (array_agg(entry_cost order by observed_epoch desc))[1]::float8 latest_cost,
+ (array_agg(shares_0 order by observed_epoch desc))[1]::float8 latest_shares_0,
+ (array_agg(shares_1 order by observed_epoch desc))[1]::float8 latest_shares_1,
+ (array_agg(api_tokens order by observed_epoch desc))[1]::int latest_api_tokens,
+ max(observed_epoch)::float8 last_epoch
+from m group by market_key
+order by observed_peak_cost desc limit 15
+\`;
+ const timelineQuery=base+String.raw\`
+,most_observed as(select market_key from m group by market_key order by max(entry_cost)desc limit 15),
+numbered as(
+ select m.market_key,m.observed_epoch,m.entry_cost,m.shares_0,m.shares_1,m.api_tokens,
+ row_number()over(partition by m.market_key order by m.observed_epoch desc,m.run_id desc) rn
+ from m join most_observed t using(market_key)
+)
+select market_key,observed_epoch,entry_cost,shares_0,shares_1,api_tokens
+from numbered where rn<=28 order by market_key,observed_epoch
+\`;
+ const transitionQuery=base+String.raw\`
+,sequenced as (
+ select m.*,
+ lag(observed_epoch)over(partition by market_key order by observed_epoch,run_id) prev_at,
+ lag(shares_0)over(partition by market_key order by observed_epoch,run_id) prev_0,
+ lag(shares_1)over(partition by market_key order by observed_epoch,run_id) prev_1,
+ lag(entry_cost)over(partition by market_key order by observed_epoch,run_id) prev_cost
+ from m
+),close as(
+ select *,
+ shares_0-prev_0 d0,shares_1-prev_1 d1,entry_cost-prev_cost dcost,
+ abs(shares_0-shares_1)-abs(prev_0-prev_1) dgap,
+ least(shares_0,shares_1)-least(prev_0,prev_1) dmatched
+ from sequenced
+ where prev_at is not null and observed_epoch-prev_at>=0
+ and observed_epoch-prev_at<=180
+),checked as(
+ select c.*,
+ (abs(d0)+abs(d1)>.0001) changed,
+ coalesce(t.matched,0) matched_fills,
+ coalesce(t.maker,0) maker_fills
+ from close c left join lateral(
+ select count(*)::int matched,
+ count(*)filter(where f.role='maker_inferred')::int maker
+ from pi.rn1_quote_probe_fills f
+ where f.market_key=c.market_key
+ and extract(epoch from f.trade_at)>c.prev_at
+ and extract(epoch from f.trade_at)<=c.observed_epoch
+ ) t on true
+)
+select count(*)::int consecutive_pairs,
+ count(*)filter(where changed)::int changed,
+ count(*)filter(where changed and dcost>.0001)::int cost_increase,
+ count(*)filter(where changed and dcost<-.0001)::int cost_decrease,
+ count(*)filter(where changed and d0>.0001 and d1>.0001)::int both_increase,
+ count(*)filter(where changed and (
+    (d0>.0001 and abs(d1)<=.0001)or(d1>.0001 and abs(d0)<=.0001)))::int one_side_increase,
+ count(*)filter(where changed and(d0<-.0001 or d1<-.0001))::int any_share_reduction,
+ count(*)filter(where changed and dmatched>.0001)::int more_hedged_shares,
+ count(*)filter(where changed and dgap<-.0001)::int absolute_gap_reduced,
+ count(*)filter(where changed and dgap>.0001)::int absolute_gap_increased,
+ count(*)filter(where changed and abs(dgap)<=.0001)::int absolute_gap_unchanged,
+ count(*)filter(where changed and matched_fills>0)::int changed_with_matched_fills,
+ count(*)filter(where changed and matched_fills=0)::int changed_without_matched_fills,
+ count(*)filter(where changed and dgap<-.0001 and matched_fills>0)::int matched_gap_reduced,
+ count(*)filter(where changed and dgap>.0001 and matched_fills>0)::int matched_gap_increased,
+ sum(matched_fills)::int matched_fills_between_pairs
+from checked
+\`;
+ const [overview,basket,eventStats,events,markets,timeline,transitions]=await Promise.all([
+  db.unsafe(overviewQuery),db.unsafe(basketQuery),db.unsafe(eventOverviewQuery),
+  db.unsafe(eventQuery),db.unsafe(marketQuery),db.unsafe(timelineQuery),db.unsafe(transitionQuery)
+ ]);
+ return {
+  overview:overview[0]||{},basket:basket[0]||{},event_overview:eventStats[0]||{},
+  events,markets,market_timeline:timeline,transitions:transitions[0]||{},
+  definitions:{
+   limit_runs:2000,
+   basis:"Only the eight selected two-outcome markets in each COMPLETE probe. Market selection rotates; the basket total is NOT all-wallet exposure, equity, spare cash, capital at risk or leverage.",
+   position:"The open-position API provides current_size and an attributed entry cost for each outcome. Rows absent from that API are imputed as zero and flagged returned_by_api=false. Such zeros can be affected by API filtering; do NOT treat them as independently confirmed zero holdings.",
+   selected_market:"A market snapshot groups both outcome tokens. Entry cost measures attributed cost of the currently open shares, not liquidation proceeds, cash at risk, or cumulative historical buys.",
+   event:"Event slugs from observed CLOB quote snapshots group distinct sampled moneyline/spread/total markets for the same sporting event. Summing their entry costs is a SELECTED-event snapshot, not full event exposure. Cross-market outcomes can be correlated.",
+   imbalance:"Absolute directional share gap = abs(shares0-shares1). Share imbalance fraction = abs(shares0-shares1)/(shares0+shares1), when denominator >0. It is NOT dollar risk or VaR.",
+   transitions:"Compare consecutive observations of exactly the SAME market no more than 180 seconds apart, never different markets. More hedged shares = increase in min(shares0,shares1). A reduced gap is not proof of deliberate hedge ordering.",
+   link_to_fills:"Observed matching quote-probe fills between snapshots are incomplete. No match does not imply that there was no trade; even a match does not identify the unique cause of the position change.",
+   peaks:"Every peak shown is MAXIMUM OBSERVED ENTRY COST on a sampled market/event across the available probe window. It is NOT RN1's position limit, target allocation or global risk cap.",
+   pnl:"No net ROI, profit, margin, unrealised mark-to-market, settlement guarantee or trade recommendation is inferred from selected open-position costs.",
+   live:"The analysis reruns from persistent probe snapshots upon request. Historical 756k Maker/Taker archives are not reimported; the position sample is separate and selective."
+  }
+ };
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -2181,6 +2365,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_sizing_forensics")return send(await rn1SizingForensics());
   if(body?.action==="rn1_sizing_hypotheses")return send(await rn1SizingHypotheses());
   if(body?.action==="rn1_sizing_market_validation")return send(await rn1SizingMarketValidation());
+  if(body?.action==="rn1_exposure_forensics")return send(await rn1ExposureForensics());
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
