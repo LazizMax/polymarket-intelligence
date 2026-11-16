@@ -269,10 +269,37 @@ async function scanMakerLogChunk(){
   return {status:"error",error:msg,block:Number(first)};
  }
 }
+async function inspectAmbiguousTransactions(){
+ const rows=await db.unsafe(`select transaction_hash,source_fills,maker_logs,note
+   from pi.rn1_maker_onchain_tx_audit where status='ambiguous'
+   order by verified_at limit 8`);
+ const results:any[]=[];
+ for(const audit of rows){
+  const fills=await db.unsafe(`select fingerprint,token_id,price::text price,shares::text shares
+    from pi.rn1_maker_historical_fills where transaction_hash=$1 and role='maker'
+    order by fingerprint`,[audit.transaction_hash]);
+  try{
+   const r=await receipt(audit.transaction_hash);
+   const events=parseReceipt(r.result,100).order_events.filter((e:any)=>e.maker===wallet && e.v2 && e.side===0);
+   const edgeSets=fills.map((f:any)=>({
+     fingerprint:f.fingerprint,price:f.price,shares:f.shares,
+     candidates:events.filter((e:any)=>e.token_id===f.token_id
+       &&Math.abs(Number(f.price)-Number(e.price))<=0.000002
+       &&Math.abs(Number(f.shares)-Number(e.shares))<=Math.max(0.000002,Number(f.shares)*1e-8))
+       .map((e:any)=>({order_hash:e.order_hash,log_index:e.log_index}))
+   }));
+   results.push({transaction_hash:audit.transaction_hash,source_fills:fills.length,
+      events:events.map((e:any)=>({order_hash:e.order_hash,token_id:e.token_id,price:e.price,shares:e.shares,log_index:e.log_index})),
+      source_candidates:edgeSets});
+  }catch(e){results.push({transaction_hash:audit.transaction_hash,error:String(e).slice(0,140)})}
+ }
+ return {ambiguous:results};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
+ if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
  if(body.action==="rn1_chain_scan_tick"){
    const count=Math.max(1,Math.min(3,Number(body.chunks)||1));
    const out=[];for(let i=0;i<count;i++){const x=await scanMakerLogChunk();out.push(x);if(x.status!=="running")break}
