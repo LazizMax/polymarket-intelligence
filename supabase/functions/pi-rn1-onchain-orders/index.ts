@@ -1,6 +1,7 @@
 // Read-only Polygon OrderFilled receipt probe. Scheduler-authenticated, bounded to
 // archived RN1 transaction hashes. No private wallet credentials or paid RPC.
 import postgres from "npm:postgres@3.4.3";
+import { Interface } from "npm:ethers@6.13.5";
 const dbUrl=Deno.env.get("SUPABASE_DB_URL")||"";
 if(!dbUrl)throw Error("Missing DB URL");
 const db=postgres(dbUrl,{max:1,prepare:false,connect_timeout:8});
@@ -346,12 +347,51 @@ async function preserveAmbiguousOrderEvents(){
  }
  return {results:outcomes};
 }
+const matchAbi=new Interface(["function matchOrders(bytes32 conditionId,(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder,bytes signature) takerOrder,(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder,bytes signature)[] makerOrders,uint256 takerFillAmount,uint256[] makerFillAmounts,uint256 takerFeeAmount,uint256[] makerFeeAmounts)"]);
+async function decodeSignedMakerOrderProbe(){
+ const txs=await db.unsafe(`select transaction_hash,verified_fills,first_fill_at
+    from (select transaction_hash,count(*) verified_fills,min(trade_at) first_fill_at
+      from pi.rn1_maker_historical_fills where role='maker' and maker_order_hash is not null
+      group by transaction_hash) t
+    order by verified_fills desc,first_fill_at desc limit 4`);
+ const results:any[]=[];
+ for(const t of txs){
+  let r:any=null,provider="";
+  for(const endpoint of rpcEndpoints){
+   try{
+    const reply=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_getTransactionByHash",params:[t.transaction_hash]}),
+      signal:AbortSignal.timeout(12000)});
+    if(!reply.ok)continue;const v=await reply.json();
+    if(v.result){r=v.result;provider=endpoint;break}
+   }catch{}
+  }
+  if(!r){results.push({transaction_hash:t.transaction_hash,status:"rpc_unavailable"});continue}
+  const raw=String(r.input||r.data||"");
+  let parsed:any=null,error="";
+  try{parsed=matchAbi.parseTransaction({data:raw})}catch(e){error=String(e).slice(0,140)}
+  const maker=parsed?.args?.makerOrders||[];
+  const onlyRn1=[...maker].filter((o:any)=>String(o.maker).toLowerCase()===wallet);
+  results.push({transaction_hash:t.transaction_hash,rpc:provider,to:r.to,
+    selector:raw.slice(0,10),calldata_bytes:raw.length/2-1,
+    decoded:!!parsed,decoding_error:error,
+    maker_orders_all:maker.length,maker_orders_rn1:onlyRn1.length,
+    samples:onlyRn1.slice(0,6).map((o:any)=>({
+      salt:o.salt.toString(),maker:String(o.maker).toLowerCase(),token_id:o.tokenId.toString(),
+      maker_amount:o.makerAmount.toString(),taker_amount:o.takerAmount.toString(),
+      timestamp:o.timestamp.toString(),side:Number(o.side),signature_type:Number(o.signatureType),
+      price:Number(o.makerAmount)/Number(o.takerAmount),signature_bytes:String(o.signature).length/2-1
+    }))});
+ }
+ return {results};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
  if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_signed_order_calldata_probe"){try{return response(await decodeSignedMakerOrderProbe())}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_chain_scan_tick"){
    const count=Math.max(1,Math.min(3,Number(body.chunks)||1));
    const out=[];for(let i=0;i<count;i++){const x=await scanMakerLogChunk();out.push(x);if(x.status!=="running")break}
