@@ -1,4 +1,4 @@
-const SQL = "WITH rr AS (\n SELECT id,received_at,position_observed_at,positions,quotes\n FROM pi.rn1_quote_probe_runs\n WHERE position_status='complete' AND position_observed_at IS NOT NULL\n   AND position_observed_at<=received_at\n ORDER BY received_at DESC,id DESC LIMIT 1400\n),\nq AS (\n SELECT r.id run_id,r.received_at,\n  x->>'market_key' market_key,x->>'asset_id' token_id,\n  x->>'event_slug' event_slug,x->>'origin' origin,\n  (x->>'mid')::float8 mid,(x->>'spread')::float8 spread,\n  (x->>'bid_size')::float8 bid_size,(x->>'ask_size')::float8 ask_size,\n  to_timestamp((x->>'book_at')::float8/1000) book_at\n FROM rr r CROSS JOIN LATERAL jsonb_array_elements(r.quotes) x\n WHERE x->>'book_valid'='true'\n   AND x->>'mid' IS NOT NULL AND x->>'bid_size' IS NOT NULL AND x->>'ask_size' IS NOT NULL\n   AND x->>'spread' IS NOT NULL AND x->>'book_at' IS NOT NULL\n),\np AS (\n SELECT r.id run_id,x->>'market_key' market_key,x->>'token_id' token_id,\n  (x->>'current_size')::float8 shares,\n  coalesce((x->>'entry_cost_usdc')::float8,0) cost,\n  (x->>'returned_by_api')::boolean returned\n FROM rr r CROSS JOIN LATERAL jsonb_array_elements(r.positions) x\n WHERE x->>'current_size' IS NOT NULL AND x->>'returned_by_api' IS NOT NULL\n),\neligible AS (\n SELECT q.*, own.shares own_shares,other.shares other_shares,\n   own.cost+other.cost market_cost\n FROM q JOIN p own ON own.run_id=q.run_id AND own.market_key=q.market_key AND own.token_id=q.token_id\n JOIN p other ON other.run_id=q.run_id AND other.market_key=q.market_key AND other.token_id<>q.token_id\n WHERE own.returned AND other.returned AND q.book_at<=q.received_at\n   AND q.mid BETWEEN 0.005 AND 0.995\n   AND q.spread>=0 AND q.spread<=0.5\n   AND q.bid_size>=0 AND q.ask_size>=0\n   AND q.event_slug IS NOT NULL\n),\ntime_features AS (\n SELECT *,\n lag(mid) over(partition by market_key,token_id order by received_at,run_id) prev_mid,\n lag(received_at) over(partition by market_key,token_id order by received_at,run_id) prev_received\n FROM eligible\n)\nSELECT event_slug,market_key,token_id,origin,\n extract(epoch from received_at)::float8 observed_epoch,\n mid,spread,bid_size,ask_size,own_shares,other_shares,market_cost,\n extract(epoch from (received_at-book_at))::float8 book_age_seconds,\n CASE WHEN prev_received IS NOT NULL AND received_at-prev_received<=interval '180 seconds'\n  THEN mid-prev_mid ELSE 0 END quote_momentum,\n CASE WHEN EXISTS(\n SELECT 1 FROM pi.rn1_quote_probe_fills f\n WHERE f.market_key=t.market_key AND f.token_id=t.token_id\n   AND f.role='maker_inferred' AND f.side='BUY'\n   AND f.trade_at>t.received_at AND f.trade_at<=t.received_at+interval '60 seconds'\n ) THEN 1 ELSE 0 END observed_next_fill\nFROM time_features t\nORDER BY observed_epoch,market_key,token_id";
+const SQL = "WITH rr AS (\n SELECT id,received_at,position_observed_at,positions,quotes\n FROM pi.rn1_quote_probe_runs\n WHERE position_status='complete' AND position_observed_at IS NOT NULL\n   AND position_observed_at<=received_at\n ORDER BY received_at DESC,id DESC LIMIT 1400\n),\nq AS (\n SELECT r.id run_id,r.received_at,\n  x->>'market_key' market_key,x->>'asset_id' token_id,\n  x->>'event_slug' event_slug,x->>'origin' origin,\n  (x->>'mid')::float8 mid,(x->>'spread')::float8 spread,\n  (x->>'bid')::float8 bid,(x->>'ask')::float8 ask,\n  (x->>'bid_size')::float8 bid_size,(x->>'ask_size')::float8 ask_size,\n  to_timestamp((x->>'book_at')::float8/1000) book_at\n FROM rr r CROSS JOIN LATERAL jsonb_array_elements(r.quotes) x\n WHERE x->>'book_valid'='true'\n   AND x->>'mid' IS NOT NULL AND x->>'bid_size' IS NOT NULL AND x->>'ask_size' IS NOT NULL\n   AND x->>'spread' IS NOT NULL AND x->>'bid' IS NOT NULL AND x->>'ask' IS NOT NULL AND x->>'book_at' IS NOT NULL\n),\np AS (\n SELECT r.id run_id,x->>'market_key' market_key,x->>'token_id' token_id,\n  (x->>'current_size')::float8 shares,\n  coalesce((x->>'entry_cost_usdc')::float8,0) cost,\n  (x->>'returned_by_api')::boolean returned\n FROM rr r CROSS JOIN LATERAL jsonb_array_elements(r.positions) x\n WHERE x->>'current_size' IS NOT NULL AND x->>'returned_by_api' IS NOT NULL\n),\neligible AS (\n SELECT q.*, own.shares own_shares,other.shares other_shares,\n   own.cost+other.cost market_cost,\n   qo.mid opp_mid,qo.spread opp_spread,\n   q.bid+qo.bid paired_bid_sum,q.ask+qo.ask paired_ask_sum,\n   qo.bid_size opp_bid_size,qo.ask_size opp_ask_size\n FROM q JOIN q qo ON qo.run_id=q.run_id AND qo.market_key=q.market_key AND qo.token_id<>q.token_id AND qo.book_at<=q.received_at\n JOIN p own ON own.run_id=q.run_id AND own.market_key=q.market_key AND own.token_id=q.token_id\n JOIN p other ON other.run_id=q.run_id AND other.market_key=q.market_key AND other.token_id<>q.token_id\n WHERE own.returned AND other.returned AND q.book_at<=q.received_at\n   AND q.mid BETWEEN 0.005 AND 0.995\n   AND q.spread>=0 AND q.spread<=0.5\n   AND q.bid_size>=0 AND q.ask_size>=0\n   AND q.event_slug IS NOT NULL\n),\ntime_features AS (\n SELECT *,\n lag(mid) over(partition by market_key,token_id order by received_at,run_id) prev_mid,\n lag(received_at) over(partition by market_key,token_id order by received_at,run_id) prev_received\n FROM eligible\n)\nSELECT event_slug,market_key,token_id,origin,\n extract(epoch from received_at)::float8 observed_epoch,\n mid,spread,bid_size,ask_size,own_shares,other_shares,market_cost,\n opp_mid,opp_spread,paired_bid_sum,paired_ask_sum,opp_bid_size,opp_ask_size,\n extract(epoch from (received_at-book_at))::float8 book_age_seconds,\n CASE WHEN prev_received IS NOT NULL AND received_at-prev_received<=interval '180 seconds'\n  THEN mid-prev_mid ELSE 0 END quote_momentum,\n CASE WHEN EXISTS(\n SELECT 1 FROM pi.rn1_quote_probe_fills f\n WHERE f.market_key=t.market_key AND f.token_id=t.token_id\n   AND f.role='maker_inferred' AND f.side='BUY'\n   AND f.trade_at>t.received_at AND f.trade_at<=t.received_at+interval '60 seconds'\n ) THEN 1 ELSE 0 END observed_next_fill\nFROM time_features t\nORDER BY observed_epoch,market_key,token_id";
 // RN1 black-box identification. Read-only, public fills and public books only.
 // This is a model of OBSERVED future matched maker fills, not private order submission.
 // All features precede the outcome window. Event-scoped cross-validation prevents
@@ -11,7 +11,9 @@ const MODELS: Model[] = [
  {id:"base",label:"Taux constant",columns:[]},
  {id:"selection",label:"Univers suivi / témoin",columns:[0]},
  {id:"micro",label:"Carnet et variations Polymarket",columns:[0,1,2,3,4,5,6,7]},
- {id:"inventory",label:"Carnet + inventaire YES/NO",columns:[0,1,2,3,4,5,6,7,8,9,10,11]}
+ {id:"inventory",label:"Carnet + inventaire YES/NO",columns:[0,1,2,3,4,5,6,7,8,9,10,11]},
+ {id:"pair",label:"Carnet + deux issues YES/NO",columns:[0,1,2,3,4,5,6,7,12,13,14,15,16,17]},
+ {id:"pair_inventory",label:"Deux issues + inventaire",columns:[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]}
 ];
 function num(v:unknown):number{const n=Number(v);return Number.isFinite(n)?n:0;}
 function sigmoid(z:number):number{const a=Math.max(-25,Math.min(25,z));return 1/(1+Math.exp(-a));}
@@ -20,6 +22,7 @@ function features(r:Raw):number[]{
  const bid=Math.max(0,num(r.bid_size)),ask=Math.max(0,num(r.ask_size));
  const own=Math.max(0,num(r.own_shares)),opp=Math.max(0,num(r.other_shares));
  const cost=Math.max(0,num(r.market_cost));
+ const oppBid=Math.max(0,num(r.opp_bid_size)),oppAsk=Math.max(0,num(r.opp_ask_size));
  return [
   r.origin==="rn1_recent"?1:0,
   2*(num(r.mid)-0.5),
@@ -32,7 +35,13 @@ function features(r:Raw):number[]{
   Math.log1p(cost),
   (own-opp)/(own+opp+1),
   Math.log1p(own),
-  Math.log1p(opp)
+  Math.log1p(opp),
+  2*(num(r.opp_mid)-0.5),
+  Math.log1p(Math.max(0,num(r.opp_spread))/0.01),
+  10*(1-num(r.paired_bid_sum)),
+  10*(num(r.paired_ask_sum)-1),
+  Math.log1p(oppBid),
+  (oppBid-oppAsk)/(oppBid+oppAsk+1)
  ];
 }
 function fit(data:Datum[],ids:number[],cols:number[]):(r:Datum)=>number{
@@ -183,23 +192,67 @@ export async function rn1EngineForensics(db:any){
   event_bootstrap_ci:mirrorCI,event_count:me.length,
   conclusion:"Ce test porte sur les fills observés, pas sur les limites initialement posées. Une préférence faible ne valide pas une règle d'inventaire."
  };
+ // Strict time-forward test. No event in both subsets. Events spanning
+ // the cutoff are EMBARGOED, not put into either train or test.
+ const eventTimes=new Map<string,{first:number;last:number}>();
+ for(const r of rows){
+  const x=eventTimes.get(r.event)||{first:r.time,last:r.time};
+  x.first=Math.min(x.first,r.time);x.last=Math.max(x.last,r.time);
+  eventTimes.set(r.event,x);
+ }
+ const starts=[...eventTimes.values()].map(e=>e.first).sort((a,b)=>a-b);
+ const timeCutoff=starts[Math.min(starts.length-1,Math.floor(.7*starts.length))];
+ const chronologicalTrain:number[]=[],chronologicalTest:number[]=[];
+ const embargoedEvents=new Set<string>();
+ for(let i=0;i<rows.length;i++){
+  const e=eventTimes.get(rows[i].event)!;
+  if(e.last<timeCutoff)chronologicalTrain.push(i);
+  else if(e.first>=timeCutoff)chronologicalTest.push(i);
+  else embargoedEvents.add(rows[i].event);
+ }
+ const chronologicalScores:{id:string;label:string;log_loss:number;brier:number;average_precision:number|null}[]=[];
+ if(chronologicalTrain.length>=100 && chronologicalTest.length>=100){
+  for(const m of MODELS){
+   const prediction=fit(rows,chronologicalTrain,m.columns);
+   const testRows=chronologicalTest.map(i=>rows[i]);
+   const testPredictions=testRows.map(prediction);
+   chronologicalScores.push({id:m.id,label:m.label,...score(testRows,testPredictions)});
+  }
+ }
+ const chronological_holdout={
+  cutoff_epoch:timeCutoff,train_windows:chronologicalTrain.length,
+  train_positives:chronologicalTrain.reduce((a,i)=>a+rows[i].y,0),
+  train_events:new Set(chronologicalTrain.map(i=>rows[i].event)).size,
+  test_windows:chronologicalTest.length,
+  test_positives:chronologicalTest.reduce((a,i)=>a+rows[i].y,0),
+  test_events:new Set(chronologicalTest.map(i=>rows[i].event)).size,
+  embargo_events:embargoedEvents.size,scores:chronologicalScores,
+  note:"Strictly future events only; events overlapping the boundary are embargoed."
+ };
+ const pairedGain={
+  pair_vs_micro:score(rows,predictions.micro).log_loss-score(rows,predictions.pair).log_loss,
+  pair_vs_micro_ci:boot(rows,predictions.micro,predictions.pair),
+  pair_inventory_vs_inventory:score(rows,predictions.inventory).log_loss-score(rows,predictions.pair_inventory).log_loss,
+  pair_inventory_vs_inventory_ci:boot(rows,predictions.inventory,predictions.pair_inventory)
+ };
  const first=Math.min(...rows.map(r=>r.time)),last=Math.max(...rows.map(r=>r.time));
  const seenRecent=rows.filter(r=>r.origin==="rn1_recent"),seenControls=rows.filter(r=>r.origin!=="rn1_recent");
  const group=(d:Datum[])=>({windows:d.length,observed_fills:d.reduce((a,r)=>a+r.y,0)});
  return {
-  status:"research_candidate",model_version:"rn1-engine-event-v1",label:"Maker BUY observé dans les 60 secondes suivantes",
+  status:"research_candidate",model_version:"rn1-engine-event-v2",label:"Maker BUY observé dans les 60 secondes suivantes",
   hypothesis:{market_making:"partially_testable",external_oracle:"unidentifiable_no_time_stamped_external_odds",
    hybrid:"unidentifiable_no_time_stamped_external_odds"},
   overview:{eligible_windows:rows.length,observed_fill_windows:rows.reduce((a,r)=>a+r.y,0),
    events:new Set(rows.map(r=>r.event)).size,markets:new Set(rows.map(r=>r.market)).size,
    first_epoch:first,last_epoch:last,source_recent:group(seenRecent),source_controls:group(seenControls)},
-  folds:split,scores,inventory_gain:inventoryGain,inventory_bands,mirror_test,counterexamples,
+  folds:split,scores,inventory_gain:inventoryGain,paired_gain:pairedGain,chronological_holdout,inventory_bands,mirror_test,counterexamples,
   caveats:[
    "Prévision d'une EXÉCUTION Maker inférée visible, pas du placement/annulation d'un ordre privé.",
    "Fenêtres sans fill étiquetées 'aucun fill rapproché observé' : l'archive des fills live est partielle; certaines négatives sont incertaines.",
    "Les marchés suivis sont principalement sélectionnés à partir de l'activité récente de RN1; le groupe témoin n'est pas une population aléatoire universelle.",
    "Carnets REST espacés d'environ une minute; l'état d'inventaire est public, limité aux marchés sélectionnés et exige les deux issues confirmées par l'API.",
-   "5-fold par événement, non prospectif; période de collecte encore courte. Bootstrap regroupé par événement = incertitude conditionnelle aux défauts de mesure.",
+   "5-fold par événement et test temporel séparé avec embargo des événements traversant la coupure; période de collecte encore courte, pas de validation prospective longue.",
+   "La somme des bids/asks YES+NO est une information publique au temps de la sonde; elle ne démontre ni deux ordres Maker passés ni une exécution de paire garantie.",
    "Les odds indépendantes et historiques nécessaires à M1/M2 ne sont pas connectées; absence de preuve d'oracle n'est pas réfutation.",
    "Scores de probabilité conditionnelle à des marchés/token déjà échantillonnés; pas de backtest d'exécution ni de PnL."
   ]
