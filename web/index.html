@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="sizing">RN1 · Money management</button><button class="nav" data-tab="exposure">RN1 · Exposition</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="sizing">RN1 · Money management</button><button class="nav" data-tab="exposure">RN1 · Exposition</button><button class="nav" data-tab="engine">RN1 · Moteur</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -411,6 +411,98 @@ async function renderRN1Activity(target){
 
 
 
+
+
+async function renderRN1Engine(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Moteur de décision",
+  "Première identification en boîte noire : chaque modèle doit prédire une exécution future sur des événements jamais utilisés pour l'entraîner."));
+ target.append(banner("CE TEST PRÉDIT DES FILLS MAKER INFÉRÉS DANS LES 60 SECONDES SUIVANT UNE SONDE, PAS DES ORDRES PLACÉS. Les absences de fills ne sont pas exhaustives. Une probabilité bookmaker externe n'est PAS encore disponible."));
+ let data;
+ try{data=await api("rn1_engine_forensics")}
+ catch(e){target.append(node("p","Benchmark du moteur indisponible : "+String(e?.message||e),"red"));return;}
+ if(data.status==="insufficient"){target.append(node("p","Échantillon insuffisant : "+fmt(data.eligible_windows||0)+" fenêtres.","foot"));return;}
+ const o=data.overview||{},scores=data.scores||[],inv=data.inventory_gain||{};
+ const pct=v=>v==null?"—":fmt(100*Number(v),2)+" %";
+ const signed=(v,d=4)=>v==null?"—":(Number(v)>0?"+":"")+fmt(Number(v),d);
+ const em=node("div",null,"metrics");
+ em.append(
+  metric("Fenêtres avec les 2 positions vérifiées",fmt(o.eligible_windows||0)),
+  metric("Fenêtres avec fill Maker observé",fmt(o.observed_fill_windows||0)),
+  metric("Événements exclus à tour de rôle",fmt(o.events||0)),
+  metric("Marchés suivis",fmt(o.markets||0))
+ );
+ target.append(em);
+ const status=node("section",null,"card");
+ status.append(node("h2","Trois architectures en compétition"));
+ const state=node("div",null,"grid2");
+ for(const item of [
+  ["M0 · Market making","TESTABLE PARTIELLEMENT","Comparer les informations du carnet Polymarket, puis mesurer l’apport de l’inventaire."],
+  ["M1 · Oracle indépendant","NON IDENTIFIABLE","Aucune série historique d’odds externes horodatées n’est connectée."],
+  ["M2 · Hybride oracle + market making","NON IDENTIFIABLE","Impossible d’attribuer un signal externe tant que les probabilités ne sont pas observées avant l’action."]
+ ]){
+  const b=node("div",null,"card");
+  b.style.cssText="padding:14px;background:var(--panel2);border:1px solid var(--line)";
+  b.append(node("h3",item[0]));
+  b.append(node("p",item[1],"small"));
+  b.append(node("p",item[2],"foot"));state.append(b);
+ }
+ status.append(state);target.append(status);
+ const bm=node("section",null,"card");
+ bm.append(node("h2","Quel mécanisme prédit le mieux les exécutions observées ?"));
+ bm.append(node("p","Validation croisée en 5 groupes d'événements ; chaque match entier reste hors de l'apprentissage du modèle qui le prédit. Probabilité d'au moins un fill Maker rapproché dans les 60 secondes.","foot"));
+ const table=node("table");table.style.cssText="width:100%;border-collapse:collapse;white-space:normal";
+ const head=node("thead"),hr=node("tr");
+ for(const h of ["Modèle","Log-loss ↓","Brier ↓","Précision moyenne ↑","Gain LL vs univers"]){const th=node("th",h);th.style.cssText="text-align:left;padding:9px 7px;border-bottom:1px solid var(--line)";hr.append(th)}
+ head.append(hr);table.append(head);
+ const body=node("tbody");
+ for(const r of scores){
+  const tr=node("tr");const gain=r.vs_selection_ll_gain==null?"—":signed(r.vs_selection_ll_gain,4);
+  const vals=[r.label,fmt(r.log_loss,4),fmt(r.brier,4),r.average_precision==null?"—":pct(r.average_precision),gain];
+  for(const v of vals){const td=node("td",v);td.style.cssText="padding:10px 7px;border-bottom:1px solid var(--line)";tr.append(td)}
+  body.append(tr);
+ }
+ table.append(body);const sc=node("div");sc.style.overflowX="auto";sc.append(table);bm.append(sc);
+ const gain=Number(inv.log_loss_gain||0),ci=inv.event_bootstrap_ci;
+ const verdict=node("p");
+ if(ci&&Number(ci.low)>0)verdict.textContent="L'ajout de l'inventaire améliore le log-loss par rapport au carnet seul et l'intervalle bootstrap par événement est entièrement positif — signal candidat, pas règle de code identifiée.";
+ else if(ci&&Number(ci.high)<0)verdict.textContent="L'ajout de l'inventaire détériore le log-loss par rapport au carnet seul sur ce benchmark ; modèle d'inventaire à revoir.";
+ else verdict.textContent="L'effet prédictif additionnel de l'inventaire n'est pas établi : son intervalle bootstrap par événement inclut zéro.";
+ bm.append(verdict);
+ bm.append(node("p","Gain de log-loss du modèle carnet + inventaire vs carnet seul : "+signed(gain,5)+" ; intervalle bootstrap événement (95 %) : "+(ci?"["+signed(ci.low,5)+" ; "+signed(ci.high,5)+"]":"non estimable")+". Un gain POSITIF signifie une meilleure prédiction.","foot"));
+ target.append(bm);
+ const foldCard=node("section",null,"card");
+ foldCard.append(node("h2","Contrôle des données hors événement"));
+ const splits=(data.folds||[]).map(f=>"Pli "+(Number(f.fold)+1)+" : "+fmt(f.test_windows)+" fenêtres / "+fmt(f.test_positives)+" positives / "+fmt(f.test_events)+" événements").join(" · ");
+ foldCard.append(node("p",splits,"foot"));
+ const recent=o.source_recent||{},ctrl=o.source_controls||{};
+ foldCard.append(node("p","Univers RN1 récent : "+fmt(recent.windows)+" fenêtres, "+fmt(recent.observed_fills)+" positives ; marchés sportifs témoins : "+fmt(ctrl.windows)+" fenêtres, "+fmt(ctrl.observed_fills)+" positives.","foot"));
+ const observed=(data.inventory_bands||[]);
+ if(observed.length){
+  foldCard.append(node("h3","Répartition des exécutions selon l'inventaire pré-sonde"));
+  foldCard.append(node("p","Diagnostic descriptif uniquement : ces taux ne constituent pas des seuils détectés dans le code.","foot"));
+  const maxRate=Math.max(.001,...observed.map(v=>Number(v.observed_fill_rate)||0));
+  for(const g of observed){
+   const row=node("div");row.style.cssText="padding:9px 0;border-bottom:1px solid var(--line)";
+   const label=node("div",g.label+" · "+pct(g.observed_fill_rate)+" ("+fmt(g.observed_fills)+"/"+fmt(g.windows)+")","small");row.append(label);
+   const track=node("div");track.style.cssText="height:9px;border-radius:7px;background:var(--panel2);margin-top:6px;overflow:hidden";
+   const bar=node("div");bar.style.cssText="height:100%;border-radius:7px;background:#4fe4c4;width:"+(100*(Number(g.observed_fill_rate)||0)/maxRate)+"%";
+   track.append(bar);row.append(track);foldCard.append(row);
+  }
+ }
+ target.append(foldCard);
+ const failures=node("section",null,"card");failures.append(node("h2","Contre-exemples : décisions que le modèle prévoit mal"));
+ failures.append(node("p","Un contre-exemple est une fenêtre où la probabilité prédite s'écarte fortement du résultat observé. L'absence de fill peut aussi correspondre à une lacune de collecte.","foot"));
+ for(const e of data.counterexamples||[]){
+  const p=node("p",(e.event_slug||"événement")+" · cote "+fmt(e.mid,3)+" · spread "+fmt(e.spread,3)+" · parts "+fmt(e.own_shares)+"/"+fmt(e.other_shares)+" · probabilité "+pct(e.predicted_probability)+" · fill observé : "+(e.observed_fill?"oui":"non"),"small");
+  failures.append(p);
+ }
+ target.append(failures);
+ const note=node("section",null,"card");note.append(node("h2","Ce qui reste impossible à conclure"));
+ for(const x of data.caveats||[])note.append(node("p","• "+x,"foot"));
+ note.append(button("Voir les positions YES/NO",()=>setTab("exposure"),"secondary"));
+ target.append(note);
+}
 
 async function renderRN1Exposure(){
  const target=$("content");
@@ -2255,7 +2347,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else if(tab==="sizing")await renderRN1Sizing();else if(tab==="exposure")await renderRN1Exposure();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else if(tab==="sizing")await renderRN1Sizing();else if(tab==="exposure")await renderRN1Exposure();else if(tab==="engine")await renderRN1Engine();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
