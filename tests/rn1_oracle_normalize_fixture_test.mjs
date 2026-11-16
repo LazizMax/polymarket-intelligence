@@ -22,7 +22,7 @@ assert.equal(rows[0].bookmaker,"draftkings");
 assert(Math.abs(rows[0].away_fair_probability+rows[0].home_fair_probability-1)<1e-10);
 assert(rows[0].away_fair_probability>0.8&&rows[0].away_fair_probability<0.9);
 assert.equal(normalizePayload(raw,new Date("2026-11-16T02:01:00Z")).length,0);
-assert.equal(normalizePayload({...raw,success:false},observed).length,0);
+assert.throws(()=>normalizePayload({...raw,success:false},observed),/provider_payload_shape/);
 const malformed=structuredClone(raw);
 malformed.data[0].books[0].outcomes[0].name="Random Unmatched Team";
 assert.equal(normalizePayload(malformed,observed).length,0);
