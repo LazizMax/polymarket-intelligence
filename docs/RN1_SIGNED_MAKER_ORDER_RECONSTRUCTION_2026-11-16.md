@@ -1,5 +1,38 @@
 # RN1 — Reconstitution des ordres Maker signés via Polygon
 
+## Résultats définitifs du premier scan — 100 % terminé
+
+**État de production vérifié :** `pi.rn1_maker_chain_scan_state.status='complete'`, **105/105 plages**, tous les blocs `96815414..97339531`, dernier checkpoint `next_block=97339532`, aucune erreur en attente. Cron 18 reste conditionné à `status='running'` : il ne relance pas ce scan terminé.
+
+| Contrôle | Résultat |
+| --- | ---: |
+| Fills normalisés d'origine | 80 000 |
+| Fills Maker historiques | **68 445** |
+| Fills Maker attribués à un orderHash Polygon distinct et vérifié | **68 433** |
+| Fills Maker individuellement ambigus (mais événement de l'ordre confirmé) | **12** |
+| Transactions Maker confirmées sans ambiguïté | **66 936** |
+| Transactions Maker ambiguës | **4** |
+| Total transactions Maker auditées | **66 940** |
+| Ordres signés Maker distincts avec fill attribué | **46 330** |
+| Ordres signés exécutés dans au moins deux transactions | **9 845** |
+| Part du notionnel attribué à ces ordres réexécutés | **23,63 %** |
+| Ordres avec premier/dernier fill à ≥60 s d'intervalle | **890** |
+| Ordres avec premier/dernier fill à ≥5 min d'intervalle | **230** |
+| Plus long intervalle observé sous le même orderHash | **6 603 s (1 h 50 min 03 s)** |
+
+**Audit exhaustif :** 66 936 + 4 = 66 940 transactions Maker ; 68 433 + 12 = 68 445 fills Maker. Les **12 événements d'ordres blockchain signés** des 4 transactions ambiguës sont conservés séparément dans `pi.rn1_maker_ambiguous_order_events`, sans créer de correspondance fingerprint→orderHash inventée. Aucun Maker orderHash affecté à un fill Taker, ni de hash d'ordre attribué à plusieurs marchés/tokens.
+
+**Preuve des grilles d'exécution :** **1 206 transactions** contiennent au moins deux ordres Maker signés distincts, **687** plusieurs niveaux de prix arrondis au millième et **87** au moins trois niveaux ; largeur médiane des groupes multi-prix **0,01** point de probabilité. Cela prouve plusieurs niveaux **exécutés**, non la simultanéité de leur soumission.
+
+**Test exploratoire des premières exécutions** sur les **766 fills Maker ayant un momentum Polymarket cinq minutes valide** (26 événements) : première exécution observée d'un orderHash **76/125 (60,8 %) en période calme**, contre **383/641 (59,75 %) en période volatile**. Sur 10 événements avec au moins 5 fills de chaque régime : 7 ont davantage de premières exécutions en période volatile, 3 en période calme. Pas de régularité démontrée et **premier fill ≠ création d'ordre**. Ces 766 observations seulement ne justifient aucune règle de placement ou profitabilité.
+
+**Livraison UI** : `pi-dashboard` **v39 ACTIVE**, routes `rn1_onchain_orders_report` et `rn1_signed_order_detail` ; `web/index.html` permet d'ouvrir un ordre et de lire ses véritables fills et transactions, et distingue premières exécutions et réexécutions. L'accès sans session ne doit pas permettre de lire ces données privées ; le chemin UI connecté n'a pas été testé avec une session réelle.
+
+**Portée :** ce résultat est exhaustif **pour la cohorte de 80 000 fills**, pas pour les quelque deux millions de transactions des archives complètes. Les ordres jamais exécutés, annulations et véritables décisions de placement restent non observés.
+
+---
+
+
 **Date :** 16 novembre 2026. **Périmètre :** wallet RN1 et 80 pages historiques déjà archivées (80 000 fills, dont 68 445 Maker). Cette phase ne porte **pas** sur les historiques de bookmakers.
 
 ## Résultat réellement exécuté
