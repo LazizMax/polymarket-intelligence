@@ -73,7 +73,7 @@ export async function rn1OnchainOrdersReport(db:any){
 }
 
 export async function rn1OriginalOrderCalldataReport(db:any){
- const [progress,cohorts,ladder,age,examples]=await Promise.all([
+ const [progress,cohorts,ladder,age,examples,pairEvidence,pairedByTx]=await Promise.all([
  db.unsafe(`select cohort,status,count(*)::integer transactions,
   coalesce(sum(matched_orders),0)::integer matched_orders
   from pi.rn1_maker_calldata_sample_txs group by cohort,status order by cohort,status`),
@@ -120,10 +120,47 @@ export async function rn1OriginalOrderCalldataReport(db:any){
   first_fill_at::text first_fill_at
   from pi.rn1_maker_calldata_execution_analysis
   where sampled_cohort='random_tx'
-  order by age_to_first_fill_seconds desc limit 6`)
+  order by age_to_first_fill_seconds desc limit 6`),
+ db.unsafe(`with pairs as (
+ select a.source_transaction_hash,a.token_id,
+  a.declared_created_ms=b.declared_created_ms same_ms,
+  (abs(a.signed_receive_shares-b.signed_receive_shares)<=10000)::integer equal_qty
+ from pi.rn1_maker_calldata_signed_orders a
+ join pi.rn1_maker_calldata_signed_orders b
+ on a.source_transaction_hash=b.source_transaction_hash and a.token_id=b.token_id
+ and a.order_hash<b.order_hash
+ where a.sampled_cohort='multi_level' and b.sampled_cohort='multi_level'
+  and abs(a.signed_price-b.signed_price)>=.005
+ )
+ select same_ms,count(*)::integer pairs,sum(equal_qty)::integer equal_qty_pairs,
+ round(100.0*avg(equal_qty),2)::float8 pct_equal_qty
+ from pairs group by 1 order by 1`),
+ db.unsafe(`with pairs as (
+ select a.source_transaction_hash,
+ a.declared_created_ms=b.declared_created_ms same_ms,
+ (abs(a.signed_receive_shares-b.signed_receive_shares)<=10000)::integer equal_qty
+ from pi.rn1_maker_calldata_signed_orders a
+ join pi.rn1_maker_calldata_signed_orders b
+ on a.source_transaction_hash=b.source_transaction_hash and a.token_id=b.token_id
+ and a.order_hash<b.order_hash
+ where a.sampled_cohort='multi_level' and b.sampled_cohort='multi_level'
+  and abs(a.signed_price-b.signed_price)>=.005
+ ), per_tx as (
+ select source_transaction_hash,
+ count(*) filter(where same_ms) same_n,count(*) filter(where not same_ms) diff_n,
+ avg(equal_qty) filter(where same_ms) same_rate,
+ avg(equal_qty) filter(where not same_ms) diff_rate
+ from pairs group by 1
+ )
+ select count(*) filter(where same_n>0 and diff_n>0)::integer comparable_txs,
+ count(*) filter(where same_n>0 and diff_n>0 and same_rate>diff_rate)::integer same_more,
+ count(*) filter(where same_n>0 and diff_n>0 and same_rate<diff_rate)::integer different_more,
+ count(*) filter(where same_n>0 and diff_n>0 and same_rate=diff_rate)::integer ties
+ from per_tx`)
  ]);
  return {source:"cryptographic_eip712_calldata_verified",progress,cohorts,
-  ladder:ladder[0]||{},age_distribution:age,examples,
+  ladder:ladder[0]||{},age_distribution:age,examples,pair_evidence:pairEvidence,
+  paired_transactions:pairedByTx[0]||{},
   limitations:[
    "The Order.timestamp is the signer-declared millisecond time; posting to the CLOB and cancellation times are not observable.",
    "The signed BUY takerAmount is the full requested token quantity; a fill can be partial.",
