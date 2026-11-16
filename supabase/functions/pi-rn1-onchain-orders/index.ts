@@ -509,12 +509,44 @@ async function sampleSignedOrderCalldataOne(){
   return {status:unsupported?"unsupported":"error",error:msg,transaction_hash:hash};
  }
 }
+async function probeHistoricalPriceAtSigning(){
+ const samples=await db.unsafe(`with c as (
+ select token_id,order_hash,declared_created_ms,
+ case when declared_created_ms <1794412800000 then 'earlier' else 'recent' end period
+ from pi.rn1_maker_calldata_signed_orders where sampled_cohort='random_tx'
+ )
+ (select * from c where period='earlier' order by md5(order_hash) limit 4)
+ union all
+ (select * from c where period='recent' order by md5(order_hash) limit 4)`);
+ const out:any[]=[];
+ for(const s of samples){
+  const at=Math.floor(Number(s.declared_created_ms)/1000);
+  const query=new URLSearchParams({market:String(s.token_id),startTs:String(at-600),endTs:String(at+30),fidelity:"1"});
+  const url="https://clob.polymarket.com/prices-history?"+query.toString();
+  try{
+   const response=await fetch(url,{method:"GET",signal:AbortSignal.timeout(12000)});
+   const raw=await response.text();
+   let j:any={};try{j=JSON.parse(raw)}catch{}
+   const h=Array.isArray(j.history)?j.history:[];
+   const pre=h.filter((p:any)=>Number(p.t)<=at && Number.isFinite(Number(p.p)));
+   const most=pre.sort((a:any,b:any)=>Number(b.t)-Number(a.t))[0];
+   out.push({sample_period:s.period,signing_timestamp_s:at,http_status:response.status,
+    points:h.length,pre_points:pre.length,nearest_pre_age_seconds:most?at-Number(most.t):null,
+    nearest_pre_price:most?Number(most.p):null,
+    min_ts:h.length?Math.min(...h.map((p:any)=>Number(p.t))):null,
+    max_ts:h.length?Math.max(...h.map((p:any)=>Number(p.t))):null,
+    api_error:response.ok?null:raw.slice(0,120)});
+  }catch(e){out.push({sample_period:s.period,signing_timestamp_s:at,error:String(e).slice(0,110)})}
+ }
+ return {probe_results:out};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
  if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_price_at_signing_probe"){try{return response(await probeHistoricalPriceAtSigning())}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_calldata_sample_tick"){
   const count=Math.max(1,Math.min(8,Number(body.count)||4));
   const results:any[]=[];
