@@ -115,10 +115,40 @@ async function matchNextSignedOrder(){
  return {status:outcome,txhash,source_fills:fills.length,maker_logs:parsed.rn1_as_maker,
   confirmed_orders:outcome==="confirmed"?selected.length:0,price_levels:sample.price_levels};
 }
+async function getLogsProbe(){
+ const known=await db.unsafe(`select transaction_hash from pi.rn1_maker_onchain_tx_audit
+ where status='confirmed' order by verified_at desc limit 1`);
+ if(!known.length)throw Error("No confirmed onchain transaction");
+ const txhash=String(known[0].transaction_hash);
+ const first=await receipt(txhash);
+ const center=BigInt(first.result.blockNumber);
+ const from=center>50n?center-50n:0n,to=center+50n;
+ const filter={address:["0xe111180000d2663c0091e4f400237545b87b996b","0xe2222d279d744050d28e00520010520000310f59"],
+   fromBlock:"0x"+from.toString(16),toBlock:"0x"+to.toString(16),
+   topics:[topicV2,null,"0x"+wallet.slice(2).padStart(64,"0")]};
+ const errors:any[]=[];
+ for(const endpoint of rpcEndpoints){
+  try{
+   const r=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_getLogs",params:[filter]}),signal:AbortSignal.timeout(20000)});
+   if(!r.ok){errors.push("http_"+r.status);continue}
+   const j=await r.json();
+   if(j.error){errors.push("rpc_"+String(j.error.message||j.error.code).slice(0,100));continue}
+   if(!Array.isArray(j.result))throw Error("Unexpected logs response");
+   const found=j.result.filter((x:any)=>x.transactionHash?.toLowerCase()===txhash);
+   const dec=parseReceipt({logs:j.result,status:"0x1",blockNumber:first.result.blockNumber});
+   return {status:"ok",rpc:endpoint,from:filter.fromBlock,to:filter.toBlock,
+    fetched_logs:j.result.length,matched_tx_logs:found.length,rn1_maker_logs:dec.rn1_as_maker,
+    distinct_txhashes:new Set(j.result.map((x:any)=>x.transactionHash)).size};
+  }catch(e){errors.push(String(e).slice(0,100))}
+ }
+ return {status:"unavailable",errors};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
+ if(body.action==="rn1_order_logs_probe"){try{return response(await getLogsProbe())}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_signed_order_match_tick"){
   const take=Math.max(1,Math.min(4,Number(body.limit)||2));
   const out:any[]=[];
