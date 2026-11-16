@@ -476,6 +476,22 @@ async function renderRN1Exposure(){
  amounts.append(sampleMetrics);
  amounts.append(node("p","Les coûts par marché n'incluent que les positions encore ouvertes. Les totaux changent aussi quand les marchés échantillonnés changent : aucune variation du total sélectionné ne peut être attribuée automatiquement à un achat ou une vente. Un pic observé n'est PAS une limite de risque.","foot"));
  target.append(amounts);
+ const terminal=node("section",null,"card");
+ terminal.append(node("h2","Proxy conditionnel de perte à l’échéance"));
+ terminal.append(node("p","Pour un marché binaire correctement résolu, une issue paie 1 USDC/part et l'autre 0. Si RN1 conserve exactement ces positions jusqu'à l'échéance, son paiement brut minimal sur ce contrat est min(parts 0, parts 1). Nous comparons ce minimum au coût attribué aux parts encore ouvertes, sans utiliser de cote future.","foot"));
+ const formula=node("p","Perte théorique maximale sur les positions affichées = max(0, coût d'entrée ouvert − min(parts 0, parts 1)).","foot");
+ formula.style.fontWeight="600";terminal.append(formula);
+ const riskStats=node("div",null,"metrics");
+ riskStats.append(
+  metric("Marché actif · médiane",money(o.median_conditional_terminal_downside)),
+  metric("Marché actif · P90",money(o.p90_conditional_terminal_downside)),
+  metric("Marché · pire cas observé",money(o.max_conditional_terminal_downside)),
+  metric("8 marchés sélectionnés · médiane de la borne",money(b.median_selected_downside_bound))
+ );
+ terminal.append(riskStats);
+ terminal.append(node("p","La borne du panier additionne les pires cas de chaque marché. C'est volontairement conservateur : plusieurs résultats sportifs de contrats différents peuvent être incompatibles. Ce n'est ni une Value at Risk, ni une perte probable, ni le risque global du wallet.","foot"));
+ terminal.append(node("p","ATTENTION : la formule suppose un dénouement binaire normal et des positions conservées sans changement. Elle ne tient pas compte des frais, remboursements, annulations, résultats litigieux, positions omises, profits/pertes déjà réalisés ou exécutions futures. Elle ne doit pas être prise pour une garantie ni pour un plafond d'ordre.","foot"));
+ target.append(terminal);
  const transitions=node("section",null,"card");
  transitions.append(node("h2","Comment RN1 modifie-t-il son inventaire entre deux sondes proches ?"));
  transitions.append(node("p","Comparaison de DEUX relevés successifs du même marché, séparés de moins de 3 minutes. Pas de comparaison artificielle entre marchés différents.","foot"));
@@ -548,11 +564,14 @@ async function renderRN1Exposure(){
    metric("Dernier coût ouvert",money(m.latest_cost)),
    metric("Pic observé · pas un plafond",money(m.observed_peak_cost)),
    metric("Parts appariées (min des issues)",fmt(hedged,2)),
-   metric("Écart directionnel (parts)",fmt(gap,2))
+   metric("Écart directionnel (parts)",fmt(gap,2)),
+   metric("Borne de perte binaire · indicative",money(Math.max(0,num(m.latest_cost)-hedged)))
   );graphArea.append(inf);
   graphArea.append(node("p","Dernier relevé : "+formatDate(m.last_epoch)+" · "+fmt(m.observations)+" observations pour ce marché ; "+(num(m.latest_api_tokens)===2?"deux issues revenues de l'API":num(m.latest_api_tokens)===1?"une issue revenue de l'API":"zéros reconstruits")+" .","foot"));
   if(!series.length)return;
-  const values=series.map(x=>num(x.entry_cost)),maxVal=Math.max(1,...values),minVal=Math.min(...values);
+  const values=series.map(x=>num(x.entry_cost));
+  const downside=series.map(x=>Math.max(0,num(x.entry_cost)-Math.min(num(x.shares_0),num(x.shares_1))));
+  const maxVal=Math.max(1,...values),minVal=Math.min(0,...values,...downside);
   const minScale=Math.max(0,minVal-(maxVal-minVal)*.12),maxScale=maxVal+Math.max(1,(maxVal-minScale)*.12);
   const svgNS="http://www.w3.org/2000/svg",svg=document.createElementNS(svgNS,"svg");
   svg.setAttribute("viewBox","0 0 720 210");svg.setAttribute("preserveAspectRatio","none");
@@ -563,22 +582,27 @@ async function renderRN1Exposure(){
   const curve=document.createElementNS(svgNS,"path");
   curve.setAttribute("d",series.map((x,i)=>(i?"L":"M")+xpos(i).toFixed(1)+" "+ypos(num(x.entry_cost)).toFixed(1)).join(" "));
   curve.setAttribute("stroke","#4fe4c4");curve.setAttribute("stroke-width","3");curve.setAttribute("fill","none");curve.setAttribute("stroke-linecap","round");svg.append(curve);
+  const lossCurve=document.createElementNS(svgNS,"path");
+  lossCurve.setAttribute("d",downside.map((v,i)=>(i?"L":"M")+xpos(i).toFixed(1)+" "+ypos(v).toFixed(1)).join(" "));
+  lossCurve.setAttribute("stroke","#e4ab72");lossCurve.setAttribute("stroke-width","2");
+  lossCurve.setAttribute("stroke-dasharray","6 5");lossCurve.setAttribute("fill","none");svg.append(lossCurve);
   for(let i=0;i<series.length;i++){
    const dot=document.createElementNS(svgNS,"circle");dot.setAttribute("cx",String(xpos(i)));dot.setAttribute("cy",String(ypos(num(series[i].entry_cost))));
    dot.setAttribute("r","3");dot.setAttribute("fill","#4fe4c4");svg.append(dot);
   }
   graphArea.append(svg);
+  graphArea.append(node("p","Vert : coût d’entrée ouvert. Orange pointillé : borne conditionnelle de perte binaire, calculée sur les mêmes parts, sans frais ni autres marchés.","foot"));
   const range=node("div");range.style.cssText="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px";
   range.append(node("span",formatDate(series[0].observed_epoch),"foot"),node("span","Coût min "+money(minVal)+" · max "+money(maxVal),"foot"),node("span",formatDate(series[series.length-1].observed_epoch),"foot"));
   graphArea.append(range);
   const tblWrap=node("div",null,"tablewrap"),tbl=node("table"),hd=node("thead"),hdrow=node("tr");
-  ["Observation","Coût entrée","Parts issue 0","Parts issue 1","Parts appariées","Écart de parts","Issues API"].forEach(x=>hdrow.append(node("th",x)));
+  ["Observation","Coût entrée","Parts issue 0","Parts issue 1","Parts appariées","Écart de parts","Borne de perte","Issues API"].forEach(x=>hdrow.append(node("th",x)));
   hd.append(hdrow);tbl.append(hd);const body=node("tbody");
   for(const r of series.slice(-10).reverse()){
    const r0=num(r.shares_0),r1=num(r.shares_1),tr=node("tr");
    tr.append(node("td",formatDate(r.observed_epoch)),node("td",money(r.entry_cost)),
     node("td",fmt(r0,2)),node("td",fmt(r1,2)),node("td",fmt(Math.min(r0,r1),2)),
-    node("td",fmt(Math.abs(r0-r1),2)),node("td",fmt(r.api_tokens)+"/2"));
+    node("td",fmt(Math.abs(r0-r1),2)),node("td",money(Math.max(0,num(r.entry_cost)-Math.min(r0,r1)))),node("td",fmt(r.api_tokens)+"/2"));
    body.append(tr);
   }
   tbl.append(body);tblWrap.append(tbl);graphArea.append(tblWrap);
