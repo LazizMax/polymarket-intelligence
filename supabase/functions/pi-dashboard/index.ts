@@ -2350,6 +2350,118 @@ from checked
  };
 }
 
+
+/** RN1 pricing-oracle readiness: strictly received-before-quote bookmaker data.
+ * A received vendor odds sample is not an oracle proven to be used by RN1.
+ * No provider secrets are exposed and M1/M2 are not fitted without coverage. */
+async function rn1OracleEvidence(){
+ const [overview]=await db.unsafe(String.raw\`
+select s.status,s.calls_today,s.day_utc::text,
+ extract(epoch from s.last_call_at)::float8 last_call_epoch,
+ extract(epoch from s.last_success_at)::float8 last_success_epoch,
+ s.last_inserted,s.last_error_kind,
+ coalesce(o.observations,0)::int observations,
+ coalesce(o.events,0)::int distinct_events,
+ coalesce(o.books,0)::int distinct_books,
+ extract(epoch from o.first_received)::float8 first_received_epoch,
+ extract(epoch from o.last_received)::float8 last_received_epoch,
+ coalesce(o.updates_large,0)::int observed_price_transitions
+from pi.rn1_external_odds_collector_state s
+cross join lateral(
+ with series as(
+ select event_slug,bookmaker,first_seen_at,away_fair_probability,
+ lag(away_fair_probability)over(partition by event_slug,bookmaker order by first_seen_at)prev
+ from pi.rn1_external_odds_observations
+ )
+ select count(*)::int observations,
+ count(distinct obs.event_slug)::int events,count(distinct obs.bookmaker)::int books,
+ min(obs.first_seen_at)first_received,max(obs.first_seen_at)last_received,
+ (select count(*)::int from series where abs(away_fair_probability-prev)>=0.005)updates_large
+ from pi.rn1_external_odds_observations obs
+)o
+where s.singleton=1\`);
+ const stats=overview||{};
+ let matching:any={eligible_quote_windows:0,events_with_valid_temporal_alignment:0,rn1_recent_windows:0,observed_maker_fill_windows:0};
+ let latest:any[]=[];
+ if(Number(stats.observations)>0){
+  const q=await db.unsafe(String.raw\`
+with moneyline as(
+ select r.id run_id,r.received_at,q->>'market_key' market_key,
+ q->>'event_slug' event_slug,
+ max(q->>'origin') origin,
+ max((q->>'mid')::float8) filter(where q->>'outcome_index'='0') p0,
+ max((q->>'mid')::float8) filter(where q->>'outcome_index'='1') p1,
+ count(distinct q->>'outcome_index') n
+ from pi.rn1_quote_probe_runs r
+ cross join lateral jsonb_array_elements(r.quotes)q
+ where r.position_status='complete' and q->>'market_type'='moneyline'
+ and q->>'book_valid'='true' and q->>'mid' is not null
+ group by r.id,r.received_at,q->>'event_slug',q->>'market_key'
+), eligible as(
+ select m.*,o.bookmaker,o.home_fair_probability,o.away_fair_probability,o.first_seen_at,
+ (select exists(select 1 from pi.rn1_quote_probe_fills f
+    where f.market_key=m.market_key and f.trade_at>m.received_at
+     and f.trade_at<=m.received_at+interval '60 seconds'
+     and f.side='BUY' and f.role='maker_inferred'))has_maker_fill
+ from moneyline m join lateral(
+   select event_slug,bookmaker,home_fair_probability,away_fair_probability,first_seen_at
+   from pi.rn1_external_odds_observations o
+   where o.event_slug=m.event_slug
+    and o.first_seen_at<=m.received_at
+    and o.start_at>m.received_at
+    and m.received_at-o.first_seen_at<=interval '2 hours'
+    and (o.book_updated_at is null or o.book_updated_at<=m.received_at)
+   order by o.first_seen_at desc limit 1
+ )o on true
+ where m.n=2 and m.p0 between .005 and .995 and m.p1 between .005 and .995
+)
+select count(*)::int eligible_quote_windows,
+ count(distinct event_slug)::int events_with_valid_temporal_alignment,
+ count(*)filter(where origin='rn1_recent')::int rn1_recent_windows,
+ count(*)filter(where has_maker_fill)::int observed_maker_fill_windows,
+ percentile_cont(.5)within group(order by
+ least(abs(p0-away_fair_probability)+abs(p1-home_fair_probability),
+       abs(p0-home_fair_probability)+abs(p1-away_fair_probability)))::float8
+ median_unordered_yes_no_distance
+from eligible\`);
+  matching=q[0]||matching;
+  latest=await db.unsafe(String.raw\`
+select event_slug,bookmaker,home_team,away_team,home_fair_probability,away_fair_probability,
+ home_american,away_american,
+ extract(epoch from start_at)::float8 start_epoch,
+ extract(epoch from first_seen_at)::float8 received_epoch,
+ extract(epoch from book_updated_at)::float8 bookmaker_updated_epoch
+from pi.rn1_external_odds_observations
+order by first_seen_at desc limit 12\`);
+ }
+ return {
+  status:"research_data_only",
+  collector:stats,
+  matching,
+  latest,
+  model_status:{
+   m0:"available",
+   m1:"not_identifiable_without_synchronized_external_reference",
+   m2:"not_identifiable_without_synchronized_external_reference",
+   training_enabled:false
+  },
+  minimum_future_experiment:{
+   independent_events:10,
+   positive_fill_windows:50,
+   odds_price_changes:20,
+   requirements:"Observations reçues avant RN1, issues et contrats de règlement vérifiés, contrôles sans fill, comparaison M0/M1/M2 sur événements non vus."
+  },
+  caveats:[
+   "La formule de référence est un dévig proportionnel de moneylines américaines, pas la probabilité vraie.",
+   "Une cote bookmaker reçue avant une quote Polymarket ne démontre ni que RN1 y avait accès ni qu'il a réagi à cette cote.",
+   "Le rapproché temporel est fait via event_slug NBA ; le sens exact des deux tokens et les règles de règlement doivent être vérifiés avant tout modèle directionnel.",
+   "Les exemples de prix non ordonnés ne démontrent pas de signal exploitable.",
+   "Le fournisseur externe nécessite une clé librement configurée dans Supabase, jamais exposée au navigateur ; aucun accès historique gratuit n'est supposé.",
+   "Collecte bornée : NBA h2h, DraftKings/FanDuel, au plus 24 requêtes par jour et 5000 observations."
+  ]
+ };
+}
+
 Deno.serve(async(req:Request)=>{
   const origin=req.headers.get("origin");
   if(origin && origin!==SITE_ORIGIN) return send({error:"Origin non autorisée"},403);
@@ -2388,6 +2500,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_sizing_market_validation")return send(await rn1SizingMarketValidation());
   if(body?.action==="rn1_exposure_forensics")return send(await rn1ExposureForensics());
   if(body?.action==="rn1_engine_forensics")return send(await rn1EngineForensics(db));
+  if(body?.action==="rn1_oracle_evidence")return send(await rn1OracleEvidence());
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
