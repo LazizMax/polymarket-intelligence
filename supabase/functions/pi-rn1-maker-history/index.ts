@@ -25,4 +25,36 @@ await tx.unsafe(`update pi.rn1_maker_historical_fills f set score_home=p.home_sc
 await tx.unsafe(`insert into pi.rn1_maker_historical_pages(page_no,source_sha256,maker_fills,taker_fills,matched_price,matched_score) select $1,$2,$3,$4,count(*) filter(where pre_price is not null),count(*) filter(where score_event_at is not null) from pi.rn1_maker_historical_fills where page_no=$1 on conflict(page_no) do nothing`,[page.page_no,page.sha256,page.maker_fills,page.taker_fills]);
 });
 return {status:"processed",page:Number(page.page_no),maker:roles.filter(x=>x==="maker").length,taker:roles.filter(x=>x==="taker").length,normalized:records.length}}
-Deno.serve(async req=>{if(req.method!=="POST")return respond({error:"method"},405);if(!await authorized(req))return respond({error:"unauthorized"},403);let p:any={};try{p=await req.json()}catch{}if(p.action!=="maker_historical_tick")return respond({error:"action"},400);try{const n=Math.max(1,Math.min(8,Number(p.pages)||1));const results=[];for(let i=0;i<n;i++){const one=await processOne();results.push(one);if(one.status!=="processed")break}return respond({results})}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}});
+async function burstHashAudit(pageNo:number){
+ if(!Number.isInteger(pageNo)||pageNo<1||pageNo>80)throw Error("Page must be 1..80");
+ const pages=await db.unsafe("select storage_key,sha256,row_count from pi.rn1_full_archive_pages where stream='trades_all' and page_no=$1 and role_status='verified'",[pageNo]);
+ if(!pages.length)throw Error("Verified source page missing");
+ const page=pages[0],rawText=await read(String(page.storage_key));
+ if(await sha(rawText)!==String(page.sha256))throw Error("Source checksum mismatch");
+ const data=JSON.parse(rawText)?.source_response?.data;
+ if(!Array.isArray(data)||data.length!==Number(page.row_count))throw Error("Invalid source rows");
+ let withHash=0,withoutHash=0,withOrderId=0,withTimestampMs=0;
+ const tx=new Map<string,number>(),byTokenPriceSecond=new Map<string,{count:number;tx:Set<string>;hashAbsent:number}>();
+ const fieldNames=new Set<string>();
+ for(const f of data){
+  Object.keys(f||{}).forEach(k=>fieldNames.add(k));
+  const hash=String(f?.transaction_hash||"").toLowerCase();
+  if(/^0x[0-9a-f]{64}$/.test(hash)){withHash++;tx.set(hash,(tx.get(hash)||0)+1)}else withoutHash++;
+  if(f?.order_id!==undefined||f?.orderId!==undefined)withOrderId++;
+  if(f?.timestamp_ms!==undefined||f?.timestampMs!==undefined)withTimestampMs++;
+  const key=JSON.stringify([f?.condition_id,f?.token_id,f?.side,f?.price,f?.timestamp]);
+  const row=byTokenPriceSecond.get(key)||{count:0,tx:new Set<string>(),hashAbsent:0};
+  row.count++;if(/^0x[0-9a-f]{64}$/.test(hash))row.tx.add(hash);else row.hashAbsent++;
+  byTokenPriceSecond.set(key,row);
+ }
+ const groups=[...byTokenPriceSecond.values()].filter(x=>x.count>1);
+ return {page:pageNo,fills:data.length,fields:[...fieldNames].sort(),
+  hashes:{present:withHash,missing:withoutHash,distinct:tx.size,duplicate_hashes:[...tx.values()].filter(x=>x>1).length,
+   fills_in_duplicate_hashes:[...tx.values()].filter(x=>x>1).reduce((a,b)=>a+b,0)},
+  order_identifiers:withOrderId,subsecond_timestamps:withTimestampMs,
+  exact_second_price_groups:{multi:groups.length,fills:groups.reduce((a,b)=>a+b.count,0),
+    single_hash:groups.filter(x=>x.tx.size===1&&x.hashAbsent===0).length,
+    multiple_hashes:groups.filter(x=>x.tx.size>1).length,
+    hash_missing:groups.filter(x=>x.hashAbsent>0).length}};
+}
+Deno.serve(async req=>{if(req.method!=="POST")return respond({error:"method"},405);if(!await authorized(req))return respond({error:"unauthorized"},403);let p:any={};try{p=await req.json()}catch{}if(p.action==="burst_hash_audit"){try{return respond(await burstHashAudit(Number(p.page_no)))}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}}if(p.action!=="maker_historical_tick")return respond({error:"action"},400);try{const n=Math.max(1,Math.min(8,Number(p.pages)||1));const results=[];for(let i=0;i<n;i++){const one=await processOne();results.push(one);if(one.status!=="processed")break}return respond({results})}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}});
