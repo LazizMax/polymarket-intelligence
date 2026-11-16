@@ -57,4 +57,53 @@ async function burstHashAudit(pageNo:number){
     multiple_hashes:groups.filter(x=>x.tx.size>1).length,
     hash_missing:groups.filter(x=>x.hashAbsent>0).length}};
 }
-Deno.serve(async req=>{if(req.method!=="POST")return respond({error:"method"},405);if(!await authorized(req))return respond({error:"unauthorized"},403);let p:any={};try{p=await req.json()}catch{}if(p.action==="burst_hash_audit"){try{return respond(await burstHashAudit(Number(p.page_no)))}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}}if(p.action!=="maker_historical_tick")return respond({error:"action"},400);try{const n=Math.max(1,Math.min(8,Number(p.pages)||1));const results=[];for(let i=0;i<n;i++){const one=await processOne();results.push(one);if(one.status!=="processed")break}return respond({results})}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}});
+async function backfillHashPage(){
+ const cap=await db.unsafe("select pg_database_size(current_database())::bigint bytes");
+ if(Number(cap[0].bytes)>850000000)return {status:"paused_storage_budget"};
+ const pages=await db.unsafe(`select a.page_no,a.storage_key,a.sha256,a.row_count,a.valid_count
+ from pi.rn1_full_archive_pages a
+ join pi.rn1_maker_historical_pages p on p.page_no=a.page_no and p.source_sha256=a.sha256
+ where a.stream='trades_all' and a.page_no between 1 and 80
+  and a.role_status='verified'
+  and not exists(select 1 from pi.rn1_maker_tx_audit_pages v where v.page_no=a.page_no)
+ order by a.page_no limit 1`);
+ if(!pages.length)return {status:"complete"};
+ const p=pages[0];
+ const raw=await read(String(p.storage_key));
+ if(await sha(raw)!==String(p.sha256))throw Error("Source immutable hash mismatch");
+ const rows=JSON.parse(raw)?.source_response?.data;
+ if(!Array.isArray(rows)||rows.length!==Number(p.row_count))throw Error("Source count mismatch");
+ const values:any[]=[];
+ const hashes=new Set<string>();
+ for(let i=0;i<rows.length;i++){
+  const r=rows[i];
+  const hash=String(r?.transaction_hash||"").toLowerCase();
+  if(!/^0x[0-9a-f]{64}$/.test(hash))throw Error("Unverified or missing blockchain hash at "+i);
+  hashes.add(hash);
+  values.push({fingerprint:String(p.page_no)+":"+i+":"+String(p.sha256).slice(0,12),
+   transaction_hash:hash,token_id:String(r.token_id||""),price:Number(r.price),shares:Number(r.size)});
+ }
+ await db.begin(async tx=>{
+  // Revalidate all values against the already normalized immutable source page
+  // before writing. No role reclassification and no new API ingestion.
+  const matches=await tx.unsafe(`select count(*)::integer n from
+   jsonb_to_recordset(($1::text)::jsonb) as v(fingerprint text,transaction_hash text,token_id text,price numeric,shares numeric)
+   join pi.rn1_maker_historical_fills f on f.fingerprint=v.fingerprint
+   where f.page_no=$2 and f.token_id=v.token_id and f.price=v.price and f.shares=v.shares`,
+   [JSON.stringify(values),p.page_no]);
+  if(Number(matches[0].n)!==Number(p.valid_count))throw Error("Normalized page differs from immutable source");
+  const updated=await tx.unsafe(`update pi.rn1_maker_historical_fills f
+    set transaction_hash=v.transaction_hash
+   from jsonb_to_recordset(($1::text)::jsonb) as v(fingerprint text,transaction_hash text)
+   where f.page_no=$2 and f.fingerprint=v.fingerprint
+      and (f.transaction_hash is null or f.transaction_hash=v.transaction_hash)
+   returning f.fingerprint`,[JSON.stringify(values),p.page_no]);
+  if(updated.length!==Number(p.valid_count))throw Error("Incomplete or conflicting hash update");
+  await tx.unsafe(`insert into pi.rn1_maker_tx_audit_pages
+    (page_no,source_sha256,hashes_matched,distinct_hashes)
+    values($1,$2,$3,$4) on conflict(page_no) do nothing`,
+    [p.page_no,p.sha256,updated.length,hashes.size]);
+ });
+ return {status:"processed",page:Number(p.page_no),matched:values.length,distinct_hashes:hashes.size};
+}
+Deno.serve(async req=>{if(req.method!=="POST")return respond({error:"method"},405);if(!await authorized(req))return respond({error:"unauthorized"},403);let p:any={};try{p=await req.json()}catch{}if(p.action==="backfill_transaction_hashes"){try{const batch=Math.max(1,Math.min(8,Number(p.pages)||1));const out=[];for(let i=0;i<batch;i++){const x=await backfillHashPage();out.push(x);if(x.status!=="processed")break}return respond({results:out})}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}}if(p.action==="burst_hash_audit"){try{return respond(await burstHashAudit(Number(p.page_no)))}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}}if(p.action!=="maker_historical_tick")return respond({error:"action"},400);try{const n=Math.max(1,Math.min(8,Number(p.pages)||1));const results=[];for(let i=0;i<n;i++){const one=await processOne();results.push(one);if(one.status!=="processed")break}return respond({results})}catch(e){return respond({status:"error",error:String(e).slice(0,220)},500)}});
