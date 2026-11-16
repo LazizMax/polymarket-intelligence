@@ -2354,6 +2354,59 @@ from checked
 /** RN1 pricing-oracle readiness: strictly received-before-quote bookmaker data.
  * A received vendor odds sample is not an oracle proven to be used by RN1.
  * No provider secrets are exposed and M1/M2 are not fitted without coverage. */
+/** RN1 historical inventory. Read-only evidence: no paid odds, no new archive import.
+ * The pilot 4000 legacy trade_pages is taker-only-biased; never treat it as a Maker sample. */
+async function rn1HistoricalResearch(){
+ const [o]=await db.unsafe(String.raw\`
+select
+ (select coalesce(sum(row_count),0)::bigint from pi.rn1_full_archive_pages where stream='trades_all')::bigint archived_trades,
+ (select count(*)::int from pi.rn1_full_archive_pages where stream='trades_all') archived_pages,
+ (select count(*)::int from pi.rn1_historical_price_points) price_points,
+ (select count(distinct token_id)::int from pi.rn1_historical_price_points) price_tokens,
+ (select min(observed_epoch)::bigint from pi.rn1_historical_price_points) first_price_epoch,
+ (select max(observed_epoch)::bigint from pi.rn1_historical_price_points) last_price_epoch,
+ (select count(*)::int from pi.rn1_nba_espn_plays) nba_plays,
+ (select count(distinct event_slug)::int from pi.rn1_nba_espn_plays) nba_events,
+ (select coalesce(sum(row_count),0)::int from pi.rn1_trade_pages) legacy_pilot_fills,
+ (select count(*)::int from pi.rn1_price_edge_cohort) economic_markets
+\`);
+ const [joins]=await db.unsafe(String.raw\`
+with pilot as (
+ select x->>'token_id' token_id,(x->>'timestamp')::bigint trade_epoch
+ from pi.rn1_trade_pages t
+ cross join lateral jsonb_array_elements(t.raw_payload->'source_response'->'data')x
+ where x->>'side'='BUY' and x->>'token_id' is not null and x->>'timestamp' is not null
+)
+select count(*)::int pilot_rows,
+ count(*)filter(where exists(
+ select 1 from pi.rn1_historical_price_points p
+ where p.token_id=pilot.token_id and p.observed_epoch between pilot.trade_epoch-60 and pilot.trade_epoch
+ ))::int with_strict_prior_60s,
+ count(distinct token_id)::int pilot_tokens
+from pilot\`);
+ return{
+  status:"historical_first",
+  archive:o||{},legacy_pilot:joins||{},
+  market_reference_status:"historical_polymarket_not_external_oracle",
+  maker_archive_status:"compressed_full_archive_already_exists_needs_targeted_decompression",
+  external_oracle_status:"historical_bookmaker_snapshots_not_present_in_project",
+  priorities:[
+   "1. Réutiliser les ~2M fills en archives compressées, sans les réimporter.",
+   "2. Aligner les prix historiques Polymarket et les événements sportifs avec chaque décision, uniquement avec des timestamps <= trade_at.",
+   "3. Constituer des témoins sans trade au même match et effectuer une validation par événement et période.",
+   "4. Identifier les règles de seuils et de déclencheurs dans l'activité Maker/Taker séparée.",
+   "5. Comparer ensuite, si disponibles et accessibles légalement, des archives bookmakers horodatées pour tester l'oracle M1/M2."
+  ],
+  caveats:[
+   "Les 4000 achats du pilote ont une sélection Taker-only et ne permettent pas de conclure sur le Maker.",
+   "L'historique Polymarket n'est pas une estimation indépendante de la probabilité réelle.",
+   "Les timestamps du play-by-play ESPN peuvent avoir été enregistrés a posteriori.",
+   "Aucun abonnement d'odds historiques n'a été acheté ; The Odds API / TheOddsAPI historiques sont des accès payants.",
+   "L'archive complète compressée n'a pas été dépliée dans ce dashboard ; ne pas présenter tous les trades comme prêts pour une jointure à la minute."
+  ]
+ };
+}
+
 async function rn1OracleEvidence(){
  const [overview]=await db.unsafe(String.raw`
 select s.status,s.calls_today,s.day_utc::text,
@@ -2501,6 +2554,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_exposure_forensics")return send(await rn1ExposureForensics());
   if(body?.action==="rn1_engine_forensics")return send(await rn1EngineForensics(db));
   if(body?.action==="rn1_oracle_evidence")return send(await rn1OracleEvidence());
+  if(body?.action==="rn1_historical_research")return send(await rn1HistoricalResearch());
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
