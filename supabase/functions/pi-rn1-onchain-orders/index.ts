@@ -295,10 +295,55 @@ async function inspectAmbiguousTransactions(){
  }
  return {ambiguous:results};
 }
+async function preserveAmbiguousOrderEvents(){
+ const audits=await db.unsafe(`select transaction_hash from pi.rn1_maker_onchain_tx_audit a
+ where status='ambiguous' and not exists(
+ select 1 from pi.rn1_maker_ambiguous_order_events ev where ev.transaction_hash=a.transaction_hash)
+ order by verified_at limit 8`);
+ const outcomes:any[]=[];
+ for(const item of audits){
+  const txhash=String(item.transaction_hash);
+  const fills=await db.unsafe(`select token_id,price::text price,shares::text shares from
+    pi.rn1_maker_historical_fills where role='maker' and transaction_hash=$1`,[txhash]);
+  const fetched=await receipt(txhash);
+  const p=parseReceipt(fetched.result,200);
+  const events=p.order_events.filter((e:any)=>e.maker===wallet&&e.v2&&e.side===0);
+  // Verify equality of complete multisets (token, price, quantity) before
+  // preserving on-chain order evidence without fill-level identity.
+  if(events.length!==fills.length){outcomes.push({txhash,status:"rejected_count"});continue}
+  const unmatched=[...events];
+  let valid=true;
+  for(const fill of fills){
+   const i=unmatched.findIndex((e:any)=>e.token_id===fill.token_id &&
+     Number.isFinite(e.price)&&Math.abs(e.price-Number(fill.price))<=.000002 &&
+     Number.isFinite(e.shares)&&Math.abs(e.shares-Number(fill.shares))<=Math.max(.000002,Number(fill.shares)*1e-8));
+   if(i<0){valid=false;break}
+   unmatched.splice(i,1);
+  }
+  if(!valid||unmatched.length){outcomes.push({txhash,status:"rejected_value"});continue}
+  const rows=events.map((e:any)=>({transaction_hash:txhash,log_index:Number(BigInt(e.log_index)),
+    order_hash:e.order_hash,token_id:e.token_id,
+    execution_price:e.price,filled_shares:e.shares}));
+  if(rows.some((e:any)=>!/^0x[0-9a-f]{64}$/.test(e.order_hash)||!Number.isInteger(e.log_index))){outcomes.push({txhash,status:"rejected_event"});continue}
+  await db.begin(async txn=>{
+    const saved=await txn.unsafe(`insert into pi.rn1_maker_ambiguous_order_events
+    (transaction_hash,log_index,order_hash,token_id,execution_price,filled_shares)
+    select transaction_hash,log_index,order_hash,token_id,execution_price,filled_shares
+    from jsonb_to_recordset(($1::text)::jsonb) as x(
+    transaction_hash text,log_index integer,order_hash text,token_id text,
+    execution_price numeric,filled_shares numeric) on conflict(transaction_hash,log_index) do nothing
+    returning log_index`,[JSON.stringify(rows)]);
+    if(saved.length!==rows.length)throw Error("Ambiguous onchain order audit upsert mismatch");
+  });
+  outcomes.push({txhash,status:"onchain_orders_preserved_without_fill_mapping",orders:rows.length});
+ }
+ return {results:outcomes};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
+ if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
  if(body.action==="rn1_chain_scan_tick"){
    const count=Math.max(1,Math.min(3,Number(body.chunks)||1));
