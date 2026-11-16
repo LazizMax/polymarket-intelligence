@@ -585,6 +585,21 @@ async function renderRN1Engine(){
   if(Number(ambigu.ambiguous_transactions)>0){
    onchainCard.append(node("p","Ambiguïtés conservées sans attribution inventée : "+fmt(ambigu.ambiguous_transactions)+" transactions, "+fmt(ambigu.unmapped_fills_in_ambiguous_txs)+" fills. Les "+fmt(ambigu.onchain_orders_not_fingerprint_mapped)+" ordres signés correspondants sont vérifiés sur Polygon mais ne peuvent pas tous être reliés à une ligne individuelle lorsque prix et quantités sont identiques.","foot"));
   }
+  const phases=onchain.price_phase||[],phaseEvent=onchain.price_phase_event||{};
+  if(phases.length===2){
+   const calm=phases.find(x=>x.regime==="calm"),volatile=phases.find(x=>x.regime==="volatile");
+   const bar=node("div",null,"metrics");
+   bar.append(
+    metric("Ordres · premier fill observé après marché calme",fmt(calm?.pct_first_observed,2)+" %"),
+    metric("Ordres · premier fill observé après marché volatil",fmt(volatile?.pct_first_observed,2)+" %"),
+    metric("Fills Maker avec prix passé exploitable",fmt((calm?.fills||0)+(volatile?.fills||0))),
+    metric("Événements comparables",fmt(phaseEvent.comparable_events||0))
+   );
+   onchainCard.append(node("h3","Premier fill observé ou réexécution ?"));
+   onchainCard.append(bar);
+   onchainCard.append(node("p","Parmi les fills Maker avec momentum historique disponible : périodes calmes "+fmt(calm?.first_observed_fills||0)+"/"+fmt(calm?.fills||0)+" premières exécutions d’un ordre signé ; périodes volatiles "+fmt(volatile?.first_observed_fills||0)+"/"+fmt(volatile?.fills||0)+". Sur "+fmt(phaseEvent.comparable_events||0)+" matchs comparables, "+fmt(phaseEvent.more_first_volatile||0)+" ont davantage de premières exécutions en période volatile, "+fmt(phaseEvent.more_first_calm||0)+" en période calme.","foot"));
+   onchainCard.append(banner("Ce panel examine la COMPOSITION des fills déjà exécutés, pas les ordres affichés ou placés. Premier fill observé ≠ soumission d'ordre. Faible couverture historique des prix, aucune EV établie."));
+  }
   const examples=onchain.examples||[];
   if(examples.length){
    onchainCard.append(node("h3","Exemples réels d'ordres réexécutés"));
