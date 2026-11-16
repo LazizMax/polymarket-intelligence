@@ -3,7 +3,7 @@
 // private order-placement timestamps from execution timestamps.
 export async function rn1MakerHistoricalReport(db:any) {
  const sql=String.raw;
- const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory,bursts,bookOverlap]=await Promise.all([
+ const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory,bursts,bookOverlap,burstCohorts]=await Promise.all([
   db.unsafe(`select (select count(*)::integer from pi.rn1_maker_historical_pages) pages,
     (select coalesce(sum(maker_fills),0)::integer from pi.rn1_maker_historical_pages) maker,
     (select coalesce(sum(taker_fills),0)::integer from pi.rn1_maker_historical_pages) taker,
@@ -133,10 +133,18 @@ export async function rn1MakerHistoricalReport(db:any) {
    (select count(distinct h.token_id)::integer from pi.rn1_maker_historical_fills h
        where exists(select 1 from pi.rn1_quote_probe_fills p where p.token_id=h.token_id)) token_overlap,
    (select min(received_at)::text from pi.rn1_quote_probe_runs) first_live_book_at,
-   (select max(trade_at)::text from pi.rn1_maker_historical_fills) last_cohort_fill_at`)
+   (select max(trade_at)::text from pi.rn1_maker_historical_fills) last_cohort_fill_at`),
+ db.unsafe(`select
+    case when first_at>='2026-11-09 20:39:27+00'::timestamptz then 'recent' else 'earlier' end period,
+    count(*)::integer bursts, sum(fill_count)::integer maker_fills,
+    count(*) filter(where fill_count>1)::integer multi_bursts,
+    coalesce(sum(fill_count) filter(where fill_count>1),0)::integer fills_in_multi,
+    round(100.0*coalesce(sum(notional) filter(where fill_count>1),0)/nullif(sum(notional),0),2)::float8 multi_notional_pct
+   from pi.rn1_maker_historical_bursts where role='maker'
+   group by 1 order by 1`)
  ]);
  return {status:"exploratory",source:"verified_full_archive",cohort:coverage[0]||{},
- regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},bursts,book_overlap:bookOverlap[0]||{},
+ regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},bursts,book_overlap:bookOverlap[0]||{},burst_cohorts:burstCohorts,
  limitations:[
  "Maker describes executed role, not placement/cancellation of a private order.",
  "A burst is same-token, same-side, same-price contiguous execution (<=1 second apart), not a verified parent order.",
