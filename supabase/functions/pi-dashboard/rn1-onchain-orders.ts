@@ -1,7 +1,7 @@
 // Authenticated read-only view of signed Maker order hashes recovered from public
 // Polygon CTF Exchange V2 OrderFilled events. No signing keys or private orders.
 export async function rn1OnchainOrdersReport(db:any){
- const [progress,summary,top,unmapped]=await Promise.all([
+ const [progress,summary,top,unmapped,phasePrice,phaseEvent]=await Promise.all([
   db.unsafe(`select status,from_block,to_block,next_block,chunks_done,
      chain_logs_seen,fills_verified,tx_confirmed,tx_unmatched,
      error_attempts,last_error,last_success_at::text last_success_at,
@@ -29,15 +29,45 @@ export async function rn1OnchainOrdersReport(db:any){
     (select count(*)::integer from pi.rn1_maker_onchain_tx_audit where status='ambiguous') ambiguous_transactions,
     (select count(*)::integer from pi.rn1_maker_ambiguous_order_events) onchain_orders_not_fingerprint_mapped,
     (select count(*)::integer from pi.rn1_maker_historical_fills f where f.role='maker' and f.transaction_hash in(
-      select transaction_hash from pi.rn1_maker_onchain_tx_audit where status='ambiguous')) unmapped_fills_in_ambiguous_txs`)
+      select transaction_hash from pi.rn1_maker_onchain_tx_audit where status='ambiguous')) unmapped_fills_in_ambiguous_txs`),
+  db.unsafe(`with ranked as (
+   select maker_order_hash,event_slug,trade_at,transaction_hash,maker_order_log_index,fingerprint,momentum_5m,
+   row_number() over(partition by maker_order_hash order by trade_at,transaction_hash,maker_order_log_index,fingerprint) seq
+   from pi.rn1_maker_historical_fills where role='maker' and maker_order_hash is not null
+  )
+  select case when abs(momentum_5m)>.01 then 'volatile' else 'calm' end regime,
+   count(*)::integer fills,count(*) filter(where seq=1)::integer first_observed_fills,
+   count(*) filter(where seq>1)::integer repeat_fills,
+   round(100.0*avg((seq=1)::integer),2)::float8 pct_first_observed,
+   count(distinct event_slug)::integer events
+  from ranked where momentum_5m is not null group by 1 order by 1`),
+  db.unsafe(`with ranked as (
+   select maker_order_hash,event_slug,trade_at,transaction_hash,maker_order_log_index,fingerprint,momentum_5m,
+   row_number() over(partition by maker_order_hash order by trade_at,transaction_hash,maker_order_log_index,fingerprint) seq
+   from pi.rn1_maker_historical_fills where role='maker' and maker_order_hash is not null
+  ), per_event as (
+   select event_slug,
+    count(*) filter(where abs(momentum_5m)>.01) nvolatile,
+    count(*) filter(where abs(momentum_5m)<=.01) ncalm,
+    avg((seq=1)::integer) filter(where abs(momentum_5m)>.01) first_volatile,
+    avg((seq=1)::integer) filter(where abs(momentum_5m)<=.01) first_calm
+   from ranked where momentum_5m is not null group by event_slug
+  )
+  select count(*)::integer events,
+   count(*) filter(where nvolatile>=5 and ncalm>=5)::integer comparable_events,
+   count(*) filter(where nvolatile>=5 and ncalm>=5 and first_volatile>first_calm)::integer more_first_volatile,
+   count(*) filter(where nvolatile>=5 and ncalm>=5 and first_volatile<first_calm)::integer more_first_calm,
+   round(avg(first_volatile-first_calm) filter(where nvolatile>=5 and ncalm>=5)::numeric,4)::float8 mean_event_diff
+  from per_event`)
  ]);
  return {status:"observed_onchain_orders",scan:progress[0]||{},summary:summary[0]||{},
-    examples:top,unmapped:unmapped[0]||{},
+    examples:top,unmapped:unmapped[0]||{},price_phase:phasePrice,price_phase_event:phaseEvent[0]||{},
     limitations:[
      "Order hash is a signed on-chain order identifier, not an order creation timestamp.",
      "Only orders with at least one executed fill can be observed; unfilled/cancelled orders remain invisible.",
      "The first-to-last fill interval is a lower bound on observable active execution time, not full resting duration.",
-     "A single signed order may have multiple execution prices; execution price changes do not prove requoting.",
+     "Sub-cent raw price drift under one signed order hash is numerical precision, not proof of repricing.",
+     "First observed fill is not an order creation event. The small matched-price cohort cannot establish placement decisions.",
      "Scanned block coverage is bounded to the archived 80,000 fills; no copy-trading ROI is inferred."
     ]};
 }
