@@ -15,7 +15,7 @@ def test_authenticated_read_only_action_and_ui():
     assert 'tab==="exposure"' in WEB
     assert 'async function renderRN1Exposure()' in WEB
 
-def test_exact_selected-market_vs_wallet_scope():
+def test_exact_selected_market_vs_wallet_scope():
     assert "order by received_at desc,id desc limit 2000" in EDGE
     assert "position_status='complete'" in EDGE
     assert "position_observed_at<=received_at" in EDGE
