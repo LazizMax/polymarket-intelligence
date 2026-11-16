@@ -504,6 +504,22 @@ async function renderRN1Engine(){
     historicalCard.append(node("p","Sur "+fmt(inventory.eligible_maker_buys)+" achats Maker avec deux côtés positifs avant la minute du fill : "+fmt(inventory.underweight_buys)+" achètent le côté sous-détenu. À poids égal sur "+fmt(inventory.markets_10plus)+" marchés avec ≥10 observations, taux moyen : "+fmt(100*inventory.mean_market_underweight_rate,2)+" %. Le comportement n’appuie pas une règle simple de rééquilibrage systématique.","foot"));
     historicalCard.append(node("p","Inventaire de flux seulement : les trades archivés ne couvrent pas forcément les positions initiales, les merges, redemptions ou ajustements hors du flux. Ordre intra-minute inconnu.","foot"));
    }
+   const makerBurst=(maker.bursts||[]).find(x=>x.role==="maker");
+   const takerBurst=(maker.bursts||[]).find(x=>x.role==="taker");
+   const overlap=maker.book_overlap||{};
+   if(makerBurst){
+    historicalCard.append(node("h3","Rafales d’exécutions Maker (ordre parent non identifié)"));
+    const burstStats=node("div",null,"metrics");
+    burstStats.append(
+      metric("Rafales Maker multi-fills",fmt(makerBurst.multi_bursts||0)),
+      metric("Fills Maker dans ces rafales",fmt(makerBurst.fills_in_multi||0)),
+      metric("Plus grande rafale",fmt(makerBurst.max_fills_in_burst||0)+" fills"),
+      metric("Rafales Taker multi-fills",fmt(takerBurst?.multi_bursts||0))
+    );
+    historicalCard.append(burstStats);
+    historicalCard.append(node("p","Regroupement technique : même token, même prix, même rôle et même côté, timestamps espacés d’au plus une seconde. Cela peut regrouper plusieurs ordres indépendants ; ce n’est PAS un order_id.","foot"));
+   }
+   historicalCard.append(node("p","Carnets réels : "+fmt(overlap.probed_tokens||0)+" tokens sondés contre "+fmt(overlap.archived_tokens||0)+" tokens de la cohorte ; recouvrement : "+fmt(overlap.token_overlap||0)+". Les carnets disponibles ne permettent pas de reconstruire les quotes historiques de cette cohorte.","foot"));
    historicalCard.append(banner("Attention : un fill Maker est une EXÉCUTION, jamais la preuve du moment où RN1 a placé, déplacé ou annulé un ordre. Les minutes sans fill ne prouvent pas l’absence d’un ordre. Le gain prédictif est exploratoire, pas une EV ni un ROI."));
   }catch(e){
    historicalCard.append(node("p","Reconstruction Maker indisponible : "+String(e?.message||e),"foot"));
