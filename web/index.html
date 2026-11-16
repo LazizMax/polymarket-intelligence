@@ -471,6 +471,20 @@ async function renderRN1Engine(){
  bm.append(verdict);
  bm.append(node("p","Gain de log-loss du modèle carnet + inventaire vs carnet seul : "+signed(gain,5)+" ; intervalle bootstrap événement (95 %) : "+(ci?"["+signed(ci.low,5)+" ; "+signed(ci.high,5)+"]":"non estimable")+". Un gain POSITIF signifie une meilleure prédiction.","foot"));
  target.append(bm);
+ const mirror=data.mirror_test||{};
+ const mirrorCard=node("section",null,"card");
+ mirrorCard.append(node("h2","Test falsifiable : RN1 privilégie-t-il le côté sous-détenu ?"));
+ mirrorCard.append(node("p","Comparaison des deux issues du MÊME marché au MÊME instant, toutes deux effectivement retournées par l'API. Seuls les cas avec un fill observé sur une issue et un déséquilibre supérieur à 10 % sont retenus.","foot"));
+ const mirrorMetrics=node("div",null,"metrics");
+ mirrorMetrics.append(metric("Marchés × instants appariés",fmt(mirror.paired_windows||0)),
+ metric("Achats sur une seule issue",fmt(mirror.exactly_one_side_filled||0)),
+ metric("Cas déséquilibrés éligibles",fmt(mirror.one_side_and_imbalanced||0)),
+ metric("Côté sous-détenu choisi",fmt(mirror.filled_underweight||0)+"/"+fmt(mirror.one_side_and_imbalanced||0)));
+ mirrorCard.append(mirrorMetrics);
+ const ci2=mirror.event_bootstrap_ci;
+ mirrorCard.append(node("p","Côté sous-détenu : "+pct(mirror.underweight_rate)+" (contre "+fmt(mirror.filled_overweight||0)+" achats côté sur-détenu). Intervalle bootstrap à 95 % par événement : "+(ci2?"["+pct(ci2.low)+" ; "+pct(ci2.high)+"]":"non disponible")+".", "foot"));
+ mirrorCard.append(node("p","Une proportion proche de 50 % ne permet pas d'identifier la règle « acheter systématiquement l'issue sous-détenue ». Ce test est sensible à la couverture incomplète des fills et n'exclut pas des règles conditionnelles au prix.", "foot"));
+ target.append(mirrorCard);
  const foldCard=node("section",null,"card");
  foldCard.append(node("h2","Contrôle des données hors événement"));
  const splits=(data.folds||[]).map(f=>"Pli "+(Number(f.fold)+1)+" : "+fmt(f.test_windows)+" fenêtres / "+fmt(f.test_positives)+" positives / "+fmt(f.test_events)+" événements").join(" · ");
