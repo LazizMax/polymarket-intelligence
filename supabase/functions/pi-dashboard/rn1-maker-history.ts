@@ -122,7 +122,10 @@ export async function rn1MakerHistoricalReport(db:any) {
    count(*) filter(where fill_count>1)::integer multi_bursts,
    coalesce(sum(fill_count) filter(where fill_count>1),0)::integer fills_in_multi,
    max(fill_count)::integer max_fills_in_burst,
-   round(avg(fill_count),3)::float8 mean_fills_per_burst
+   round(avg(fill_count),3)::float8 mean_fills_per_burst,
+   round(100.0*coalesce(sum(notional) filter(where fill_count>1),0)/nullif(sum(notional),0),3)::float8 multi_notional_pct,
+   count(distinct event_slug) filter(where fill_count>1)::integer events_with_bursts,
+   count(distinct event_slug)::integer events_total
   from pi.rn1_maker_historical_bursts group by role order by role`),
  db.unsafe(`select
    (select count(distinct token_id)::integer from pi.rn1_maker_historical_fills) archived_tokens,
