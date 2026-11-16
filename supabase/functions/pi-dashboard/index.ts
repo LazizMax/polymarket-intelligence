@@ -2163,7 +2163,7 @@ p as (
   x->>'market_key' market_key,
   max((x->>'current_size')::numeric)filter(where x->>'outcome_index'='0')::float8 shares_0,
   max((x->>'current_size')::numeric)filter(where x->>'outcome_index'='1')::float8 shares_1,
-  sum((x->>'entry_cost_usdc')::numeric)::float8 entry_cost,
+  sum(coalesce((x->>'entry_cost_usdc')::numeric,0))::float8 entry_cost,
   count(*)::int token_rows,
   count(*)filter(where x->>'returned_by_api'='true')::int api_tokens
  from recent_runs r cross join lateral jsonb_array_elements(r.positions) x
