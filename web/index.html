@@ -697,6 +697,20 @@ async function renderRN1Engine(){
     metric("Largeur médiane des grilles",fmt(100*Number(ladder.median_price_width||0),2)+" pts")
    );calldataCard.append(metrics);
   }
+  const pairs=original.pair_evidence||[],pairTx=original.paired_transactions||{};
+  if(pairs.length===2){
+   const same=pairs.find(x=>x.same_ms===true),different=pairs.find(x=>x.same_ms===false);
+   calldataCard.append(node("h3","Test contrôlé : même timestamp → même taille ?"));
+   const compare=node("div",null,"metrics");
+   compare.append(
+    metric("Paires identiques en taille · même milliseconde",fmt(same?.pct_equal_qty,1)+" %"),
+    metric("Paires identiques en taille · millisecondes différentes",fmt(different?.pct_equal_qty,1)+" %"),
+    metric("Transactions permettant une comparaison interne",fmt(pairTx.comparable_txs||0)),
+    metric("Transactions favorisant la taille égale au même timestamp",fmt(pairTx.same_more||0))
+   );
+   calldataCard.append(compare);
+   calldataCard.append(node("p","Même timestamp : "+fmt(same?.equal_qty_pairs||0)+" / "+fmt(same?.pairs||0)+" paires de prix distincts ont une taille signée identique ; timestamp différent : "+fmt(different?.equal_qty_pairs||0)+" / "+fmt(different?.pairs||0)+". Dans "+fmt(pairTx.comparable_txs||0)+" transactions comparables, "+fmt(pairTx.same_more||0)+" favorisent la même taille à timestamp identique, "+fmt(pairTx.different_more||0)+" l'inverse et "+fmt(pairTx.ties||0)+" sont à égalité.","foot"));
+  }
   const ages=(original.age_distribution||[]).filter(x=>x.sampled_cohort==="random_tx");
   if(ages.length){
    calldataCard.append(node("h3","Création déclarée → premier fill · transactions ordinaires"));
