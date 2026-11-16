@@ -206,7 +206,7 @@ export async function rn1EngineForensics(db:any){
  const embargoedEvents=new Set<string>();
  for(let i=0;i<rows.length;i++){
   const e=eventTimes.get(rows[i].event)!;
-  if(e.last<timeCutoff)chronologicalTrain.push(i);
+  if(e.last+60<timeCutoff)chronologicalTrain.push(i);
   else if(e.first>=timeCutoff)chronologicalTest.push(i);
   else embargoedEvents.add(rows[i].event);
  }
@@ -227,7 +227,7 @@ export async function rn1EngineForensics(db:any){
   test_positives:chronologicalTest.reduce((a,i)=>a+rows[i].y,0),
   test_events:new Set(chronologicalTest.map(i=>rows[i].event)).size,
   embargo_events:embargoedEvents.size,scores:chronologicalScores,
-  note:"Strictly future events only; events overlapping the boundary are embargoed."
+  note:"Strictly future events only; train events must end >60s before cutoff; events crossing the embargo boundary are excluded."
  };
  const pairedGain={
   pair_vs_micro:score(rows,predictions.micro).log_loss-score(rows,predictions.pair).log_loss,
