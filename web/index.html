@@ -450,6 +450,28 @@ async function renderRN1Engine(){
  status.append(state);target.append(status);
  // Independent bookmaker reference: only data that our system really received
  // before the Polymarket quote can eventually enter an oracle hypothesis.
+ // Historical-first research: use already archived decisions, not future polls.
+ const historicalCard=node("section",null,"card");
+ historicalCard.append(node("h2","Priorité · Reconstituer les décisions depuis l’historique"));
+ historicalCard.append(node("p","L’historique existant permet de tester des règles de prix, de timing et d’événements immédiatement, sans clé ni abonnement de données externes. Une probabilité historique Polymarket ne doit jamais être présentée comme un oracle bookmaker indépendant.","foot"));
+ try{
+  const h=await api("rn1_historical_research"),a=h.archive||{},pilot=h.legacy_pilot||{};
+  const stats=node("div",null,"metrics");
+  stats.append(
+   metric("Trades RN1 archivés",fmt(a.archived_trades||0)),
+   metric("Cotations historiques",fmt(a.price_points||0)),
+   metric("Tokens cotés",fmt(a.price_tokens||0)),
+   metric("Actions NBA historisées",fmt(a.nba_plays||0))
+  );
+  historicalCard.append(stats);
+  historicalCard.append(node("p","Dans l'ancien pilote de "+fmt(pilot.pilot_rows||0)+" achats, "+fmt(pilot.with_strict_prior_60s||0)+" ont une cotation Polymarket horodatée AVANT le trade (≤ 60 s). Ce pilote privilégie les TAKERS : il ne permet PAS d’inférer la politique Maker.","foot"));
+  const steps=node("p","Méthode : réutiliser les archives compressées → aligner l'état du marché et le score avant chaque décision → ajouter des fenêtres sans trade → comparer les règles sur de nouveaux matchs → tester ensuite un éventuel oracle avec des données bookmakers historiques.","foot");
+  historicalCard.append(steps);
+  historicalCard.append(button("Voir les tests d’hypothèses de RN1",()=>setTab("triggers"),"secondary"));
+ }catch(e){
+  historicalCard.append(node("p","Diagnostic historique indisponible : "+String(e?.message||e),"foot"));
+ }
+ target.append(historicalCard);
  const oracleCard=node("section",null,"card");
  oracleCard.append(node("h2","Oracle externe · collecte & preuve temporelle"));
  let oracle=null;
