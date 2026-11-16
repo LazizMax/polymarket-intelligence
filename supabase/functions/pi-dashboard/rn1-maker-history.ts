@@ -3,7 +3,7 @@
 // private order-placement timestamps from execution timestamps.
 export async function rn1MakerHistoricalReport(db:any) {
  const sql=String.raw;
- const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory]=await Promise.all([
+ const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory,bursts,bookOverlap]=await Promise.all([
   db.unsafe(`select (select count(*)::integer from pi.rn1_maker_historical_pages) pages,
     (select coalesce(sum(maker_fills),0)::integer from pi.rn1_maker_historical_pages) maker,
     (select coalesce(sum(taker_fills),0)::integer from pi.rn1_maker_historical_pages) taker,
@@ -117,12 +117,26 @@ export async function rn1MakerHistoricalReport(db:any) {
      (select count(*)::integer from markets where n>=10) markets_10plus,
      (select round(avg(underweight_rate) filter(where n>=10)::numeric,4)::float8 from markets) mean_market_underweight_rate,
      (select count(*)::integer from markets where n>=10 and underweight_rate>0.5) markets_underweight_more,
-     (select count(*)::integer from markets where n>=10 and underweight_rate<0.5) markets_overweight_more`)
+     (select count(*)::integer from markets where n>=10 and underweight_rate<0.5) markets_overweight_more`),
+ db.unsafe(`select role,count(*)::integer bursts,sum(fill_count)::integer fills,
+   count(*) filter(where fill_count>1)::integer multi_bursts,
+   coalesce(sum(fill_count) filter(where fill_count>1),0)::integer fills_in_multi,
+   max(fill_count)::integer max_fills_in_burst,
+   round(avg(fill_count),3)::float8 mean_fills_per_burst
+  from pi.rn1_maker_historical_bursts group by role order by role`),
+ db.unsafe(`select
+   (select count(distinct token_id)::integer from pi.rn1_maker_historical_fills) archived_tokens,
+   (select count(distinct token_id)::integer from pi.rn1_quote_probe_fills) probed_tokens,
+   (select count(distinct h.token_id)::integer from pi.rn1_maker_historical_fills h
+       where exists(select 1 from pi.rn1_quote_probe_fills p where p.token_id=h.token_id)) token_overlap,
+   (select min(received_at)::text from pi.rn1_quote_probe_runs) first_live_book_at,
+   (select max(trade_at)::text from pi.rn1_maker_historical_fills) last_cohort_fill_at`)
  ]);
  return {status:"exploratory",source:"verified_full_archive",cohort:coverage[0]||{},
- regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},
+ regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},bursts,book_overlap:bookOverlap[0]||{},
  limitations:[
  "Maker describes executed role, not placement/cancellation of a private order.",
+ "A burst is same-token, same-side, same-price contiguous execution (<=1 second apart), not a verified parent order.",
  "The price series is Polymarket indicative history, not archived bid/ask.",
  "Only minutes bounded by observed first and last fills per token are eligible; controls remain selected.",
  "ESPN play timestamps are retrospective and do not establish RN1 information arrival.",
