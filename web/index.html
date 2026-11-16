@@ -697,6 +697,21 @@ async function renderRN1Engine(){
     metric("Largeur médiane des grilles",fmt(100*Number(ladder.median_price_width||0),2)+" pts")
    );calldataCard.append(metrics);
   }
+  const exact=original.precision||{},priceSteps=original.ladder_steps_by_period||[];
+  if(Number(exact.signed_orders)>0){
+   calldataCard.append(node("h3","Convention de dimensionnement des ordres signés"));
+   const vals=node("div",null,"metrics");
+   vals.append(
+    metric("Quantités entières en parts",fmt(exact.integer_token_orders||0)+" / "+fmt(exact.signed_orders||0)),
+    metric("Notionnels entiers en USDC",fmt(exact.integer_usdc_orders||0)+" / "+fmt(exact.signed_orders||0)),
+    metric("Signatures EIP-712 vérifiées",fmt(exact.cryptographically_verified||0)),
+    metric("Timestamps millisecondes non rondes",fmt(exact.subsecond_timestamps||0))
+   );calldataCard.append(vals);
+  }
+  if(priceSteps.length===2){
+   const older=priceSteps.find(x=>x.period==="older"),recent=priceSteps.find(x=>x.period==="recent");
+   calldataCard.append(node("p","Espacement de 0,01 entre niveaux adjacents créés au même timestamp : période ancienne "+fmt(older?.one_cent_steps||0)+"/"+fmt(older?.adjacent_steps||0)+" ("+fmt(older?.pct_one_cent,1)+" %), période récente "+fmt(recent?.one_cent_steps||0)+"/"+fmt(recent?.adjacent_steps||0)+" ("+fmt(recent?.pct_one_cent,1)+" %).","foot"));
+  }
   const pairs=original.pair_evidence||[],pairTx=original.paired_transactions||{};
   if(pairs.length===2){
    const same=pairs.find(x=>x.same_ms===true),different=pairs.find(x=>x.same_ms===false);
