@@ -540,12 +540,72 @@ async function probeHistoricalPriceAtSigning(){
  }
  return {probe_results:out};
 }
+async function collectSignedCreationQuoteOne(){
+ const claimed=await db.unsafe(`update pi.rn1_maker_signed_creation_quotes q set
+ lease_until=now()+interval '65 seconds',updated_at=now()
+ where q.order_hash=(
+  select order_hash from pi.rn1_maker_signed_creation_quotes
+  where (status='pending' or (status='error' and error_attempts<3))
+   and (lease_until is null or lease_until<now())
+  order by md5(order_hash||':quote-probe-v1') limit 1 for update skip locked)
+ returning order_hash`);
+ if(!claimed.length)return {status:"complete"};
+ const orderHash=String(claimed[0].order_hash);
+ try{
+  const [size]=await db.unsafe("select pg_database_size(current_database())::bigint bytes");
+  if(Number(size.bytes)>875000000){
+   await db.unsafe(`update pi.rn1_maker_signed_creation_quotes set
+     lease_until=null,updated_at=now() where order_hash=$1`,[orderHash]);
+   return {status:"paused_storage_budget"};
+  }
+  const [order]=await db.unsafe(`select token_id,declared_created_ms from pi.rn1_maker_calldata_signed_orders where order_hash=$1`,[orderHash]);
+  if(!order)throw Error("signed order missing");
+  const at=Math.floor(Number(order.declared_created_ms)/1000);
+  const qp=new URLSearchParams({market:String(order.token_id),startTs:String(at-900),
+    endTs:String(at+30),fidelity:"1"});
+  const resp=await fetch("https://clob.polymarket.com/prices-history?"+qp.toString(),
+     {signal:AbortSignal.timeout(12000)});
+  if(!resp.ok)throw Error("CLOB_history_http_"+resp.status);
+  const data=await resp.json();
+  const history=Array.isArray(data.history)?data.history:[];
+  if(history.length>1000)throw Error("unexpected_large_history");
+  const before=history.map((x:any)=>({t:Number(x.t),p:Number(x.p)}))
+   .filter((x:any)=>Number.isFinite(x.t)&&Number.isFinite(x.p)&&x.p>=0&&x.p<=1&&x.t<=at)
+   .sort((a:any,b:any)=>b.t-a.t);
+  const latest=before.find((x:any)=>at-x.t<=90);
+  const baseline=before.find((x:any)=>x.t<=at-300&&x.t>=at-420);
+  const valid=!!latest;
+  const quoteAge=latest?at-latest.t:null;
+  await db.unsafe(`update pi.rn1_maker_signed_creation_quotes
+    set status=$2,price_before=$3,observed_before_epoch=$4,
+    price_5min_before=$5,observed_5min_epoch=$6,
+    history_points=$7,response_age_seconds=$8,five_min_momentum=$9,
+    error_message=null,lease_until=null,updated_at=now()
+    where order_hash=$1 and lease_until>now()`,
+    [orderHash,valid?"confirmed":"missing",latest?.p??null,latest?.t??null,
+     baseline?.p??null,baseline?.t??null,history.length,quoteAge,
+     latest&&baseline?latest.p-baseline.p:null]);
+  return {status:valid?"confirmed":"missing",quote_age_seconds:quoteAge,
+    history_points:history.length,momentum_valid:!!(latest&&baseline)};
+ }catch(e){
+  const msg=String(e).slice(0,150);
+  await db.unsafe(`update pi.rn1_maker_signed_creation_quotes
+    set status='error',error_attempts=error_attempts+1,error_message=$2,
+    lease_until=null,updated_at=now() where order_hash=$1`,[orderHash,msg]);
+  return {status:"error",error:msg};
+ }
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
  if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_creation_quote_tick"){
+  const count=Math.max(1,Math.min(8,Number(body.count)||4));
+  const results=await Promise.all(Array.from({length:count},()=>collectSignedCreationQuoteOne()));
+  return response({results});
+ }
  if(body.action==="rn1_price_at_signing_probe"){try{return response(await probeHistoricalPriceAtSigning())}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_calldata_sample_tick"){
   const count=Math.max(1,Math.min(8,Number(body.count)||4));
