@@ -490,6 +490,8 @@ async function renderRN1Engine(){
    }
    historicalCard.append(tiles);
    historicalCard.append(node("p","Validation 5 plis, événements séparés : "+fmt(sc.minutes||0)+" minutes · "+fmt(sc.positives||0)+" fenêtres Maker positives · log-loss constante "+fmt(sc.baseline_logloss,6)+" vs volatilité "+fmt(sc.volatility_logloss,6)+". Matchs comparables : "+fmt(ev.comparable_events||0)+", dont "+fmt(ev.volatile_more||0)+" davantage de fills en période volatile.","foot"));
+   const chronological=maker.chronological||{};
+   historicalCard.append(node("p","Test chronologique (matchs disjoints) : entraînement "+fmt(chronological.train_events||0)+" matchs, validation "+fmt(chronological.test_events||0)+" matchs · log-loss constante "+fmt(chronological.baseline_logloss,6)+" vs volatilité "+fmt(chronological.volatility_logloss,6)+". Un meilleur score de fill ne démontre PAS un déclencheur d’ordre.","foot"));
    historicalCard.append(banner("Attention : un fill Maker est une EXÉCUTION, jamais la preuve du moment où RN1 a placé, déplacé ou annulé un ordre. Les minutes sans fill ne prouvent pas l’absence d’un ordre. Le gain prédictif est exploratoire, pas une EV ni un ROI."));
   }catch(e){
    historicalCard.append(node("p","Reconstruction Maker indisponible : "+String(e?.message||e),"foot"));
