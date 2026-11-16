@@ -251,7 +251,7 @@ async function scanMakerLogChunk(){
     chain_logs_seen=chain_logs_seen+$2,fills_verified=fills_verified+$3,
     tx_confirmed=tx_confirmed+$4,tx_unmatched=tx_unmatched+$5,
     status=case when $1>to_block then 'complete' else 'running' end,
-    lease_until=null,last_success_at=now(),last_error=null,updated_at=now()
+    lease_until=null,error_attempts=0,last_success_at=now(),last_error=null,updated_at=now()
     where singleton=true and next_block=$6 and status='running' returning next_block`,
     [Number(end+1n),logs.length,mappings.length,confirmedTx,rejectedTx,Number(first)]);
    if(advanced.length!==1)throw Error("Chain scan checkpoint race");
@@ -263,7 +263,9 @@ async function scanMakerLogChunk(){
  }catch(e){
   const msg=String(e).slice(0,180);
   await db.unsafe(`update pi.rn1_maker_chain_scan_state
-   set lease_until=null,last_error=$1,updated_at=now() where singleton=true`,[msg]);
+   set lease_until=null,last_error=$1,error_attempts=error_attempts+1,
+     status=case when error_attempts+1>=5 then 'paused_error' else status end,
+     updated_at=now() where singleton=true`,[msg]);
   return {status:"error",error:msg,block:Number(first)};
  }
 }
