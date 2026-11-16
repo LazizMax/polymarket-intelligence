@@ -115,14 +115,15 @@ async function matchNextSignedOrder(){
  return {status:outcome,txhash,source_fills:fills.length,maker_logs:parsed.rn1_as_maker,
   confirmed_orders:outcome==="confirmed"?selected.length:0,price_levels:sample.price_levels};
 }
-async function getLogsProbe(){
+async function getLogsProbe(span=50){
  const known=await db.unsafe(`select transaction_hash from pi.rn1_maker_onchain_tx_audit
  where status='confirmed' order by verified_at desc limit 1`);
  if(!known.length)throw Error("No confirmed onchain transaction");
  const txhash=String(known[0].transaction_hash);
  const first=await receipt(txhash);
  const center=BigInt(first.result.blockNumber);
- const from=center>50n?center-50n:0n,to=center+50n;
+ const radius=BigInt(Math.max(5,Math.min(1000,span)));
+ const from=center>radius?center-radius:0n,to=center+radius;
  const filter={address:["0xe111180000d2663c0091e4f400237545b87b996b","0xe2222d279d744050d28e00520010520000310f59"],
    fromBlock:"0x"+from.toString(16),toBlock:"0x"+to.toString(16),
    topics:[topicV2,null,"0x"+wallet.slice(2).padStart(64,"0")]};
@@ -144,11 +145,21 @@ async function getLogsProbe(){
  }
  return {status:"unavailable",errors};
 }
+async function receiptBounds(){
+ const rows=await db.unsafe(`(select transaction_hash,trade_at from pi.rn1_maker_historical_fills where role='maker' order by trade_at,fingerprint limit 1)
+ union all
+ (select transaction_hash,trade_at from pi.rn1_maker_historical_fills where role='maker' order by trade_at desc,fingerprint desc limit 1)`);
+ const out:any[]=[];
+ for(const r of rows){const got=await receipt(r.transaction_hash);out.push({txhash:r.transaction_hash,reported_at:r.trade_at,
+ block:parseInt(got.result.blockNumber,16),rpc:got.endpoint})}
+ return out;
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
- if(body.action==="rn1_order_logs_probe"){try{return response(await getLogsProbe())}catch(e){return response({error:String(e).slice(0,180)},500)}}
+ if(body.action==="rn1_chain_bounds"){try{return response({bounds:await receiptBounds()})}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_order_logs_probe"){try{return response(await getLogsProbe(Number(body.span)||50))}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_signed_order_match_tick"){
   const take=Math.max(1,Math.min(4,Number(body.limit)||2));
   const out:any[]=[];
