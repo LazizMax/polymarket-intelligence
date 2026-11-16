@@ -3,7 +3,7 @@
 // private order-placement timestamps from execution timestamps.
 export async function rn1MakerHistoricalReport(db:any) {
  const sql=String.raw;
- const [coverage,rates,heldout,eventControl,chronological,scoreStrata]=await Promise.all([
+ const [coverage,rates,heldout,eventControl,chronological,scoreStrata,inventory]=await Promise.all([
   db.unsafe(`select (select count(*)::integer from pi.rn1_maker_historical_pages) pages,
     (select coalesce(sum(maker_fills),0)::integer from pi.rn1_maker_historical_pages) maker,
     (select coalesce(sum(taker_fills),0)::integer from pi.rn1_maker_historical_pages) taker,
@@ -89,10 +89,38 @@ export async function rn1MakerHistoricalReport(db:any) {
     case when abs(delta_5m)>0.01 then 'volatile' else 'quiet' end regime,
     count(*)::integer minutes,sum(maker)::integer maker_windows,
     round(100.0*avg(maker),3)::float8 maker_pct
-   from w group by 1,2 order by 1,2`)
+   from w group by 1,2 order by 1,2`),
+  db.unsafe(`with minute_net as (
+    select market_key,date_trunc('minute',trade_at) minute_at,
+     sum(case when outcome_index=0 and side='BUY' then shares when outcome_index=0 and side='SELL' then -shares else 0 end) dq0,
+     sum(case when outcome_index=1 and side='BUY' then shares when outcome_index=1 and side='SELL' then -shares else 0 end) dq1
+    from pi.rn1_maker_historical_fills group by 1,2
+   ), pre as (
+    select market_key,minute_at,
+      coalesce(sum(dq0) over(partition by market_key order by minute_at rows between unbounded preceding and 1 preceding),0) q0,
+      coalesce(sum(dq1) over(partition by market_key order by minute_at rows between unbounded preceding and 1 preceding),0) q1
+    from minute_net
+   ), eligible as (
+    select f.market_key,f.event_slug,
+     case when f.outcome_index=0 then p.q0<p.q1 else p.q1<p.q0 end underweight,
+     case when f.outcome_index=0 then p.q0=p.q1 else p.q1=p.q0 end equal_sides
+    from pi.rn1_maker_historical_fills f join pre p
+      on p.market_key=f.market_key and p.minute_at=date_trunc('minute',f.trade_at)
+    where f.role='maker' and f.side='BUY' and p.q0>0 and p.q1>0
+   ), markets as (
+    select market_key,count(*) n,avg(underweight::integer) underweight_rate
+    from eligible group by market_key
+   )
+   select (select count(*)::integer from eligible) eligible_maker_buys,
+     (select count(*)::integer from eligible where underweight) underweight_buys,
+     (select count(*)::integer from eligible where equal_sides) neutral_buys,
+     (select count(*)::integer from markets where n>=10) markets_10plus,
+     (select round(avg(underweight_rate) filter(where n>=10)::numeric,4)::float8 from markets) mean_market_underweight_rate,
+     (select count(*)::integer from markets where n>=10 and underweight_rate>0.5) markets_underweight_more,
+     (select count(*)::integer from markets where n>=10 and underweight_rate<0.5) markets_overweight_more`)
  ]);
  return {status:"exploratory",source:"verified_full_archive",cohort:coverage[0]||{},
- regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,
+ regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,inventory:inventory[0]||{},
  limitations:[
  "Maker describes executed role, not placement/cancellation of a private order.",
  "The price series is Polymarket indicative history, not archived bid/ask.",
