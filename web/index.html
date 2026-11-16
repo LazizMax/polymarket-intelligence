@@ -525,6 +525,28 @@ async function renderRN1Engine(){
     }
     historicalCard.append(node("p","Regroupement technique : même token, même prix, même rôle et même côté, timestamps espacés d’au plus une seconde. Cela peut regrouper plusieurs ordres indépendants ; ce n’est PAS un order_id.","foot"));
    }
+   const txMaker=(maker.tx_lots||[]).find(x=>x.role==="maker");
+   const txTaker=(maker.tx_lots||[]).find(x=>x.role==="taker");
+   const txBurst=(maker.burst_hash||[]).find(x=>x.role==="maker");
+   const txIntegrity=maker.tx_integrity||{};
+   if(txMaker){
+    historicalCard.append(node("h3","Blockchain · transactions observées vs ordres supposés"));
+    const txStats=node("div",null,"metrics");
+    txStats.append(
+     metric("Fills avec hash source vérifié",fmt(txIntegrity.verified_fills||0)),
+     metric("Transactions Maker distinctes",fmt(txMaker.transactions||0)),
+     metric("Transactions Maker à plusieurs fills",fmt(txMaker.multi_fill_transactions||0)),
+     metric("Transactions Maker à plusieurs prix",fmt(txMaker.multi_price_transactions||0))
+    );
+    historicalCard.append(txStats);
+    historicalCard.append(node("p","Les transactions multi-fills regroupent "+fmt(txMaker.multi_fill_notional_pct,2)+" % du notionnel Maker. Parmi "+fmt(txBurst?.multi_fill_bursts||0)+" rafales Maker de plusieurs fills, "+fmt(txBurst?.multiple_transaction_bursts||0)+" contiennent plusieurs transactions blockchain et "+fmt(txBurst?.single_transaction_bursts||0)+" une seule. Les hashes proviennent des "+fmt(txIntegrity.verified_pages||0)+" pages relues et contrôlées.","foot"));
+    const cohorts=maker.tx_cohorts||[];
+    if(cohorts.length===2){
+     const earlier=cohorts.find(x=>x.period==="earlier"),recent=cohorts.find(x=>x.period==="recent");
+     historicalCard.append(node("p","Vérification entre périodes : notionnel Maker des transactions multi-fills = "+fmt(earlier?.multi_fill_notional_pct,2)+" % sur le lot ancien et "+fmt(recent?.multi_fill_notional_pct,2)+" % sur le lot récent.","foot"));
+    }
+    historicalCard.append(banner("Un hash blockchain n’est PAS un identifiant d’ordre privé : plusieurs transactions peuvent exécuter le même ordre Maker. Les transactions à plusieurs prix sont compatibles avec plusieurs niveaux de cotation, mais ne prouvent pas le moment de placement ni le nombre d’ordres."));
+   }
    historicalCard.append(node("p","Carnets réels : "+fmt(overlap.probed_tokens||0)+" tokens sondés contre "+fmt(overlap.archived_tokens||0)+" tokens de la cohorte ; recouvrement : "+fmt(overlap.token_overlap||0)+". Les carnets disponibles ne permettent pas de reconstruire les quotes historiques de cette cohorte.","foot"));
    historicalCard.append(banner("Attention : un fill Maker est une EXÉCUTION, jamais la preuve du moment où RN1 a placé, déplacé ou annulé un ordre. Les minutes sans fill ne prouvent pas l’absence d’un ordre. Le gain prédictif est exploratoire, pas une EV ni un ROI."));
   }catch(e){
