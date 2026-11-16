@@ -637,6 +637,10 @@ async function renderRN1Engine(){
       }
       table.append(body);wrap.append(table);
       details.replaceChildren(info,wrap,node("p","L'intervalle observé commence au premier fill et finit au dernier : il ne représente ni la création ni l'annulation de l'ordre.","foot"));
+      if(result.original_order){
+       const o=result.original_order;
+       details.prepend(node("p","Paramètres signés : "+fmt(o.signed_shares,2)+" parts demandées · prix limite "+fmt(o.signed_price,4)+" · valeur initialement signée "+fmt(o.signed_usdc,2)+" USDC · horodatage déclaré "+String(o.declared_created_at||"").replace("T"," ")+".","foot"));
+      }
       inspect.textContent="Actualiser les fills";
      }catch(err){
       details.replaceChildren(node("p","Détail indisponible : "+String(err?.message||err),"foot"));
@@ -653,6 +657,65 @@ async function renderRN1Engine(){
   onchainCard.append(node("p","Analyse des ordres blockchain indisponible : "+String(e?.message||e),"foot"));
  }
  target.append(onchainCard);
+ const calldataCard=node("section",null,"card");
+ calldataCard.append(node("h2","Paramètres des ordres signés · taille réelle et temps déclaré"));
+ calldataCard.append(node("p","Données décodées du matchOrders Polygon et vérifiées cryptographiquement par EIP-712 contre les orderHash. Cohorte bornée, distincte des 46 330 ordres dont seul le fill est connu.","foot"));
+ try{
+  const original=await api("rn1_signed_calldata_research");
+  const statuses=original.progress||[],cohorts=original.cohorts||[],ladder=original.ladder||{};
+  const total=statuses.reduce((n,r)=>n+Number(r.transactions||0),0);
+  const done=statuses.filter(r=>r.status==="confirmed"||r.status==="unsupported"||r.status==="error")
+   .reduce((n,r)=>n+Number(r.transactions||0),0);
+  const confirmed=statuses.filter(r=>r.status==="confirmed").reduce((n,r)=>n+Number(r.transactions||0),0);
+  const pc=total>0?Math.min(100,100*done/total):0;
+  calldataCard.append(node("p","Transactions du programme d'échantillonnage : "+fmt(confirmed)+" confirmées sur "+fmt(total)+" sélectionnées. Vérification EIP-712 obligatoire, pas de nouveaux fills ingérés.","foot"));
+  const bar=node("div");bar.style.cssText="height:12px;border-radius:12px;overflow:hidden;background:var(--line)";
+  const filled=node("div");filled.style.cssText="height:100%;width:"+pc.toFixed(2)+"%;background:#21a782";
+  bar.append(filled);calldataCard.append(bar);
+  const names={random_tx:"Transactions ordinaires · échantillon",persistent_order:"Ordres persistants · sélection ciblée",multi_level:"Transactions multi-prix · sélection ciblée"};
+  for(const groupName of ["random_tx","persistent_order","multi_level"]){
+   const g=cohorts.find(x=>x.sampled_cohort===groupName);
+   if(!g)continue;
+   calldataCard.append(node("h3",names[groupName]));
+   const metrics=node("div",null,"metrics");
+   metrics.append(
+    metric("Ordres originaux validés",fmt(g.orders||0)),
+    metric("Taille initiale signée · médiane",fmt(g.signed_shares_median,2)+" parts"),
+    metric("Taille exécutée observée · médiane",fmt(g.filled_shares_median,2)+" parts"),
+    metric("Délai médian déclaré → premier fill",fmt(g.age_median_s,2)+" s")
+   );
+   calldataCard.append(metrics);
+   calldataCard.append(node("p","Ratio médian des parts exécutées / parts signées : "+fmt(100*Number(g.fill_ratio_median||0),1)+" %. Ordres quasi intégralement exécutés dans l'archive : "+fmt(g.pct_near_full,1)+" %. Événements : "+fmt(g.events||0)+".","foot"));
+  }
+  if(Number(ladder.simultaneous_price_groups)>0){
+   calldataCard.append(node("h3","Indices de création par grilles de prix"));
+   const metrics=node("div",null,"metrics");
+   metrics.append(
+    metric("Groupes au même timestamp et à prix distincts",fmt(ladder.simultaneous_price_groups||0)),
+    metric("Grilles avec quantités identiques",fmt(ladder.identical_share_ladders||0)),
+    metric("Grilles à trois niveaux ou plus",fmt(ladder.groups_three_or_more_levels||0)),
+    metric("Largeur médiane des grilles",fmt(100*Number(ladder.median_price_width||0),2)+" pts")
+   );calldataCard.append(metrics);
+  }
+  const ages=(original.age_distribution||[]).filter(x=>x.sampled_cohort==="random_tx");
+  if(ages.length){
+   calldataCard.append(node("h3","Création déclarée → premier fill · transactions ordinaires"));
+   const sum=ages.reduce((n,x)=>n+Number(x.orders||0),0);
+   const ageOrder=["<1s","1-5s","5-30s","30s-2min","2-10min","10min+"];
+   const ageNames={"<1s":"Moins de 1 s","1-5s":"1 à 5 s","5-30s":"5 à 30 s","30s-2min":"30 s à 2 min","2-10min":"2 à 10 min","10min+":"Plus de 10 min"};
+   for(const key of ageOrder){
+    const r=ages.find(x=>x.age_band===key);if(!r)continue;
+    const p=100*Number(r.orders||0)/Math.max(sum,1);
+    const line=node("div",null,"row spread");
+    line.append(node("div",ageNames[key]||key,"small"),node("div",fmt(r.orders)+" · "+fmt(p,1)+" %","small"));
+    calldataCard.append(line);
+   }
+  }
+  calldataCard.append(banner("Attention : timestamp de création DÉCLARÉ dans l'ordre signé, pas heure prouvée de mise au carnet ; quantité initialement SIGNÉE, pas liquidité nécessairement affichée. Les tailles observées ne représentent que les fills archivés. Les cohortes persistent/multi-prix sont suréchantillonnées à dessein."));
+ }catch(e){
+  calldataCard.append(node("p","Paramètres initiaux indisponibles : "+String(e?.message||e),"foot"));
+ }
+ target.append(calldataCard);
  const oracleCard=node("section",null,"card");
  oracleCard.append(node("h2","Oracle externe · collecte & preuve temporelle"));
  let oracle=null;
