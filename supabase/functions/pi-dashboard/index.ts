@@ -2197,18 +2197,29 @@ select count(*)::int snapshots,count(distinct run_id)::int runs,
  percentile_cont(.9)within group(order by entry_cost)::float8 p90_market_cost,
  percentile_cont(.99)within group(order by entry_cost)::float8 p99_market_cost,
  max(entry_cost)::float8 peak_market_cost,
+ percentile_cont(.5)within group(order by greatest(0,entry_cost-least(shares_0,shares_1)))
+   filter(where entry_cost>0)::float8 median_conditional_terminal_downside,
+ percentile_cont(.9)within group(order by greatest(0,entry_cost-least(shares_0,shares_1)))
+   filter(where entry_cost>0)::float8 p90_conditional_terminal_downside,
+ max(greatest(0,entry_cost-least(shares_0,shares_1)))::float8 max_conditional_terminal_downside,
+ count(*)filter(where entry_cost>0 and least(shares_0,shares_1)>=entry_cost)::int positions_with_nonnegative_terminal_floor,
  percentile_cont(.5)within group(order by
    abs(shares_0-shares_1)/nullif(shares_0+shares_1,0))::float8 median_directional_share_fraction,
  min(observed_epoch)::float8 first_epoch,max(observed_epoch)::float8 last_epoch
 from m
 `;
  const basketQuery=base+String.raw`
-,baskets as(select run_id,sum(entry_cost) selected_cost,count(*)::int markets from m group by run_id)
+,baskets as(select run_id,sum(entry_cost) selected_cost,count(*)::int markets,
+ sum(greatest(0,entry_cost-least(shares_0,shares_1))) selected_downside_upper_bound
+ from m group by run_id)
 select count(*)::int runs,min(markets)::int minimum_markets,
  max(markets)::int maximum_markets,
  percentile_cont(.5)within group(order by selected_cost)::float8 median_selected_cost,
  percentile_cont(.9)within group(order by selected_cost)::float8 p90_selected_cost,
- max(selected_cost)::float8 max_selected_cost
+ max(selected_cost)::float8 max_selected_cost,
+ percentile_cont(.5)within group(order by selected_downside_upper_bound)::float8 median_selected_downside_bound,
+ percentile_cont(.9)within group(order by selected_downside_upper_bound)::float8 p90_selected_downside_bound,
+ max(selected_downside_upper_bound)::float8 max_selected_downside_bound
 from baskets
 `;
  const eventQuery=base+String.raw`
@@ -2331,6 +2342,7 @@ from checked
    transitions:"Compare consecutive observations of exactly the SAME market no more than 180 seconds apart, never different markets. More hedged shares = increase in min(shares0,shares1). A reduced gap is not proof of deliberate hedge ordering.",
    link_to_fills:"Observed matching quote-probe fills between snapshots are incomplete. No match does not imply that there was no trade; even a match does not identify the unique cause of the position change.",
    peaks:"Every peak shown is MAXIMUM OBSERVED ENTRY COST on a sampled market/event across the available probe window. It is NOT RN1's position limit, target allocation or global risk cap.",
+   terminal:"For a correctly resolving two-outcome contract paying 1 USDC/share on exactly one side, min(shares0,shares1) is the smallest possible gross payout from these CURRENT open shares. max(0, attributed_open_entry_cost - min_shares) is a CONDITIONAL upper bound on terminal loss against the displayed cost basis, NOT realized PnL, VaR, liquidation loss, a portfolio drawdown or an order-level risk limit. Fees, splits, rebates, voids, transfers and subsequent executions are omitted. Across sampled markets, summing per-market worst cases is intentionally conservative and may combine mutually incompatible sport outcomes.",
    pnl:"No net ROI, profit, margin, unrealised mark-to-market, settlement guarantee or trade recommendation is inferred from selected open-position costs.",
    live:"The analysis reruns from persistent probe snapshots upon request. Historical 756k Maker/Taker archives are not reimported; the position sample is separate and selective."
   }
