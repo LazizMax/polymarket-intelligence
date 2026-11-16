@@ -581,6 +581,10 @@ async function renderRN1Engine(){
   fill.style.cssText="height:100%;width:"+Math.min(100,Math.max(0,pc))+"%;background:#21a782;transition:width .3s ease";
   track.append(fill);onchainCard.append(track);
   onchainCard.append(node("p","Durée entre le premier et le dernier fill d'un même ordre : médiane "+fmt(signed.median_repeated_order_span_seconds||0,1)+" secondes parmi les ordres exécutés dans plusieurs transactions. "+fmt(signed.observed_span_at_least_1min||0)+" ordres ont au moins 60 s entre premier et dernier fill observé.","foot"));
+  const ambigu=onchain.unmapped||{};
+  if(Number(ambigu.ambiguous_transactions)>0){
+   onchainCard.append(node("p","Ambiguïtés conservées sans attribution inventée : "+fmt(ambigu.ambiguous_transactions)+" transactions, "+fmt(ambigu.unmapped_fills_in_ambiguous_txs)+" fills. Les "+fmt(ambigu.onchain_orders_not_fingerprint_mapped)+" ordres signés correspondants sont vérifiés sur Polygon mais ne peuvent pas tous être reliés à une ligne individuelle lorsque prix et quantités sont identiques.","foot"));
+  }
   const examples=onchain.examples||[];
   if(examples.length){
    onchainCard.append(node("h3","Exemples réels d'ordres réexécutés"));
@@ -593,6 +597,37 @@ async function renderRN1Engine(){
     itemCard.append(node("p","Intervalle des fills : "+fmt(item.observed_fill_span_seconds||0)+" s · notionnel exécuté brut "+fmt(item.gross_notional||0,2)+" USDC","foot"));
     const id=String(item.order_hash||"");
     itemCard.append(node("p","Ordre "+id.slice(0,10)+"…"+id.slice(-8),"foot"));
+    const details=node("div");
+    details.style.cssText="margin-top:10px";
+    const inspect=button("Voir les exécutions",async()=>{
+     inspect.disabled=true;
+     details.replaceChildren(node("p","Chargement des transactions confirmées…","foot"));
+     try{
+      const result=await api("rn1_signed_order_detail",{order_hash:id});
+      if(result.status!=="confirmed_onchain")throw Error(result.error||"Ordre indisponible");
+      const rows=result.fills||[];
+      const info=node("p","Ordre signé : "+id+" · "+fmt(rows.length)+" fills · "+fmt(result.order?.filled_shares||0,2)+" parts exécutées observées.","foot");
+      info.style.overflowWrap="anywhere";
+      const wrap=node("div",null,"tablewrap");
+      const table=node("table"),head=node("thead"),tr=node("tr");
+      ["Horodatage UTC","Prix","Parts","Valeur USDC","Transaction Polygon"].forEach(v=>tr.append(node("th",v)));
+      head.append(tr);table.append(head);
+      const body=node("tbody");
+      for(const v of rows){
+       const row=node("tr");
+       row.append(node("td",String(v.executed_at||"").replace("T"," ").replace("+00:00"," UTC")),
+        node("td",fmt(v.fill_price,5)),node("td",fmt(v.shares,3)),
+        node("td",fmt(v.notional,2)),node("td",String(v.transaction_hash||"").slice(0,12)+"…"));
+       body.append(row);
+      }
+      table.append(body);wrap.append(table);
+      details.replaceChildren(info,wrap,node("p","L'intervalle observé commence au premier fill et finit au dernier : il ne représente ni la création ni l'annulation de l'ordre.","foot"));
+      inspect.textContent="Actualiser les fills";
+     }catch(err){
+      details.replaceChildren(node("p","Détail indisponible : "+String(err?.message||err),"foot"));
+     }finally{inspect.disabled=false}
+    },"secondary");
+    itemCard.append(inspect,details);
     listing.append(itemCard);
    }
    onchainCard.append(listing);
