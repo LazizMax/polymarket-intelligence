@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;white-space:nowrap;text-align:right}th
 </section></div>
 <div id="app" class="shell">
 <aside class="sidebar"><div class="brand"><span class="mark">◈</span><div><b>Polymarket</b><span class="small">Intelligence Cloud</span></div></div>
-<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="sizing">RN1 · Money management</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
+<nav><button class="nav on" data-tab="ranking">Classements</button><button class="nav" data-tab="wallet">Analyse wallet</button><button class="nav" data-tab="rn1">RN1 · Algorithme</button><button class="nav" data-tab="patterns">RN1 · Patterns</button><button class="nav" data-tab="triggers">RN1 · Déclencheurs</button><button class="nav" data-tab="sports">RN1 · Matchs</button><button class="nav" data-tab="sizing">RN1 · Money management</button><button class="nav" data-tab="exposure">RN1 · Exposition</button><button class="nav" data-tab="arb">Arbitrage Lab</button><button class="nav" data-tab="data">Collecte & qualité</button></nav>
 <div class="note"><b>Mode recherche</b><div style="margin-top:6px">PnL observé ≠ ROI du capital. Aucun signal copiable n'est encore validé.</div><button id="logout" class="button secondary" style="margin-top:14px">Déconnexion</button></div>
 </aside><main class="main">
 <div class="row spread"><span class="kicker">Analyses historiques · Supabase</span><span id="lastUpdated" class="status"></span></div>
@@ -410,6 +410,200 @@ async function renderRN1Activity(target){
 
 
 
+
+
+async function renderRN1Exposure(){
+ const target=$("content");
+ target.replaceChildren(heading("RN1 · Exposition & inventaire",
+  "Reconstituer les positions YES/NO sur les marchés suivis, leur coût d'entrée et les changements observés — sans inventer de bankroll."));
+ target.append(banner("ÉCHANTILLON ROTATIF : chaque sonde complète suit 8 marchés, jamais l'intégralité du wallet. Les sommes et pics ci-dessous portent UNIQUEMENT sur les marchés sélectionnés au moment de la sonde. Ils ne sont ni le capital de RN1, ni ses limites de risque."));
+ let data;
+ try{data=await api("rn1_exposure_forensics")}
+ catch(e){target.append(node("p","Analyse de l'exposition indisponible : "+String(e?.message||e),"red"));return;}
+ const o=data.overview||{},b=data.basket||{},ev=data.event_overview||{},t=data.transitions||{};
+ const num=v=>Number(v||0);
+ const formatDate=v=>!v?"—":new Date(Number(v)*1000).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+ const money=v=>v==null?"—":"$"+fmt(Number(v),2);
+ const pct=(a,z)=>num(z)>0?fmt(100*num(a)/num(z),1)+" %":"—";
+ const metrics=node("div",null,"metrics");
+ metrics.append(
+  metric("Sondes complètes",fmt(o.runs||0)),
+  metric("Observations marché–instant",fmt(o.snapshots||0)),
+  metric("Marchés distincts échantillonnés",fmt(o.markets||0)),
+  metric("Événements repérés",fmt(o.events||0))
+ );
+ target.append(metrics);
+ const spanCard=node("section",null,"card");
+ spanCard.append(node("h2","Fenêtre et couverture de la collecte"));
+ spanCard.append(node("p","Entre "+formatDate(o.first_epoch)+" et "+formatDate(o.last_epoch)+" · "+fmt(b.minimum_markets)+" à "+fmt(b.maximum_markets)+" marchés par sonde complète. Le dernier relevé ne représente PAS un snapshot de tout le wallet.","foot"));
+ const connected=button("Comparer avec les modèles de sizing",()=>setTab("sizing"),"secondary");
+ spanCard.append(connected);target.append(spanCard);
+ const pairCard=node("section",null,"card");
+ pairCard.append(node("h2","Quel inventaire est effectivement observé sur les deux issues ?"));
+ const states=[
+  {label:"Deux issues avec des parts",n:num(o.both_active),color:"#4fe4c4"},
+  {label:"Une seule issue avec des parts",n:num(o.one_active),color:"#8fc0ff"},
+  {label:"Aucune issue renvoyée par l'API",n:num(o.neither_active),color:"#8e98aa"}
+ ];
+ const overall=num(o.snapshots)||1;
+ const bar=node("div");bar.style.cssText="display:flex;height:22px;overflow:hidden;border-radius:8px;background:#26394a;margin:15px 0";
+ for(const state of states){const seg=node("div");seg.style.width=(100*state.n/overall)+"%";seg.style.background=state.color;seg.title=state.label+": "+fmt(state.n);bar.append(seg)}
+ pairCard.append(bar);
+ for(const state of states){
+  const r=node("div");r.style.cssText="display:flex;justify-content:space-between;gap:12px;margin:8px 0;flex-wrap:wrap";
+  const label=node("span",state.label,"small");label.style.borderLeft="7px solid "+state.color;label.style.paddingLeft="9px";
+  r.append(label,node("span",fmt(state.n)+" ("+pct(state.n,overall)+")","small"));pairCard.append(r);
+ }
+ pairCard.append(node("p","Sur "+fmt(o.neither_active)+" observations, ni l'une ni l'autre des issues n'est renvoyée : leurs tailles sont enregistrées à zéro à titre de PLACEHOLDERS, et non comme preuve indépendante d'un inventaire nul. "+fmt(o.both_api_confirmed)+" observations ont deux issues effectivement retournées par l'API.","foot"));
+ target.append(pairCard);
+ const amounts=node("section",null,"card");
+ amounts.append(node("h2","Coût attribué aux positions ouvertes — périmètre sélectionné"));
+ const amountMetrics=node("div",null,"metrics");
+ amountMetrics.append(
+   metric("Marché avec positions · médiane",money(o.median_active_market_cost)),
+   metric("Marché · 90e centile",money(o.p90_market_cost)),
+   metric("Plus haut marché observé",money(o.peak_market_cost)),
+   metric("Déséquilibre de parts médian",pct(num(o.median_directional_share_fraction)*100,100))
+ );
+ amounts.append(amountMetrics);
+ const sampleMetrics=node("div",null,"metrics");
+ sampleMetrics.append(
+   metric("8 marchés sélectionnés · médiane",money(b.median_selected_cost)),
+   metric("8 marchés · 90e centile",money(b.p90_selected_cost)),
+   metric("Maximum de la sélection",money(b.max_selected_cost)),
+   metric("Plus forte sélection / événement",money(ev.peak_selected_event_cost))
+ );
+ amounts.append(sampleMetrics);
+ amounts.append(node("p","Les coûts par marché n'incluent que les positions encore ouvertes. Les totaux changent aussi quand les marchés échantillonnés changent : aucune variation du total sélectionné ne peut être attribuée automatiquement à un achat ou une vente. Un pic observé n'est PAS une limite de risque.","foot"));
+ target.append(amounts);
+ const transitions=node("section",null,"card");
+ transitions.append(node("h2","Comment RN1 modifie-t-il son inventaire entre deux sondes proches ?"));
+ transitions.append(node("p","Comparaison de DEUX relevés successifs du même marché, séparés de moins de 3 minutes. Pas de comparaison artificielle entre marchés différents.","foot"));
+ const tMetrics=node("div",null,"metrics");
+ tMetrics.append(
+  metric("Paires rapprochées",fmt(t.consecutive_pairs||0)),
+  metric("Changements de positions",fmt(t.changed||0)),
+  metric("Modifications avec deux issues vérifiées",fmt(t.strictly_confirmed_changed||0)),
+  metric("Nouvelles parts appariées",fmt(t.more_hedged_shares||0))
+ );transitions.append(tMetrics);
+ const trusted=num(t.strictly_confirmed_changed),down=num(t.strictly_confirmed_gap_reduced),up=num(t.strictly_confirmed_gap_increased);
+ const pHead=node("h3","Sur les changements avec deux issues renvoyées aux deux instants");transitions.append(pHead);
+ const changeBar=node("div");changeBar.style.cssText="display:flex;height:18px;overflow:hidden;border-radius:8px;background:#26394a;margin:12px 0";
+ for(const [v,color] of [[down,"#4fe4c4"],[up,"#e4ab72"],[Math.max(0,trusted-down-up),"#8e98aa"]]){
+  const x=node("div");x.style.width=(trusted?100*v/trusted:0)+"%";x.style.background=color;changeBar.append(x);
+ }
+ transitions.append(changeBar);
+ const transDesc=node("div",null,"metrics");
+ transDesc.append(
+  metric("Écart absolu de parts réduit",fmt(down)+" · "+pct(down,trusted)),
+  metric("Écart absolu de parts accru",fmt(up)+" · "+pct(up,trusted)),
+  metric("Coût en hausse · toutes transitions",fmt(t.cost_increase||0)),
+  metric("Coût en baisse · deux issues vérifiées",fmt(t.strictly_confirmed_cost_decreased||0))
+ );
+ transitions.append(transDesc);
+ transitions.append(node("p","Une hausse des deux côtés et une réduction de l'écart ne sont pas identiques. Le renforcement des parts appariées peut coexister avec une augmentation du déséquilibre. L'analyse mesure des changements de POSITIONS, pas une intention d'ordre. "+fmt(t.changed_with_matched_fills||0)+" changements ont au moins un fill public apparié dans l'intervalle, "+fmt(t.changed_without_matched_fills||0)+" n'en ont pas dans notre capture partielle. Aucun résultat de ce bloc n'est un signal d'achat.","foot"));
+ transitions.append(node("p","Contrôle de provenance : "+fmt(t.zero_imputation_involved||0)+" changements impliquent un relevé sans aucune issue retournée par l'API. Ils sont exclus du graphique des variations vérifiées. Le coût peut alors tomber à zéro sans démontrer une vente.","foot"));
+ target.append(transitions);
+ const eventCard=node("section",null,"card");
+ eventCard.append(node("h2","Concentration par événement sportif"));
+ eventCard.append(node("p","Des marchés Moneyline, Spreads ou Totals d'un même match peuvent coexister. Ici, on additionne UNIQUEMENT le coût d'entrée des marchés sélectionnés à la même sonde, sans calculer une exposition nette sur leurs issues corrélées.","foot"));
+ const evMetrics=node("div",null,"metrics");
+ evMetrics.append(
+  metric("Relevés événement–instant",fmt(ev.event_snapshots||0)),
+  metric("Avec ≥2 marchés du même match",fmt(ev.multi_market_event_snapshots||0)),
+  metric("Avec ≥3 marchés du même match",fmt(ev.three_market_event_snapshots||0))
+ );eventCard.append(evMetrics);
+ const topEvents=data.events||[];
+ const ewrap=node("div",null,"tablewrap"),etable=node("table"),thead=node("thead"),thr=node("tr");
+ ["Événement","Marchés simultanés max.","Coût sélectionné max.","Dernier coût sélectionné","Relevés"].forEach(x=>thr.append(node("th",x)));
+ thead.append(thr);etable.append(thead);const etbody=node("tbody");
+ for(const e of topEvents){const tr=node("tr");tr.append(
+  node("td",e.event_slug||"—","name"),
+  node("td",fmt(e.max_selected_markets)),
+  node("td",money(e.observed_peak_cost)),
+  node("td",money(e.latest_selected_cost)),
+  node("td",fmt(e.snapshots))
+ );etbody.append(tr)}
+ etable.append(etbody);ewrap.append(etable);eventCard.append(ewrap);
+ eventCard.append(node("p","Il ne faut pas interpréter la somme des coûts de marchés d'un même match comme une Value at Risk (VaR) : les contrats sportifs peuvent gagner ou perdre ensemble et d'autres marchés du match peuvent ne pas être observés.","foot"));
+ target.append(eventCard);
+ const markets=data.markets||[];
+ const marketCard=node("section",null,"card");
+ marketCard.append(node("h2","Explorer un marché · évolution réelle des positions"));
+ marketCard.append(node("p","Choisis un marché pour consulter ses relevés successifs. Les courbes montrent le coût d'entrée encore attribué aux positions ouvertes, PAS un PnL ou une valeur de liquidation.","foot"));
+ const filter=node("div",null,"filters"),pickLabel=node("label","Marché"),select=node("select");
+ for(const m of markets){const opt=node("option",(m.event_slug||"Événement non identifié")+" · "+(m.market_type||"marché")+" · "+String(m.market_key).slice(0,10));opt.value=m.market_key;select.append(opt)}
+ pickLabel.append(select);filter.append(pickLabel);marketCard.append(filter);
+ const graphArea=node("div");marketCard.append(graphArea);
+ const allHistory=data.market_timeline||[];
+ function drawMarket(){
+  const m=markets.find(z=>z.market_key===select.value)||markets[0];
+  graphArea.replaceChildren();
+  if(!m){graphArea.append(node("p","Aucune observation de marché disponible.","foot"));return;}
+  const series=allHistory.filter(z=>z.market_key===m.market_key).sort((a,b)=>num(a.observed_epoch)-num(b.observed_epoch));
+  const inf=node("div",null,"metrics");
+  const hedged=Math.min(num(m.latest_shares_0),num(m.latest_shares_1)),
+   gap=Math.abs(num(m.latest_shares_0)-num(m.latest_shares_1));
+  inf.append(
+   metric("Dernier coût ouvert",money(m.latest_cost)),
+   metric("Pic observé · pas un plafond",money(m.observed_peak_cost)),
+   metric("Parts appariées (min des issues)",fmt(hedged,2)),
+   metric("Écart directionnel (parts)",fmt(gap,2))
+  );graphArea.append(inf);
+  graphArea.append(node("p","Dernier relevé : "+formatDate(m.last_epoch)+" · "+fmt(m.observations)+" observations pour ce marché ; "+(num(m.latest_api_tokens)===2?"deux issues revenues de l'API":num(m.latest_api_tokens)===1?"une issue revenue de l'API":"zéros reconstruits")+" .","foot"));
+  if(!series.length)return;
+  const values=series.map(x=>num(x.entry_cost)),maxVal=Math.max(1,...values),minVal=Math.min(...values);
+  const minScale=Math.max(0,minVal-(maxVal-minVal)*.12),maxScale=maxVal+Math.max(1,(maxVal-minScale)*.12);
+  const svgNS="http://www.w3.org/2000/svg",svg=document.createElementNS(svgNS,"svg");
+  svg.setAttribute("viewBox","0 0 720 210");svg.setAttribute("preserveAspectRatio","none");
+  svg.style.cssText="width:100%;height:220px;display:block;border:1px solid #26394a;border-radius:10px;background:#0c1926;margin:12px 0";
+  const xpos=i=>34+(series.length===1?325:650*i/(series.length-1));
+  const ypos=v=>175-140*(v-minScale)/Math.max(1,maxScale-minScale);
+  for(let j=0;j<4;j++){const y=22+j*51;const line=document.createElementNS(svgNS,"line");line.setAttribute("x1","30");line.setAttribute("y1",String(y));line.setAttribute("x2","690");line.setAttribute("y2",String(y));line.setAttribute("stroke","#26394a");line.setAttribute("stroke-width","1");svg.append(line)}
+  const curve=document.createElementNS(svgNS,"path");
+  curve.setAttribute("d",series.map((x,i)=>(i?"L":"M")+xpos(i).toFixed(1)+" "+ypos(num(x.entry_cost)).toFixed(1)).join(" "));
+  curve.setAttribute("stroke","#4fe4c4");curve.setAttribute("stroke-width","3");curve.setAttribute("fill","none");curve.setAttribute("stroke-linecap","round");svg.append(curve);
+  for(let i=0;i<series.length;i++){
+   const dot=document.createElementNS(svgNS,"circle");dot.setAttribute("cx",String(xpos(i)));dot.setAttribute("cy",String(ypos(num(series[i].entry_cost))));
+   dot.setAttribute("r","3");dot.setAttribute("fill","#4fe4c4");svg.append(dot);
+  }
+  graphArea.append(svg);
+  const range=node("div");range.style.cssText="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px";
+  range.append(node("span",formatDate(series[0].observed_epoch),"foot"),node("span","Coût min "+money(minVal)+" · max "+money(maxVal),"foot"),node("span",formatDate(series[series.length-1].observed_epoch),"foot"));
+  graphArea.append(range);
+  const tblWrap=node("div",null,"tablewrap"),tbl=node("table"),hd=node("thead"),hdrow=node("tr");
+  ["Observation","Coût entrée","Parts issue 0","Parts issue 1","Parts appariées","Écart de parts","Issues API"].forEach(x=>hdrow.append(node("th",x)));
+  hd.append(hdrow);tbl.append(hd);const body=node("tbody");
+  for(const r of series.slice(-10).reverse()){
+   const r0=num(r.shares_0),r1=num(r.shares_1),tr=node("tr");
+   tr.append(node("td",formatDate(r.observed_epoch)),node("td",money(r.entry_cost)),
+    node("td",fmt(r0,2)),node("td",fmt(r1,2)),node("td",fmt(Math.min(r0,r1),2)),
+    node("td",fmt(Math.abs(r0-r1),2)),node("td",fmt(r.api_tokens)+"/2"));
+   body.append(tr);
+  }
+  tbl.append(body);tblWrap.append(tbl);graphArea.append(tblWrap);
+ }
+ select.addEventListener("change",drawMarket);drawMarket();
+ target.append(marketCard);
+ const ranked=node("section",null,"card");
+ ranked.append(node("h2","Marchés avec les plus fortes positions observées"));
+ const wrap=node("div",null,"tablewrap"),table=node("table"),thead2=node("thead"),r0=node("tr");
+ ["Marché","Type","Coût observé max.","Dernier coût observé","Dernier relevé","Sondes"].forEach(x=>r0.append(node("th",x)));
+ thead2.append(r0);table.append(thead2);const tbody=node("tbody");
+ for(const m of markets){const tr=node("tr");
+  tr.append(node("td",(m.event_slug||"—")+" · "+m.market_key.slice(0,10),"name"),node("td",m.market_type||"—"),
+   node("td",money(m.observed_peak_cost)),node("td",money(m.latest_cost)),
+   node("td",formatDate(m.last_epoch)),node("td",fmt(m.observations)));tbody.append(tr)}
+ table.append(tbody);wrap.append(table);ranked.append(wrap);target.append(ranked);
+ const notes=node("section",null,"card");
+ notes.append(node("h2","Ce que ces observations ne prouvent pas"));
+ for(const [name,message] of Object.entries(data.definitions||{})){
+  if(name==="limit_runs")continue;notes.append(node("p","• "+message,"foot"));
+ }
+ if(num(o.runs)>=num(data.definitions?.limit_runs))notes.append(node("p","LIMITE DE FENÊTRE : l'analyse ne porte que sur les "+fmt(data.definitions.limit_runs)+" dernières sondes complètes.","red"));
+ notes.append(node("p","Question à tester ensuite : un plafonnement d'exposition apparaît-il quand on observe les mêmes marchés sur plusieurs séances indépendantes, avec des ordres Maker visibles non remplis ? Les maxima actuels ne suffisent pas à trancher.","foot"));
+ target.append(notes);
+}
 
 async function renderRN1Sizing(){
  const target=$("content");
@@ -2037,7 +2231,7 @@ async function renderData(){
 }
 function showError(err){toast(err.message||"Erreur de chargement");const c=$("content");if(c)c.append(node("p",err.message||"Erreur","red"));}
 async function render(){const c=$("content");c.replaceChildren(node("div","Chargement des données…","loader"));try{
- if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else if(tab==="sizing")await renderRN1Sizing();else await renderRank();
+ if(tab==="wallet")await renderWallet();else if(tab==="data")await renderData();else if(tab==="arb")await renderArb();else if(tab==="rn1")await renderRN1();else if(tab==="patterns")await renderRN1Patterns();else if(tab==="triggers")await renderRN1Triggers();else if(tab==="sports")await renderRN1Sports();else if(tab==="sizing")await renderRN1Sizing();else if(tab==="exposure")await renderRN1Exposure();else await renderRank();
 }catch(e){showError(e);}}
 document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>setTab(b.dataset.tab)));
 $("logout").addEventListener("click",()=>loginScreen(""));
