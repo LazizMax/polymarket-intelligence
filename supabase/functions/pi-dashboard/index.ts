@@ -2357,7 +2357,7 @@ from checked
 /** RN1 historical inventory. Read-only evidence: no paid odds, no new archive import.
  * The pilot 4000 legacy trade_pages is taker-only-biased; never treat it as a Maker sample. */
 async function rn1HistoricalResearch(){
- const [o]=await db.unsafe(String.raw\`
+ const [o]=await db.unsafe(String.raw`
 select
  (select coalesce(sum(row_count),0)::bigint from pi.rn1_full_archive_pages where stream='trades_all')::bigint archived_trades,
  (select count(*)::int from pi.rn1_full_archive_pages where stream='trades_all') archived_pages,
@@ -2369,8 +2369,8 @@ select
  (select count(distinct event_slug)::int from pi.rn1_nba_espn_plays) nba_events,
  (select coalesce(sum(row_count),0)::int from pi.rn1_trade_pages) legacy_pilot_fills,
  (select count(*)::int from pi.rn1_price_edge_cohort) economic_markets
-\`);
- const [joins]=await db.unsafe(String.raw\`
+`);
+ const [joins]=await db.unsafe(String.raw`
 with pilot as (
  select x->>'token_id' token_id,(x->>'timestamp')::bigint trade_epoch
  from pi.rn1_trade_pages t
@@ -2383,7 +2383,7 @@ select count(*)::int pilot_rows,
  where p.token_id=pilot.token_id and p.observed_epoch between pilot.trade_epoch-60 and pilot.trade_epoch
  ))::int with_strict_prior_60s,
  count(distinct token_id)::int pilot_tokens
-from pilot\`);
+from pilot`);
  return{
   status:"historical_first",
   archive:o||{},legacy_pilot:joins||{},
