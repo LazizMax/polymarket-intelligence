@@ -2150,7 +2150,7 @@ async function rn1SizingMarketValidation(){
  * Never identify this rotating selection with all wallet holdings or available bankroll.
  * All YES/NO amounts are cost basis of CURRENT positions, not account cash or market value. */
 async function rn1ExposureForensics(){
- const base=String.raw\`
+ const base=String.raw`
 with recent_runs as (
  select id,received_at,position_observed_at,positions,quotes
  from pi.rn1_quote_probe_runs
@@ -2181,8 +2181,8 @@ m as(
  from p left join q using(run_id,market_key)
  where token_rows=2 and shares_0>=0 and shares_1>=0 and entry_cost>=0
 )
-\`;
- const overviewQuery=base+String.raw\`
+`;
+ const overviewQuery=base+String.raw`
 select count(*)::int snapshots,count(distinct run_id)::int runs,
  count(distinct market_key)::int markets,count(distinct event_slug)::int events,
  count(*)filter(where shares_0>0 and shares_1>0)::int both_active,
@@ -2200,8 +2200,8 @@ select count(*)::int snapshots,count(distinct run_id)::int runs,
    abs(shares_0-shares_1)/nullif(shares_0+shares_1,0))::float8 median_directional_share_fraction,
  min(observed_epoch)::float8 first_epoch,max(observed_epoch)::float8 last_epoch
 from m
-\`;
- const basketQuery=base+String.raw\`
+`;
+ const basketQuery=base+String.raw`
 ,baskets as(select run_id,sum(entry_cost) selected_cost,count(*)::int markets from m group by run_id)
 select count(*)::int runs,min(markets)::int minimum_markets,
  max(markets)::int maximum_markets,
@@ -2209,8 +2209,8 @@ select count(*)::int runs,min(markets)::int minimum_markets,
  percentile_cont(.9)within group(order by selected_cost)::float8 p90_selected_cost,
  max(selected_cost)::float8 max_selected_cost
 from baskets
-\`;
- const eventQuery=base+String.raw\`
+`;
+ const eventQuery=base+String.raw`
 ,ev as(select run_id,max(observed_epoch) epoch,event_slug,
  count(*)::int selected_markets,sum(entry_cost)::float8 event_selected_cost
  from m where event_slug is not null group by run_id,event_slug)
@@ -2221,8 +2221,8 @@ select event_slug,count(*)::int snapshots,
  max(epoch)::float8 last_epoch
 from ev group by event_slug
 order by observed_peak_cost desc limit 14
-\`;
- const eventOverviewQuery=base+String.raw\`
+`;
+ const eventOverviewQuery=base+String.raw`
 ,ev as(select run_id,event_slug,count(*)::int selected_markets,
  sum(entry_cost)::float8 event_selected_cost
  from m where event_slug is not null group by run_id,event_slug)
@@ -2234,8 +2234,8 @@ select count(*)::int event_snapshots,
  percentile_cont(.9)within group(order by event_selected_cost)::float8 p90_selected_event_cost,
  max(event_selected_cost)::float8 peak_selected_event_cost
 from ev
-\`;
- const marketQuery=base+String.raw\`
+`;
+ const marketQuery=base+String.raw`
 select market_key,max(event_slug)event_slug,max(market_type)market_type,
  count(*)::int observations,
  max(entry_cost)::float8 observed_peak_cost,
@@ -2246,8 +2246,8 @@ select market_key,max(event_slug)event_slug,max(market_type)market_type,
  max(observed_epoch)::float8 last_epoch
 from m group by market_key
 order by observed_peak_cost desc limit 15
-\`;
- const timelineQuery=base+String.raw\`
+`;
+ const timelineQuery=base+String.raw`
 ,most_observed as(select market_key from m group by market_key order by max(entry_cost)desc limit 15),
 numbered as(
  select m.market_key,m.observed_epoch,m.entry_cost,m.shares_0,m.shares_1,m.api_tokens,
@@ -2256,8 +2256,8 @@ numbered as(
 )
 select market_key,observed_epoch,entry_cost,shares_0,shares_1,api_tokens
 from numbered where rn<=28 order by market_key,observed_epoch
-\`;
- const transitionQuery=base+String.raw\`
+`;
+ const transitionQuery=base+String.raw`
 ,sequenced as (
  select m.*,
  lag(observed_epoch)over(partition by market_key order by observed_epoch,run_id) prev_at,
@@ -2305,7 +2305,7 @@ select count(*)::int consecutive_pairs,
  count(*)filter(where changed and dgap>.0001 and matched_fills>0)::int matched_gap_increased,
  sum(matched_fills)::int matched_fills_between_pairs
 from checked
-\`;
+`;
  const [overview,basket,eventStats,events,markets,timeline,transitions]=await Promise.all([
   db.unsafe(overviewQuery),db.unsafe(basketQuery),db.unsafe(eventOverviewQuery),
   db.unsafe(eventQuery),db.unsafe(marketQuery),db.unsafe(timelineQuery),db.unsafe(transitionQuery)
