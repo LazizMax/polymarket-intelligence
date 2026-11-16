@@ -1,7 +1,7 @@
 // Read-only Polygon OrderFilled receipt probe. Scheduler-authenticated, bounded to
 // archived RN1 transaction hashes. No private wallet credentials or paid RPC.
 import postgres from "npm:postgres@3.4.3";
-import { Interface } from "npm:ethers@6.13.5";
+import { Interface, TypedDataEncoder } from "npm:ethers@6.13.5";
 const dbUrl=Deno.env.get("SUPABASE_DB_URL")||"";
 if(!dbUrl)throw Error("Missing DB URL");
 const db=postgres(dbUrl,{max:1,prepare:false,connect_timeout:8});
@@ -372,10 +372,25 @@ async function decodeSignedMakerOrderProbe(){
   try{parsed=matchAbi.parseTransaction({data:raw})}catch(e){error=String(e).slice(0,140)}
   const maker=parsed?.args?.makerOrders||[];
   const onlyRn1=[...maker].filter((o:any)=>String(o.maker).toLowerCase()===wallet);
+  const receiptData=await receipt(String(t.transaction_hash));
+  const onchainOrders=parseReceipt(receiptData.result,1000).order_events.filter((e:any)=>e.maker===wallet).map((e:any)=>String(e.order_hash).toLowerCase());
+  const typedData={Order:[
+   {name:"salt",type:"uint256"},{name:"maker",type:"address"},{name:"signer",type:"address"},
+   {name:"tokenId",type:"uint256"},{name:"makerAmount",type:"uint256"},{name:"takerAmount",type:"uint256"},
+   {name:"side",type:"uint8"},{name:"signatureType",type:"uint8"},{name:"timestamp",type:"uint256"},
+   {name:"metadata",type:"bytes32"},{name:"builder",type:"bytes32"}]};
+  const domain={name:"Polymarket CTF Exchange",version:"2",chainId:137,verifyingContract:r.to};
+  const signedHashes=onlyRn1.map((o:any)=>TypedDataEncoder.hash(domain,typedData,{
+   salt:o.salt,maker:o.maker,signer:o.signer,tokenId:o.tokenId,makerAmount:o.makerAmount,
+   takerAmount:o.takerAmount,side:o.side,signatureType:o.signatureType,timestamp:o.timestamp,
+   metadata:o.metadata,builder:o.builder
+  }).toLowerCase());
+  const hashMatches=signedHashes.filter((h:string)=>onchainOrders.includes(h)).length;
   results.push({transaction_hash:t.transaction_hash,rpc:provider,to:r.to,
     selector:raw.slice(0,10),calldata_bytes:raw.length/2-1,
     decoded:!!parsed,decoding_error:error,
-    maker_orders_all:maker.length,maker_orders_rn1:onlyRn1.length,
+    maker_orders_all:maker.length,maker_orders_rn1:onlyRn1.length,hash_matches:hashMatches,
+    receipt_maker_hashes:onchainOrders.length,
     samples:onlyRn1.slice(0,6).map((o:any)=>({
       salt:o.salt.toString(),maker:String(o.maker).toLowerCase(),token_id:o.tokenId.toString(),
       maker_amount:o.makerAmount.toString(),taker_amount:o.takerAmount.toString(),
