@@ -570,7 +570,7 @@ async function renderRN1Engine(){
    metric("Fills Maker liés à un ordre signé",fmt(scan.actual_order_fills||0)+" / "+fmt(scan.archive_maker_fills||0)),
    metric("Ordres signés distincts",fmt(signed.signed_orders||0)),
    metric("Ordres exécutés dans plusieurs transactions",fmt(signed.orders_multiple_transactions||0)),
-   metric("Ordres exécutés à plusieurs prix",fmt(signed.orders_multiple_execution_prices||0))
+   metric("Ordres avec plusieurs prix (arrondis au millième)",fmt(signed.orders_multiple_execution_prices||0))
   );
   onchainCard.append(stats);
   const pc=Number(scan.block_progress_pct)||0;
@@ -589,7 +589,7 @@ async function renderRN1Engine(){
     const itemCard=node("div",null,"card");
     itemCard.style.cssText="padding:12px;background:var(--panel2);border:1px solid var(--line)";
     itemCard.append(node("h3",item.event_slug||"Marché"));
-    itemCard.append(node("p",fmt(item.verified_fills||0)+" fills · "+fmt(item.transaction_count||0)+" transactions · "+fmt(item.execution_price_count||0)+" prix observés","small"));
+    itemCard.append(node("p",fmt(item.verified_fills||0)+" fills · "+fmt(item.transaction_count||0)+" transactions · "+fmt(item.execution_price_count||0)+" prix après arrondi au millième","small"));
     itemCard.append(node("p","Intervalle des fills : "+fmt(item.observed_fill_span_seconds||0)+" s · notionnel exécuté brut "+fmt(item.gross_notional||0,2)+" USDC","foot"));
     const id=String(item.order_hash||"");
     itemCard.append(node("p","Ordre "+id.slice(0,10)+"…"+id.slice(-8),"foot"));
@@ -598,7 +598,7 @@ async function renderRN1Engine(){
    onchainCard.append(listing);
   }
   if(scan.status==="paused_error"||scan.status==="paused_quota")onchainCard.append(banner("Le scan est suspendu : "+String(scan.last_error||scan.status)+". Les résultats déjà vérifiés restent accessibles et inchangés."));
-  onchainCard.append(banner("Prudence : un ordre signé observé n'est pas nécessairement un ordre entier. Nous ne voyons que ses exécutions, jamais l'heure exacte de création, la profondeur jamais exécutée ni les annulations. Un même ordre peut être exécuté à plusieurs prix."));
+  onchainCard.append(banner("Prudence : un ordre signé observé n'est pas nécessairement un ordre entier. Nous ne voyons que ses exécutions, jamais l'heure exacte de création, la profondeur jamais exécutée ni les annulations. La variation brute de prix sur un même ordre peut relever de la précision numérique ; elle est arrondie à 0,001 pour cette métrique."));
  }catch(e){
   onchainCard.append(node("p","Analyse des ordres blockchain indisponible : "+String(e?.message||e),"foot"));
  }
