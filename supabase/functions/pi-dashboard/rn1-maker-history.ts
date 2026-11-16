@@ -3,7 +3,7 @@
 // private order-placement timestamps from execution timestamps.
 export async function rn1MakerHistoricalReport(db:any) {
  const sql=String.raw;
- const [coverage,rates,heldout,eventControl]=await Promise.all([
+ const [coverage,rates,heldout,eventControl,chronological]=await Promise.all([
   db.unsafe(`select (select count(*)::integer from pi.rn1_maker_historical_pages) pages,
     (select coalesce(sum(maker_fills),0)::integer from pi.rn1_maker_historical_pages) maker,
     (select coalesce(sum(taker_fills),0)::integer from pi.rn1_maker_historical_pages) taker,
@@ -49,10 +49,37 @@ export async function rn1MakerHistoricalReport(db:any) {
   count(*) filter(where volatile_minutes>=20 and calm_minutes>=20 and volatile_rate>calm_rate)::integer volatile_more,
   count(*) filter(where volatile_minutes>=20 and calm_minutes>=20 and volatile_rate<calm_rate)::integer calm_more,
   round(avg(volatile_rate-calm_rate) filter(where volatile_minutes>=20 and calm_minutes>=20)::numeric,5)::float8 event_mean_diff
-  from by_event`)
+  from by_event`),
+  db.unsafe(`with event_start as (
+    select event_slug,min(minute_at) first_at
+    from pi.rn1_maker_historical_minute_panel_v2 where delta_5m is not null group by 1
+   ), ranked as (
+    select event_slug,first_at,row_number() over(order by first_at,event_slug) rk,count(*) over() ne from event_start
+   ), labeled as (
+    select case when r.rk<=floor(r.ne*.7) then 'train' else 'test' end split,
+     case when abs(p.delta_5m)>0.01 then 'volatile' else 'quiet' end regime,
+     (p.maker_fills_next_60s>0)::integer y
+    from pi.rn1_maker_historical_minute_panel_v2 p join ranked r using(event_slug)
+    where p.delta_5m is not null
+   ), groups as (select split,regime,count(*) n,sum(y) yes from labeled group by 1,2),
+   train as (select sum(n) n,sum(yes) yes from groups where split='train'),
+   tr as (select regime,sum(n) n,sum(yes) yes from groups where split='train' group by 1),
+   test as (
+    select g.n,g.yes,
+      greatest(.00001,least(.99999,(train.yes+1.0)/(train.n+2.0))) pbase,
+      greatest(.00001,least(.99999,(tr.yes+1.0)/(tr.n+2.0))) pregime
+    from groups g join tr using(regime) cross join train where g.split='test'
+   )
+   select (select count(*)::integer from ranked) events,
+     (select count(*)::integer from ranked where rk<=floor(ne*.7)) train_events,
+     (select count(*)::integer from ranked where rk>floor(ne*.7)) test_events,
+     sum(n)::integer test_minutes,sum(yes)::integer positives,
+     round((sum(-yes*ln(pbase)-(n-yes)*ln(1-pbase))/sum(n))::numeric,6)::float8 baseline_logloss,
+     round((sum(-yes*ln(pregime)-(n-yes)*ln(1-pregime))/sum(n))::numeric,6)::float8 volatility_logloss
+   from test`)
  ]);
  return {status:"exploratory",source:"verified_full_archive",cohort:coverage[0]||{},
- regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{},
+ regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},
  limitations:[
  "Maker describes executed role, not placement/cancellation of a private order.",
  "The price series is Polymarket indicative history, not archived bid/ask.",
