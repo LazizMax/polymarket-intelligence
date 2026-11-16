@@ -31,7 +31,7 @@ async function receipt(txhash:string){
  }
  throw Error(error);
 }
-function parseReceipt(x:any){
+function parseReceipt(x:any,eventLimit=12){
  const logs=Array.isArray(x.logs)?x.logs:[];
  const events:any[]=[];
  for(const e of logs){
@@ -51,13 +51,13 @@ function parseReceipt(x:any){
     ?(side===0?Number(makerRaw)/Number(takerRaw):Number(takerRaw)/Number(makerRaw)):null;
   const shares=v2&&makerRaw!==null&&takerRaw!==null
     ?Number(side===0?takerRaw:makerRaw)/1e6:null;
-  events.push({order_hash:orderHash,maker,taker,v2,contract:address,token_id:tokenId,
+  events.push({transaction_hash:String(e.transactionHash||'').toLowerCase(),order_hash:orderHash,maker,taker,v2,contract:address,token_id:tokenId,
    log_index:e.logIndex,side,price,shares});
  }
  return {block_number:x.blockNumber,tx_status:x.status,logs:logs.length,order_filled_logs:events.length,
   rn1_as_maker:events.filter(e=>e.maker===wallet).length,
   rn1_as_taker:events.filter(e=>e.taker===wallet).length,
-  order_events:events.filter(e=>e.maker===wallet||e.taker===wallet).slice(0,12)};
+  order_events:events.filter(e=>e.maker===wallet||e.taker===wallet).slice(0,eventLimit)};
 }
 async function matchNextSignedOrder(){
  const candidates=await db.unsafe(`select t.transaction_hash,t.fill_count,t.price_levels
@@ -154,10 +154,128 @@ async function receiptBounds(){
  block:parseInt(got.result.blockNumber,16),rpc:got.endpoint})}
  return out;
 }
+async function fetchMakerLogs(from:bigint,to:bigint){
+ const filter={address:["0xe111180000d2663c0091e4f400237545b87b996b",
+ "0xe2222d279d744050d28e00520010520000310f59"],
+ fromBlock:"0x"+from.toString(16),toBlock:"0x"+to.toString(16),
+ topics:[topicV2,null,"0x"+wallet.slice(2).padStart(64,"0")]};
+ let last="rpc_unavailable";
+ for(const endpoint of rpcEndpoints){
+  try{
+   const r=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},
+     body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_getLogs",params:[filter]}),
+     signal:AbortSignal.timeout(30000)});
+   if(!r.ok){last="HTTP "+r.status;continue}
+   const j=await r.json();
+   if(j.error){last="RPC "+String(j.error.message||j.error.code).slice(0,120);continue}
+   if(!Array.isArray(j.result))throw Error("Malformed RPC logs");
+   if(j.result.length>10000)throw Error("Excessive logs; refuse processing");
+   return {logs:j.result,endpoint};
+  }catch(e){last=String(e).slice(0,120)}
+ }
+ throw Error(last);
+}
+async function scanMakerLogChunk(){
+ const claim=await db.unsafe(`update pi.rn1_maker_chain_scan_state
+ set lease_until=now()+interval '110 seconds',updated_at=now()
+ where singleton=true and status='running'
+  and (lease_until is null or lease_until<now())
+ returning next_block,to_block,chunk_size`);
+ if(!claim.length)return {status:"idle_or_complete"};
+ const job=claim[0],first=BigInt(job.next_block),last=BigInt(job.to_block);
+ try{
+  const cap=await db.unsafe("select pg_database_size(current_database())::bigint bytes");
+  if(Number(cap[0].bytes)>900000000){
+   await db.unsafe("update pi.rn1_maker_chain_scan_state set status='paused_quota',lease_until=null,last_error='Database safety budget' where singleton=true");
+   return {status:"paused_quota"};
+  }
+  const end=first+BigInt(job.chunk_size)-1n<=last?first+BigInt(job.chunk_size)-1n:last;
+  const {logs,endpoint}=await fetchMakerLogs(first,end);
+  const parsed=parseReceipt({logs,status:"0x1",blockNumber:"0x"+end.toString(16)},100000);
+  const makerEvents=parsed.order_events.filter((e:any)=>e.maker===wallet&&e.v2&&e.side===0&&/^0x[0-9a-f]{64}$/.test(e.transaction_hash));
+  const byTx=new Map<string,any[]>();
+  for(const e of makerEvents){const a=byTx.get(e.transaction_hash)||[];a.push(e);byTx.set(e.transaction_hash,a)}
+  const txIds=[...byTx.keys()];
+  const source=txIds.length?await db.unsafe(`select f.fingerprint,f.transaction_hash,f.token_id,
+   f.price::text price,f.shares::text shares from pi.rn1_maker_historical_fills f
+   join jsonb_array_elements_text(($1::text)::jsonb) ids(txhash) on f.transaction_hash=ids.txhash
+   where f.role='maker' and not exists(
+      select 1 from pi.rn1_maker_onchain_tx_audit a where a.transaction_hash=f.transaction_hash)
+   order by f.transaction_hash,f.fingerprint`,[JSON.stringify(txIds)]):[];
+  const sources=new Map<string,any[]>();
+  for(const f of source){const a=sources.get(f.transaction_hash)||[];a.push(f);sources.set(f.transaction_hash,a)}
+  const mappings:any[]=[], audits:any[]=[];
+  let confirmedTx=0,rejectedTx=0;
+  for(const [txhash,fills] of sources){
+   const events=byTx.get(txhash)||[];
+   let verdict="confirmed",note="",matched:any[]=[];
+   if(events.length!==fills.length){verdict="unmatched";note="Source/onchain Maker count mismatch"}
+   else{
+    const used=new Set<number>();
+    for(const f of fills){
+     const price=Number(f.price),shares=Number(f.shares);
+     const candidates=events.map((e:any,i:number)=>({e,i})).filter(({e,i})=>
+       !used.has(i)&&e.token_id===f.token_id
+       &&Number.isFinite(e.price)&&Math.abs(e.price-price)<=0.000002
+       &&Number.isFinite(e.shares)&&Math.abs(e.shares-shares)<=Math.max(0.000002,shares*0.00000001));
+     if(candidates.length!==1){verdict=candidates.length>1?"ambiguous":"unmatched";note="Price/size/token mapping not unique";break}
+     const {e,i}=candidates[0];used.add(i);
+     if(!/^0x[0-9a-f]{64}$/.test(e.order_hash)){verdict="unmatched";note="Invalid order hash";break}
+     matched.push({fingerprint:f.fingerprint,order_hash:e.order_hash,log_index:Number(BigInt(e.log_index))});
+    }
+   }
+   if(verdict==="confirmed"&&matched.length!==fills.length){verdict="unmatched";note="Incomplete matching"}
+   if(verdict==="confirmed"){mappings.push(...matched);confirmedTx++}else rejectedTx++;
+   audits.push({transaction_hash:txhash,source_fills:fills.length,maker_logs:events.length,
+     matched_fills:verdict==="confirmed"?matched.length:0,status:verdict,
+     block_number:null,rpc_provider:endpoint,note:note||null});
+  }
+  await db.begin(async tx=>{
+   if(mappings.length){
+    const updated=await tx.unsafe(`update pi.rn1_maker_historical_fills f
+      set maker_order_hash=x.order_hash,maker_order_log_index=x.log_index
+      from jsonb_to_recordset(($1::text)::jsonb) as x(fingerprint text,order_hash text,log_index integer)
+      where f.fingerprint=x.fingerprint and f.maker_order_hash is null
+       returning f.fingerprint`,[JSON.stringify(mappings)]);
+    if(updated.length!==mappings.length)throw Error("Mismatch applying uniquely matched OrderFilled events");
+   }
+   if(audits.length)await tx.unsafe(`insert into pi.rn1_maker_onchain_tx_audit
+    (transaction_hash,source_fills,maker_logs,matched_fills,status,block_number,rpc_provider,note)
+    select transaction_hash,source_fills,maker_logs,matched_fills,status,block_number,rpc_provider,note
+    from jsonb_to_recordset(($1::text)::jsonb) as x(
+      transaction_hash text,source_fills integer,maker_logs integer,matched_fills integer,
+      status text,block_number bigint,rpc_provider text,note text)
+    on conflict(transaction_hash) do nothing`,[JSON.stringify(audits)]);
+   const advanced=await tx.unsafe(`update pi.rn1_maker_chain_scan_state set
+    next_block=$1,chunk_size=chunk_size,chunks_done=chunks_done+1,
+    chain_logs_seen=chain_logs_seen+$2,fills_verified=fills_verified+$3,
+    tx_confirmed=tx_confirmed+$4,tx_unmatched=tx_unmatched+$5,
+    status=case when $1>to_block then 'complete' else 'running' end,
+    lease_until=null,last_success_at=now(),last_error=null,updated_at=now()
+    where singleton=true and next_block=$6 and status='running' returning next_block`,
+    [Number(end+1n),logs.length,mappings.length,confirmedTx,rejectedTx,Number(first)]);
+   if(advanced.length!==1)throw Error("Chain scan checkpoint race");
+  });
+  return {status:end===last?"complete":"running",from:Number(first),to:Number(end),
+   order_logs:makerEvents.length,unique_transactions:txIds.length,
+   source_transactions:sources.size,confirmed_transactions:confirmedTx,
+   unmatched_transactions:rejectedTx,confirmed_fills:mappings.length};
+ }catch(e){
+  const msg=String(e).slice(0,180);
+  await db.unsafe(`update pi.rn1_maker_chain_scan_state
+   set lease_until=null,last_error=$1,updated_at=now() where singleton=true`,[msg]);
+  return {status:"error",error:msg,block:Number(first)};
+ }
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
+ if(body.action==="rn1_chain_scan_tick"){
+   const count=Math.max(1,Math.min(3,Number(body.chunks)||1));
+   const out=[];for(let i=0;i<count;i++){const x=await scanMakerLogChunk();out.push(x);if(x.status!=="running")break}
+   return response({results:out});
+ }
  if(body.action==="rn1_chain_bounds"){try{return response({bounds:await receiptBounds()})}catch(e){return response({error:String(e).slice(0,150)},500)}}
  if(body.action==="rn1_order_logs_probe"){try{return response(await getLogsProbe(Number(body.span)||50))}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_signed_order_match_tick"){
