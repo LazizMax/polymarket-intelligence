@@ -471,6 +471,47 @@ async function renderRN1Engine(){
  bm.append(verdict);
  bm.append(node("p","Gain de log-loss du modèle carnet + inventaire vs carnet seul : "+signed(gain,5)+" ; intervalle bootstrap événement (95 %) : "+(ci?"["+signed(ci.low,5)+" ; "+signed(ci.high,5)+"]":"non estimable")+". Un gain POSITIF signifie une meilleure prédiction.","foot"));
  target.append(bm);
+ const pairs=data.paired_gain||{};
+ const pc=node("section",null,"card");
+ pc.append(node("h2","Mécanisme de paire : prix simultanés YES + NO"));
+ pc.append(node("p","Le modèle peut maintenant observer simultanément les deux carnets du même marché (somme des meilleurs bids, somme des meilleurs asks, liquidité de l'autre issue). Le test oppose ces informations à celles d'un seul carnet, sur les mêmes fenêtres hors événement.","foot"));
+ const pairChanges=[
+  ["Carnet des deux issues vs carnet seul",pairs.pair_vs_micro,pairs.pair_vs_micro_ci],
+  ["Deux issues + inventaire vs carnet + inventaire",pairs.pair_inventory_vs_inventory,pairs.pair_inventory_vs_inventory_ci]
+ ];
+ for(const [name,value,bounds] of pairChanges){
+  const line=node("p",name+" : gain log-loss "+signed(value,5)+(bounds?" · IC événement 95 % ["+signed(bounds.low,5)+" ; "+signed(bounds.high,5)+"]":" · IC insuffisant"),"foot");
+  pc.append(line);
+ }
+ pc.append(node("p","Un écart positif indique un gain prédictif. Une somme bid YES + bid NO inférieure à 1 ne signifie PAS qu'un arbitage à deux jambes serait effectivement exécutable ni net de frais.","foot"));
+ target.append(pc);
+ const chrono=data.chronological_holdout||{};
+ const tc=node("section",null,"card");
+ tc.append(node("h2","Contre-épreuve : matchs plus récents uniquement"));
+ tc.append(node("p","Les événements antérieurs à la coupure servent à l'entraînement ; les événements commençant après servent au test. Les matchs traversant la coupure sont écartés pour éviter les fuites.","foot"));
+ const tcm=node("div",null,"metrics");
+ tcm.append(metric("Événements entraînement",fmt(chrono.train_events||0)),
+ metric("Événements futurs de test",fmt(chrono.test_events||0)),
+ metric("Fills observés dans le test",fmt(chrono.test_positives||0)),
+ metric("Événements exclus à cheval",fmt(chrono.embargo_events||0)));
+ tc.append(tcm);
+ if((chrono.scores||[]).length){
+  const grid=node("table");grid.style.cssText="width:100%;border-collapse:collapse";
+  const hd=node("thead"),th=node("tr");
+  for(const x of ["Modèle","Log-loss futur ↓","Précision moyenne ↑"]){const c=node("th",x);c.style.cssText="text-align:left;padding:8px;border-bottom:1px solid var(--line)";th.append(c)}
+  hd.append(th);grid.append(hd);
+  const bod=node("tbody");
+  for(const r of chrono.scores){
+   const tr=node("tr");
+   for(const x of [r.label,fmt(r.log_loss,4),pct(r.average_precision)]){
+    const td=node("td",x);td.style.cssText="padding:8px;border-bottom:1px solid var(--line)";tr.append(td);
+   }
+   bod.append(tr);
+  }
+  grid.append(bod);const scroll=node("div");scroll.style.overflowX="auto";scroll.append(grid);tc.append(scroll);
+ }else tc.append(node("p","Couverture chronologique insuffisante pour un test strict avec embargo.","foot"));
+ tc.append(node("p","Ce test chronologique reste rétrospectif et court ; il ne remplace pas une vraie validation prospective.","foot"));
+ target.append(tc);
  const mirror=data.mirror_test||{};
  const mirrorCard=node("section",null,"card");
  mirrorCard.append(node("h2","Test falsifiable : RN1 privilégie-t-il le côté sous-détenu ?"));
