@@ -431,6 +431,17 @@ async function renderRN1Sizing(){
   metric("Maker dans pages auditées",checked?fmt(100*Number(verified.maker_fills)/checked,1)+" %":"—")
  );
  target.append(overview);
+ const archiveState=data.archive_state||{};
+ const latestArchived=Number(archiveState.rows_seen||0),frozen=Number(full.archive_fills||0);
+ if(latestArchived>0){
+  const coverage=node("section",null,"card");
+  coverage.append(node("h2","Couverture de l'analyse des montants"));
+  coverage.append(node("p","Collecte complète disponible à date : "+fmt(latestArchived)+" fills BUY archivés ("+fmt(archiveState.pages_fetched||0)+" pages) · histogramme de montants calculé sur le lot figé de "+fmt(frozen)+" fills ("+(frozen&&latestArchived?fmt(100*frozen/latestArchived,1):"—")+" % des archives déjà téléchargées).","foot"));
+  if(latestArchived>frozen){
+   coverage.append(node("p","L'archive de RN1 continue de grandir. Les nouvelles pages sont conservées et auditées, mais elles ne sont PAS encore incluses dans l'histogramme gelé de 756 000 fills. Les parts de volume ci-dessous décrivent donc ce lot historique, pas tout le flux déjà collecté.","foot"));
+  }
+  target.append(coverage);
+ }
  const hCard=node("section",null,"card");
  hCard.append(node("h2","Distribution historique des tailles · 756 000 achats"));
  hCard.append(node("p","Un fill est une exécution, pas nécessairement un ordre indépendant : une limite peut être partiellement exécutée plusieurs fois. Les montants ci-dessous représentent du chiffre d'affaires brut d'achat, pas le capital engagé simultanément.","foot"));
