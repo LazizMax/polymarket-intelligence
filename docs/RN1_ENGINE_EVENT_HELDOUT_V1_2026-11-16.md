@@ -33,7 +33,7 @@ Le code d'inférence est dans `supabase/functions/pi-dashboard/rn1-engine.ts`, v
 
 ## Découverte sur la source potentielle d'odds externes
 
-`pi.rn1_nba_espn_scoreboards` contient 7 snapshots journaliers au contrôle, dont 1 payload JSON incluant des **odds DraftKings** (les champs `open`/`close`, spread/totals). Mais ces données sont dans un **snapshot récupéré à 2026-11-16 01:30 UTC**, postérieur au match dans l'exemple ; elles ne démontrent **pas** que RN1 disposait de ces cotes au moment de ses ordres. Elles ne sont pas une série live d'odds horodatée à chaque mise à jour. **Interdiction de les utiliser rétroactivement comme oracle causal**. Cela constitue un candidat de sourcing prospectif limité (pregame, règles de contrat à aligner) à évaluer avant de dépenser quoi que ce soit.
+`pi.rn1_nba_espn_scoreboards` contient 7 snapshots journaliers au contrôle, dont 1 payload JSON incluant des **odds DraftKings** (les champs `open`/`close`, spread/totals). Vérification ultérieure : le seul match avec odds DraftKings dans cette sauvegarde ESPN était **OKC–Sacramento**, début prévu le 16/11/2026 à 02:00 UTC, tandis qu'une capture de la même journée a été reçue à **01:46 UTC, avant le match**. La mention initiale « postérieur au match » était erronée. Ces données ne démontrent **pas** que RN1 utilisait ce fournisseur, et il manque la série de variations d'odds au moment de ses décisions. Elles ne sont pas une série live d'odds horodatée à chaque mise à jour. **Interdiction de les utiliser rétroactivement comme oracle causal**. Cela constitue un candidat de sourcing prospectif limité (pregame, règles de contrat à aligner) à évaluer avant de dépenser quoi que ce soit.
 
 ## Verdict scientifique à ce stade
 
@@ -43,5 +43,5 @@ Le code d'inférence est dans `supabase/functions/pi-dashboard/rn1-engine.ts`, v
 
 1. Analyser les **scores et exemples d'échec** des quatre modèles M0 avec bootstrap événement ; corriger uniquement les défauts de données et erreurs objectives.
 2. Vérifier la **sensibilité** aux horizons de 30/60/120 s, à l'âge du carnet, à `rn1_recent` vs témoins, au temps prospectif et au biais des négatives.
-3. Étudier une collecte **prospective** des odds externes et de changements de carnet au même intervalle ; ne jamais transformer le champ `close` postgame ESPN en « prix disponible à t ». Ne pas lancer de dépenses ou de collecteur intense sans plafond.
+3. Étudier une collecte **prospective** des odds externes et de changements de carnet au même intervalle ; ne jamais transformer le champ `close` ESPN en information horodatée à t sans contrôler le **moment de réception** de chaque snapshot et son alignement avec la décision. Ne pas lancer de dépenses ou de collecteur intense sans plafond.
 4. Tester l'effet d'edge externe sur les **mêmes fenêtres**, avec M1/M2 vs M0 et gain out-of-event, puis seuils parcimonieux et pseudocode uniquement si les tests réussissent.
