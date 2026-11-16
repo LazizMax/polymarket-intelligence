@@ -7,18 +7,22 @@ on:
       - 'supabase/functions/pi-rn1-independent-price/**'
       - 'supabase/functions/pi-rn1-replay/**'
       - 'supabase/functions/pi-dashboard/**'
+      - 'supabase/functions/pi-rn1-odds/**'
       - 'web/index.html'
       - 'supabase/functions/pi-dashboard-dedicated/**'
       - 'supabase/functions/pi-rn1-official-pnl/**'
       - 'tests/test_rn1_*'
+      - 'tests/rn1_*'
       - '.github/workflows/rn1-research-ci.yml'
   pull_request:
     paths:
       - 'supabase/functions/pi-rn1-replay/**'
       - 'supabase/functions/pi-dashboard/**'
+      - 'supabase/functions/pi-rn1-odds/**'
       - 'web/index.html'
       - 'sql/04*_rn1_*'
       - 'tests/test_rn1_*'
+      - 'tests/rn1_*'
       - '.github/workflows/rn1-research-ci.yml'
   workflow_dispatch:
 
