@@ -400,12 +400,130 @@ async function decodeSignedMakerOrderProbe(){
  }
  return {results};
 }
+const eipOrderTypes={Order:[
+ {name:"salt",type:"uint256"},{name:"maker",type:"address"},{name:"signer",type:"address"},
+ {name:"tokenId",type:"uint256"},{name:"makerAmount",type:"uint256"},{name:"takerAmount",type:"uint256"},
+ {name:"side",type:"uint8"},{name:"signatureType",type:"uint8"},{name:"timestamp",type:"uint256"},
+ {name:"metadata",type:"bytes32"},{name:"builder",type:"bytes32"}]};
+async function fetchPolygonTransaction(txhash:string){
+ let last="rpc_unavailable";
+ for(const endpoint of rpcEndpoints){
+  try{
+   const r=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_getTransactionByHash",params:[txhash]}),
+    signal:AbortSignal.timeout(12000)});
+   if(!r.ok){last="rpc_http_"+r.status;continue}
+   const j=await r.json();
+   if(j.result)return {transaction:j.result,endpoint};
+   last=j.error?"rpc_error_"+String(j.error.message||j.error.code).slice(0,90):"rpc_tx_not_found";
+  }catch(e){last="rpc_network_"+String(e).slice(0,80)}
+ }
+ throw Error(last);
+}
+async function sampleSignedOrderCalldataOne(){
+ const lease=await db.unsafe(`update pi.rn1_maker_calldata_sample_txs s
+ set lease_until=now()+interval '60 seconds',last_attempt_at=now()
+ where s.transaction_hash=(
+  select transaction_hash from pi.rn1_maker_calldata_sample_txs
+  where (status='pending' or (status='error' and error_attempts<3))
+    and (lease_until is null or lease_until<now())
+  order by priority,md5(transaction_hash) limit 1 for update skip locked)
+ returning s.transaction_hash,s.cohort,s.status`);
+ if(!lease.length)return {status:"no_pending"};
+ const t=lease[0],hash=String(t.transaction_hash);
+ try{
+  const dbsize=await db.unsafe("select pg_database_size(current_database())::bigint bytes");
+  if(Number(dbsize[0].bytes)>875000000)return {status:"paused_storage_budget"};
+  const {transaction:raw}=await fetchPolygonTransaction(hash);
+  const to=String(raw.to||"").toLowerCase();
+  if(!exchanges.has(to))throw Error("tx_to_unexpected_exchange");
+  const data=String(raw.input||raw.data||"");
+  const parsed=matchAbi.parseTransaction({data});
+  if(!parsed||parsed.name!=="matchOrders")throw Error("unsupported_transaction_selector");
+  const makerOrders=[...(parsed.args.makerOrders||[])].filter((o:any)=>String(o.maker).toLowerCase()===wallet);
+  const dbMatches=await db.unsafe(`select maker_order_hash order_hash,min(token_id) token_id,
+   min(price)::float8 min_price,max(price)::float8 max_price,sum(shares)::numeric total_filled
+   from pi.rn1_maker_historical_fills where transaction_hash=$1 and role='maker'
+   group by maker_order_hash`,[hash]);
+  const expected=new Map<string,any>(dbMatches.map((x:any)=>[String(x.order_hash).toLowerCase(),x]));
+  if(!expected.size||!makerOrders.length)throw Error("no_source_maker_orders");
+  const domain={name:"Polymarket CTF Exchange",version:"2",chainId:137,verifyingContract:to};
+  const signed:any[]=[],matched=new Set<string>();
+  for(const o of makerOrders){
+   const h=TypedDataEncoder.hash(domain,eipOrderTypes,{
+    salt:o.salt,maker:o.maker,signer:o.signer,tokenId:o.tokenId,
+    makerAmount:o.makerAmount,takerAmount:o.takerAmount,
+    side:o.side,signatureType:o.signatureType,timestamp:o.timestamp,
+    metadata:o.metadata,builder:o.builder
+   }).toLowerCase();
+   if(!expected.has(h))continue;
+   const found=expected.get(h);
+   if(matched.has(h))throw Error("duplicate_signed_hash_in_calldata");
+   const amount=BigInt(o.makerAmount),qty=BigInt(o.takerAmount),created=BigInt(o.timestamp);
+   if(Number(o.side)!==0||qty<=0n||amount<=0n)throw Error("wrong_side_or_amount");
+   if(String(o.tokenId)!==String(found.token_id))throw Error("token_mismatch");
+   if(created<1600000000000n||created>1900000000000n)throw Error("creation_timestamp_outside_bounds");
+   const p=Number(amount)/Number(qty);
+   if(!Number.isFinite(p)||Math.abs(p-Number(found.min_price))>.002||
+    Math.abs(p-Number(found.max_price))>.002)throw Error("signed_price_not_corresponding_to_execution");
+   if(Number(found.total_filled)>Number(qty)/1e6+0.00002)
+    throw Error("executions_exceed_signed_quantity");
+   matched.add(h);
+   signed.push({order_hash:h,source_transaction_hash:hash,
+    declared_created_ms:Number(created),token_id:String(o.tokenId),
+    signed_buy_amount:amount.toString(),signed_receive_shares:qty.toString(),
+    signed_price:p,salt:o.salt.toString(),signer:String(o.signer).toLowerCase(),
+    signature_type:Number(o.signatureType),builder:String(o.builder).toLowerCase(),
+    metadata:String(o.metadata).toLowerCase(),sampled_cohort:t.cohort,
+    cryptographic_match:true});
+  }
+  if(matched.size!==expected.size)throw Error("calldata_source_hashes_not_equal");
+  await db.begin(async txn=>{
+   await txn.unsafe(`insert into pi.rn1_maker_calldata_signed_orders
+   (order_hash,source_transaction_hash,declared_created_ms,token_id,signed_buy_amount,
+    signed_receive_shares,signed_price,salt,signer,signature_type,builder,metadata,
+    sampled_cohort,cryptographic_match)
+   select order_hash,source_transaction_hash,declared_created_ms,token_id,signed_buy_amount,
+    signed_receive_shares,signed_price,salt,signer,signature_type,builder,metadata,
+    sampled_cohort,cryptographic_match
+   from jsonb_to_recordset(($1::text)::jsonb) as v(
+    order_hash text,source_transaction_hash text,declared_created_ms bigint,
+    token_id text,signed_buy_amount numeric,signed_receive_shares numeric,signed_price numeric,
+    salt numeric,signer text,signature_type smallint,builder text,metadata text,
+    sampled_cohort text,cryptographic_match boolean)
+   on conflict(order_hash) do nothing`,[JSON.stringify(signed)]);
+   const changed=await txn.unsafe(`update pi.rn1_maker_calldata_sample_txs
+   set status='confirmed',matched_orders=$2,lease_until=null,
+    verified_at=now(),error_message=null
+   where transaction_hash=$1 and lease_until>now()
+   returning transaction_hash`,[hash,signed.length]);
+   if(changed.length!==1)throw Error("sample_lease_lost");
+  });
+  return {status:"confirmed",cohort:t.cohort,transaction_hash:hash,matched_orders:signed.length};
+ }catch(e){
+  const msg=String(e).slice(0,170),unsupported=/unsupported|unexpected_exchange/.test(msg);
+  await db.unsafe(`update pi.rn1_maker_calldata_sample_txs set
+   status=case when $2 then 'unsupported' else 'error' end,
+   error_attempts=error_attempts+1,error_message=$3,lease_until=null
+   where transaction_hash=$1`,[hash,unsupported,msg]);
+  return {status:unsupported?"unsupported":"error",error:msg,transaction_hash:hash};
+ }
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
  if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_calldata_sample_tick"){
+  const count=Math.max(1,Math.min(8,Number(body.count)||4));
+  const results:any[]=[];
+  for(let i=0;i<count;i++){
+   const r=await sampleSignedOrderCalldataOne();results.push(r);
+   if(r.status==="no_pending"||r.status==="paused_storage_budget")break;
+  }
+  return response({results});
+ }
  if(body.action==="rn1_signed_order_calldata_probe"){try{return response(await decodeSignedMakerOrderProbe())}catch(e){return response({error:String(e).slice(0,180)},500)}}
  if(body.action==="rn1_chain_scan_tick"){
    const count=Math.max(1,Math.min(3,Number(body.chunks)||1));
