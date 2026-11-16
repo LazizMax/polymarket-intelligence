@@ -2193,6 +2193,7 @@ select count(*)::int snapshots,count(distinct run_id)::int runs,
  count(*)filter(where api_tokens=0)::int none_api_confirmed,
  count(*)filter(where event_slug is null)::int without_event,
  percentile_cont(.5)within group(order by entry_cost)::float8 median_market_cost,
+ percentile_cont(.5)within group(order by entry_cost)filter(where entry_cost>0)::float8 median_active_market_cost,
  percentile_cont(.9)within group(order by entry_cost)::float8 p90_market_cost,
  percentile_cont(.99)within group(order by entry_cost)::float8 p99_market_cost,
  max(entry_cost)::float8 peak_market_cost,
@@ -2263,7 +2264,8 @@ from numbered where rn<=28 order by market_key,observed_epoch
  lag(observed_epoch)over(partition by market_key order by observed_epoch,run_id) prev_at,
  lag(shares_0)over(partition by market_key order by observed_epoch,run_id) prev_0,
  lag(shares_1)over(partition by market_key order by observed_epoch,run_id) prev_1,
- lag(entry_cost)over(partition by market_key order by observed_epoch,run_id) prev_cost
+ lag(entry_cost)over(partition by market_key order by observed_epoch,run_id) prev_cost,
+ lag(api_tokens)over(partition by market_key order by observed_epoch,run_id) prev_api_tokens
  from m
 ),close as(
  select *,
@@ -2289,6 +2291,12 @@ from numbered where rn<=28 order by market_key,observed_epoch
 )
 select count(*)::int consecutive_pairs,
  count(*)filter(where changed)::int changed,
+ count(*)filter(where changed and api_tokens=2 and prev_api_tokens=2)::int strictly_confirmed_changed,
+ count(*)filter(where changed and api_tokens>=1 and prev_api_tokens>=1)::int at_least_one_confirmed_changed,
+ count(*)filter(where changed and (api_tokens=0 or prev_api_tokens=0))::int zero_imputation_involved,
+ count(*)filter(where changed and dgap<-.0001 and api_tokens=2 and prev_api_tokens=2)::int strictly_confirmed_gap_reduced,
+ count(*)filter(where changed and dgap>.0001 and api_tokens=2 and prev_api_tokens=2)::int strictly_confirmed_gap_increased,
+ count(*)filter(where changed and dcost<-.0001 and api_tokens=2 and prev_api_tokens=2)::int strictly_confirmed_cost_decreased,
  count(*)filter(where changed and dcost>.0001)::int cost_increase,
  count(*)filter(where changed and dcost<-.0001)::int cost_decrease,
  count(*)filter(where changed and d0>.0001 and d1>.0001)::int both_increase,
