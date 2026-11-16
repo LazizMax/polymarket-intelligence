@@ -427,7 +427,7 @@ async function sampleSignedOrderCalldataOne(){
   select transaction_hash from pi.rn1_maker_calldata_sample_txs
   where (status='pending' or (status='error' and error_attempts<3))
     and (lease_until is null or lease_until<now())
-  order by priority,md5(transaction_hash) limit 1 for update skip locked)
+  order by priority,md5(transaction_hash||':calldata-randomized-order-v1') limit 1 for update skip locked)
  returning s.transaction_hash,s.cohort,s.status`);
  if(!lease.length)return {status:"no_pending"};
  const t=lease[0],hash=String(t.transaction_hash);
