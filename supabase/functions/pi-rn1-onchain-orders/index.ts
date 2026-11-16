@@ -262,11 +262,18 @@ async function scanMakerLogChunk(){
    unmatched_transactions:rejectedTx,confirmed_fills:mappings.length};
  }catch(e){
   const msg=String(e).slice(0,180);
-  await db.unsafe(`update pi.rn1_maker_chain_scan_state
-   set lease_until=null,last_error=$1,error_attempts=error_attempts+1,
-     status=case when error_attempts+1>=5 then 'paused_error' else status end,
-     updated_at=now() where singleton=true`,[msg]);
-  return {status:"error",error:msg,block:Number(first)};
+  const retrySmaller=/HTTP 400|HTTP 413|too many|response size|query returned more|range limit|RPC -32005/i.test(msg)
+    && Number(job.chunk_size)>100;
+  const rows=await db.unsafe(`update pi.rn1_maker_chain_scan_state
+   set lease_until=null,last_error=$1,
+     chunk_size=case when $2 then greatest(100,chunk_size/2) else chunk_size end,
+     error_attempts=case when $2 then 0 else error_attempts+1 end,
+     status=case when not $2 and error_attempts+1>=5 then 'paused_error' else status end,
+     updated_at=now()
+   where singleton=true and next_block=$3 returning chunk_size,status`,
+   [msg,retrySmaller,Number(first)]);
+  return {status:retrySmaller?"retry_smaller_chunk":"error",error:msg,
+    block:Number(first),next_chunk_size:rows[0]?.chunk_size};
  }
 }
 async function inspectAmbiguousTransactions(){
