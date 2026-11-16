@@ -647,6 +647,10 @@ async function renderRN1Sizing(){
     }
     table.append(tbody);wrap.append(table);marketResults.append(wrap);
     const best=validated[0];
+    const marketWeighted=[...validated].filter(x=>x.equal_market_mean_abs_log_error!=null).sort((a,b)=>Number(a.equal_market_mean_abs_log_error)-Number(b.equal_market_mean_abs_log_error))[0];
+    if(best&&marketWeighted&&best.model!==marketWeighted.model){
+      marketResults.append(node("p","Attention : le meilleur modèle CHANGE selon la pondération. Par fill : "+(labels[best.model]||best.model)+". À poids égal pour chaque marché : "+(labels[marketWeighted.model]||marketWeighted.model)+". Les scores sont exploratoires, aucun modèle gagnant n'est robuste.","foot"));
+    }
     if(best){
       const info=node("p","La première ligne minimise uniquement l'erreur moyenne des tailles de FILLS dans cet échantillon. Meilleur modèle ici : "+(labels[best.model]||best.model)+", mais erreur médiane ×"+fmt(best.median_error_factor,1)+". Aucune formule fiable de taille d'ordre n'est identifiée.","foot");
       marketResults.append(info);
