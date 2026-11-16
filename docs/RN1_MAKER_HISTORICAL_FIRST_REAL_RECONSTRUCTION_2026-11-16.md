@@ -56,3 +56,24 @@ from pi.rn1_maker_historical_minute_panel;
 ```
 
 **Conclusion :** reconstruction Maker historique initiale effectivement exécutée ; reconstruction intégrale des décisions d'ordre depuis toutes les archives **non terminée**. Ce lot prouve la faisabilité et documente les limites de couverture, sans inventer de condition de placement.
+
+## Seconde validation et nouvelle interface — 16 novembre 2026
+
+- **Cohorte de 40 000 fills conservée** : on n'a pas recommencé l'import. Un panel `pi.rn1_maker_historical_minute_panel_v2` a été ajouté et versionné dans `sql/071_rn1_maker_eligible_token_window_panel_v2.sql`. Une minute de contrôle n'est désormais retenue que si elle tombe entre le premier et le dernier fill archivé du token, avec au moins 3 fills archivés et un slug unique.
+- **V2 : 13 502 minutes**, 13 335 avec momentum 5 minutes valide, 402 minutes suivies d'un fill Maker, 26 événements et 155 tokens. Les sous-populations sont **sélectionnées par l'activité passée de RN1** : elles ne représentent pas des fenêtres de marché indépendantes ou aléatoires.
+- **Variations 5 min :**
+  - baisse >1 point : 5 107 minutes, 175 positives Maker (**3,427 %**), taux Taker **6,873 %** ;
+  - stable ±1 point : 3 079 minutes, 61 positives Maker (**1,981 %**), taux Taker **7,308 %** ;
+  - hausse >1 point : 5 149 minutes, 159 positives Maker (**3,088 %**), taux Taker **8,429 %**.
+- **Contrôle à poids égal par événement** : 22 matchs éligibles (au moins 20 minutes dans chaque régime calme/volatile), 15 ont davantage de fenêtres positives Maker en période volatile, 6 en période calme (1 ex-aequo). Différence moyenne **+0,01524** de probabilité de fill, encore non causale.
+- **Validation 5-fold par événements disjoints** : 13 335 minutes/395 positives, log-loss constante **0,134170** vs volatilité **0,133669**, gain **0,000501**.
+- **Validation temporelle par matchs disjoints** : entraînement sur 18 matchs chronologiquement antérieurs, validation sur les 8 suivants : 4 201 minutes, 104 positives ; log-loss constante **0,116920** vs volatilité **0,116547**, gain **0,000373**. Pas de causalité, bootstrap ni mesure de PnL.
+- **Stratification rétrospective NBA** (existence d'un panier ESPN dans la minute précédente) :
+  - Sans panier : calme **2,034 %** (43/2 114) vs volatile **3,340 %** (156/4 670).
+  - Avec panier : calme **1,865 %** (18/965) vs volatile **3,187 %** (178/5 586).
+  - Les événements ESPN ne sont **pas** garantis disponibles au bot avant fill.
+- **Recoupement avec les probes de carnet existantes : 0 token commun** entre 8 600 tokens de la cohorte et 220 tokens des fills du système de probes. Pas d'identification d'ordres affichés / annulés à partir de ces archives.
+- **Backend authentifié déployé** `pi-dashboard` **v31 ACTIVE** : route `rn1_maker_historical_report` dans `rn1-maker-history.ts`. Le dashboard `RN1 · Moteur` a été modifié pour présenter les chiffres réels et les limites. Vérification directe du backend : le POST sans authentification renvoie HTTP 401 ; la route authentifiée ne peut être entièrement testée sans session utilisateur.
+- **Sécurité** : panel et tables conservés en schéma privé, RLS et refus d'accès aux rôles anon/authenticated. Les résultats ne sont pas publiés en accès public brut.
+
+**Verdict révisé :** l'intensité de variation de prix prédit très légèrement la présence d'un fill Maker; elle ne permet pas d'identifier une règle de placement. Le sujet prioritaire suivant est la reconstruction d'inventaire au moment des exécutions et la preuve temporelle des ordres resting via des carnets alignés, idéalement sur la même cohorte, avant d'inférer un algorithme.
