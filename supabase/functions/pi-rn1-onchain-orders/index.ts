@@ -44,8 +44,15 @@ function parseReceipt(x:any){
   const words=data.startsWith("0x")?data.slice(2).match(/.{64}/g)||[]:[];
   const v2=topics[0]===topicV2;
   const tokenId=v2&&words.length>=2?BigInt("0x"+words[1]).toString():null;
+  const side=v2&&words.length?Number(BigInt("0x"+words[0])):null;
+  const makerRaw=v2&&words.length>=4?BigInt("0x"+words[2]):null;
+  const takerRaw=v2&&words.length>=4?BigInt("0x"+words[3]):null;
+  const price=v2&&makerRaw!==null&&takerRaw!==null&&makerRaw>0n&&takerRaw>0n
+    ?(side===0?Number(makerRaw)/Number(takerRaw):Number(takerRaw)/Number(makerRaw)):null;
+  const shares=v2&&makerRaw!==null&&takerRaw!==null
+    ?Number(side===0?takerRaw:makerRaw)/1e6:null;
   events.push({order_hash:orderHash,maker,taker,v2,contract:address,token_id:tokenId,
-   log_index:e.logIndex,side:v2&&words.length?Number(BigInt("0x"+words[0])):null});
+   log_index:e.logIndex,side,price,shares});
  }
  return {block_number:x.blockNumber,tx_status:x.status,logs:logs.length,order_filled_logs:events.length,
   rn1_as_maker:events.filter(e=>e.maker===wallet).length,
