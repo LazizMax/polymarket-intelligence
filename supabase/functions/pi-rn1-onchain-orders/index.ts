@@ -122,7 +122,7 @@ async function getLogsProbe(span=50){
  const txhash=String(known[0].transaction_hash);
  const first=await receipt(txhash);
  const center=BigInt(first.result.blockNumber);
- const radius=BigInt(Math.max(5,Math.min(1000,span)));
+ const radius=BigInt(Math.max(5,Math.min(2500,span)));
  const from=center>radius?center-radius:0n,to=center+radius;
  const filter={address:["0xe111180000d2663c0091e4f400237545b87b996b","0xe2222d279d744050d28e00520010520000310f59"],
    fromBlock:"0x"+from.toString(16),toBlock:"0x"+to.toString(16),
