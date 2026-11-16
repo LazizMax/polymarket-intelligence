@@ -3,7 +3,7 @@
 // private order-placement timestamps from execution timestamps.
 export async function rn1MakerHistoricalReport(db:any) {
  const sql=String.raw;
- const [coverage,rates,heldout,eventControl,chronological]=await Promise.all([
+ const [coverage,rates,heldout,eventControl,chronological,scoreStrata]=await Promise.all([
   db.unsafe(`select (select count(*)::integer from pi.rn1_maker_historical_pages) pages,
     (select coalesce(sum(maker_fills),0)::integer from pi.rn1_maker_historical_pages) maker,
     (select coalesce(sum(taker_fills),0)::integer from pi.rn1_maker_historical_pages) taker,
@@ -76,10 +76,23 @@ export async function rn1MakerHistoricalReport(db:any) {
      sum(n)::integer test_minutes,sum(yes)::integer positives,
      round((sum(-yes*ln(pbase)-(n-yes)*ln(1-pbase))/sum(n))::numeric,6)::float8 baseline_logloss,
      round((sum(-yes*ln(pregime)-(n-yes)*ln(1-pregime))/sum(n))::numeric,6)::float8 volatility_logloss
-   from test`)
+   from test`),
+  db.unsafe(`with w as (
+    select p.event_slug,p.token_id,p.minute_at,p.delta_5m,(p.maker_fills_next_60s>0)::integer maker,
+     exists(select 1 from pi.rn1_nba_espn_plays e
+      where e.event_slug=p.event_slug and e.is_scoring=true
+       and e.play_at<=p.minute_at
+       and e.play_at>p.minute_at-interval '60 seconds') scoring_last_minute
+    from pi.rn1_maker_historical_minute_panel_v2 p where p.delta_5m is not null
+   )
+   select scoring_last_minute,
+    case when abs(delta_5m)>0.01 then 'volatile' else 'quiet' end regime,
+    count(*)::integer minutes,sum(maker)::integer maker_windows,
+    round(100.0*avg(maker),3)::float8 maker_pct
+   from w group by 1,2 order by 1,2`)
  ]);
  return {status:"exploratory",source:"verified_full_archive",cohort:coverage[0]||{},
- regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},
+ regimes:rates,heldout:heldout[0]||{},event_control:eventControl[0]||{}, chronological:chronological[0]||{},score_strata:scoreStrata,
  limitations:[
  "Maker describes executed role, not placement/cancellation of a private order.",
  "The price series is Polymarket indicative history, not archived bid/ask.",
