@@ -518,6 +518,11 @@ async function renderRN1Engine(){
     );
     historicalCard.append(burstStats);
     historicalCard.append(node("p","Ces rafales représentent "+fmt(makerBurst.multi_notional_pct,2)+" % du notionnel Maker et apparaissent dans "+fmt(makerBurst.events_with_bursts||0)+" événements sur "+fmt(makerBurst.events_total||0)+" avec activité Maker.","foot"));
+    const periods=maker.burst_cohorts||[];
+    if(periods.length===2){
+     const old=periods.find(x=>x.period==="earlier"),recent=periods.find(x=>x.period==="recent");
+     historicalCard.append(node("p","Réplication sur deux périodes : "+fmt(old?.multi_notional_pct,2)+" % du notionnel Maker en rafales dans le lot ancien contre "+fmt(recent?.multi_notional_pct,2)+" % dans le lot récent. Cohortes de 40 000 transactions chacune, sans réingestion.","foot"));
+    }
     historicalCard.append(node("p","Regroupement technique : même token, même prix, même rôle et même côté, timestamps espacés d’au plus une seconde. Cela peut regrouper plusieurs ordres indépendants ; ce n’est PAS un order_id.","foot"));
    }
    historicalCard.append(node("p","Carnets réels : "+fmt(overlap.probed_tokens||0)+" tokens sondés contre "+fmt(overlap.archived_tokens||0)+" tokens de la cohorte ; recouvrement : "+fmt(overlap.token_overlap||0)+". Les carnets disponibles ne permettent pas de reconstruire les quotes historiques de cette cohorte.","foot"));
