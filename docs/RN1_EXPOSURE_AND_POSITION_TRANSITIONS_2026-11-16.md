@@ -58,7 +58,10 @@ borne conditionnelle de perte contre le coût affiché
   = max(0, coût attribué aux parts actuellement ouvertes − min(parts_0, parts_1))
 ```
 
-Ce n'est **pas un PnL réalisé**, ni un mark-to-market, ni une garantie, ni une VaR. Les frais, opérations antérieures, avoirs omis, remboursements, transferts, résolution litigieuse, nouvelles exécutions et contraintes de liquidité ne sont pas intégrés. La somme des pires cas par contrat sélectionné peut supposer simultanément des résultats sportifs incompatibles : c'est une **borne conservatrice conditionnelle**, pas une distribution probabiliste de pertes.
+Ce n'est **pas un PnL réalisé**, ni un mark-to-market, ni une garantie, ni une VaR.
+
+**Validation externe du mécanisme de paiement :** [Polymarket Help Center — How Are Prediction Markets Resolved?](https://help.polymarket.com/en/articles/13364518-how-are-prediction-markets-resolved) indique qu'une part gagnante vaut 1 USD et une perdante zéro. La [documentation CTF publiée par Polymarket](https://github.com/Polymarket/agent-skills/blob/main/ctf-operations.md) détaille les opérations de split, merge et redeem des paires YES/NO. Ces sources justifient uniquement l'identité binaire conditionnelle, **pas** la complétude des positions API de RN1, l'exactitude de leur coût attribué, ni une garantie sur l'issue litigieuse d'un marché.
+ Les frais, opérations antérieures, avoirs omis, remboursements, transferts, résolution litigieuse, nouvelles exécutions et contraintes de liquidité ne sont pas intégrés. La somme des pires cas par contrat sélectionné peut supposer simultanément des résultats sportifs incompatibles : c'est une **borne conservatrice conditionnelle**, pas une distribution probabiliste de pertes.
 
 Dans le relevé initial, la borne conditionnelle médiane par **marché actif** était d'environ **740 USDC**, son 90e centile environ **3 517 USDC**, et son maximum observé environ **12 159 USDC**. La borne conservatrice médiane agrégée sur les **huit marchés sélectionnés** était d'environ **8 447 USDC**. Ces chiffres ne caractérisent pas la bankroll globale.
 
