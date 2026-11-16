@@ -5,7 +5,7 @@ import {normalizePayload} from "../supabase/functions/pi-rn1-odds/normalize.ts";
 // pregame gating, vig removal and rejection of unattributed outcomes.
 const observed=new Date("2026-11-16T01:46:01.000Z");
 const raw={success:true,data:[{
- event_id:"game_12345",league:"NBA",
+ event_id:"game12345",league:"NBA",
  home_team:"Sacramento Kings",away_team:"Oklahoma City Thunder",
  start_time:"2026-11-16T02:00:00Z",
  books:[{book:"draftkings",market:"h2h",updated_at:"2026-11-16T01:45:30Z",
