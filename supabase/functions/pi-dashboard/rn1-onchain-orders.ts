@@ -73,7 +73,7 @@ export async function rn1OnchainOrdersReport(db:any){
 }
 
 export async function rn1OriginalOrderCalldataReport(db:any){
- const [progress,cohorts,ladder,age,examples,pairEvidence,pairedByTx]=await Promise.all([
+ const [progress,cohorts,ladder,age,examples,pairEvidence,pairedByTx,precision,ladderStepsByPeriod]=await Promise.all([
  db.unsafe(`select cohort,status,count(*)::integer transactions,
   coalesce(sum(matched_orders),0)::integer matched_orders
   from pi.rn1_maker_calldata_sample_txs group by cohort,status order by cohort,status`),
@@ -156,11 +156,34 @@ export async function rn1OriginalOrderCalldataReport(db:any){
  count(*) filter(where same_n>0 and diff_n>0 and same_rate>diff_rate)::integer same_more,
  count(*) filter(where same_n>0 and diff_n>0 and same_rate<diff_rate)::integer different_more,
  count(*) filter(where same_n>0 and diff_n>0 and same_rate=diff_rate)::integer ties
- from per_tx`)
+ from per_tx`),
+ db.unsafe(`select count(*)::integer signed_orders,
+  count(*) filter(where mod(signed_receive_shares,1000000)=0)::integer integer_token_orders,
+  count(*) filter(where mod(signed_buy_amount,1000000)=0)::integer integer_usdc_orders,
+  count(*) filter(where mod(declared_created_ms,1000)<>0)::integer subsecond_timestamps,
+  count(*) filter(where cryptographic_match)::integer cryptographically_verified
+  from pi.rn1_maker_calldata_signed_orders`),
+ db.unsafe(`with levels as (
+  select source_transaction_hash,token_id,declared_created_ms,
+   round(signed_price,3) px
+  from pi.rn1_maker_calldata_signed_orders where sampled_cohort='multi_level'
+  group by 1,2,3,4
+ ), gaps as (
+  select declared_created_ms,
+  px-lag(px) over(partition by source_transaction_hash,token_id,declared_created_ms order by px) gap
+  from levels
+ )
+ select case when to_timestamp(declared_created_ms/1000.0)
+  <'2026-11-09 20:39:27+00'::timestamptz then 'older' else 'recent' end period,
+  count(*)::integer adjacent_steps,
+  count(*) filter(where abs(gap-.01)<.0001)::integer one_cent_steps,
+  round(100.0*avg((abs(gap-.01)<.0001)::int),2)::float8 pct_one_cent
+  from gaps where gap is not null group by 1 order by 1`)
  ]);
  return {source:"cryptographic_eip712_calldata_verified",progress,cohorts,
   ladder:ladder[0]||{},age_distribution:age,examples,pair_evidence:pairEvidence,
-  paired_transactions:pairedByTx[0]||{},
+  paired_transactions:pairedByTx[0]||{},precision:precision[0]||{},
+  ladder_steps_by_period:ladderStepsByPeriod,
   limitations:[
    "The Order.timestamp is the signer-declared millisecond time; posting to the CLOB and cancellation times are not observable.",
    "The signed BUY takerAmount is the full requested token quantity; a fill can be partial.",
