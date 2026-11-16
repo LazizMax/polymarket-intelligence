@@ -77,3 +77,17 @@ from pi.rn1_maker_historical_minute_panel;
 - **Sécurité** : panel et tables conservés en schéma privé, RLS et refus d'accès aux rôles anon/authenticated. Les résultats ne sont pas publiés en accès public brut.
 
 **Verdict révisé :** l'intensité de variation de prix prédit très légèrement la présence d'un fill Maker; elle ne permet pas d'identifier une règle de placement. Le sujet prioritaire suivant est la reconstruction d'inventaire au moment des exécutions et la preuve temporelle des ordres resting via des carnets alignés, idéalement sur la même cohorte, avant d'inférer un algorithme.
+
+
+## Contrôle d'inventaire et livraison v32
+
+**Vérification exécutée sur les 40 000 fills :** toutes les transactions normalisées de cette cohorte sont des **BUY**, Maker ou Taker. Les ventes, retraits, conversions, redemptions et positions antérieures à cette cohorte ne peuvent pas être reconstitués ici ; les inventaires ci-dessous sont **uniquement des soldes de flux BUY observés**.
+
+Pour supprimer la fuite intra-minute, les soldes YES/NO d'un marché sont calculés en cumulant les fills des minutes **strictement précédentes**, jamais ceux de la minute courante.
+
+- **16 320** achats Maker où les deux côtés de l'inventaire reconstruit avant la minute sont positifs.
+- **8 469** achètent le côté sous-détenu, **7 798** le côté sur-détenu et **53** lorsque les deux sont égaux : **51,89 %** de côté sous-détenu en pondérant chaque fill.
+- À poids égal parmi **476 marchés** ayant au moins dix observations : **51,02 %** de côté sous-détenu ; **247** marchés privilégient le sous-détenu, **209** l'autre (autres ex-aequo).
+- **Aucune preuve** d'une règle toujours rééquilibrer ; le taux doit être confronté à la disponibilité de chaque outcome, aux prix et aux ordres affichés, ce que cette cohorte ne permet pas.
+
+**Déploiement vérifié** : `pi-dashboard` **v32 ACTIVE** avec `rn1_maker_historical_report` (validation 5-fold, holdout temporel, cohortes panier/non-panier, inventaire). Source et interface `web/index.html` commises sur `main`. Le POST sans session renvoie **401**, ce qui valide le contrôle d'accès sans tester le chemin authentifié ; l'ouverture effective depuis la session utilisateur n'a pas été vérifiée. La tâche planifiée limitée aux pages 1–40 reste activée avec une condition SQL de non-existence de pages à traiter et ne relance pas l'archive terminée. Pas de relecture facturable des bookmakers.
