@@ -2,6 +2,7 @@
 import postgres from "npm:postgres@3.4.3";
 import {quotePair} from "./arb-math.ts";
 import {replayTemporal,type TemporalSample} from "./arb-temporal.ts";
+import {rn1EngineForensics} from "./rn1-engine.ts";
 const url = "https://bxfvgywfiifnsbjgudzj.supabase.co"; // legacy identity provider for existing login
 const pub = "sb_publishable_CIPlaX8vTlmMDbLCBbtprA_A0aIUujT"; // public key of legacy identity provider; no service-role access
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
@@ -2386,6 +2387,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_sizing_hypotheses")return send(await rn1SizingHypotheses());
   if(body?.action==="rn1_sizing_market_validation")return send(await rn1SizingMarketValidation());
   if(body?.action==="rn1_exposure_forensics")return send(await rn1ExposureForensics());
+  if(body?.action==="rn1_engine_forensics")return send(await rn1EngineForensics(db));
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
