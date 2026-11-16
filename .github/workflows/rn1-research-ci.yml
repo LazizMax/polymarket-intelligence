@@ -52,13 +52,17 @@ jobs:
             tests/test_rn1_sizing_forensics.py \
             tests/test_rn1_sizing_market_validation.py \
             tests/test_rn1_exposure_forensics.py \
-            tests/test_rn1_engine_forensics.py
+            tests/test_rn1_engine_forensics.py \
+            tests/test_rn1_external_oracle.py
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Verify real RN1 engine on synthetic event-held-out fixtures
         run: node --experimental-strip-types tests/rn1_engine_fixture_test.mjs
+
+      - name: Verify bookmaker odds and causal receipt normalizer
+        run: node --experimental-strip-types tests/rn1_oracle_normalize_fixture_test.mjs
 
       - name: Verify frontend JavaScript syntax
         run: |
