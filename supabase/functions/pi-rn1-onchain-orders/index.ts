@@ -59,10 +59,75 @@ function parseReceipt(x:any){
   rn1_as_taker:events.filter(e=>e.taker===wallet).length,
   order_events:events.filter(e=>e.maker===wallet||e.taker===wallet).slice(0,12)};
 }
+async function matchNextSignedOrder(){
+ const candidates=await db.unsafe(`select t.transaction_hash,t.fill_count,t.price_levels
+  from pi.rn1_maker_historical_transaction_lots t
+  where t.role='maker' and t.fill_count>1
+    and not exists(select 1 from pi.rn1_maker_onchain_tx_audit a where a.transaction_hash=t.transaction_hash)
+  order by t.price_levels desc,t.first_at desc limit 1`);
+ if(!candidates.length)return {status:"complete"};
+ const sample=candidates[0],txhash=String(sample.transaction_hash);
+ const fills=await db.unsafe(`select fingerprint,token_id,price::text price,shares::text shares
+ from pi.rn1_maker_historical_fills where transaction_hash=$1 and role='maker'
+ order by fingerprint`,[txhash]);
+ const got=await receipt(txhash);
+ const parsed=parseReceipt(got.result);
+ if(parsed.tx_status!=="0x1")throw Error("Receipt not confirmed");
+ const makerEvents=parsed.order_events.filter((e:any)=>e.maker===wallet && e.v2 && e.side===0);
+ const groups=makerEvents.filter((e:any)=>fills.some((f:any)=>f.token_id===e.token_id));
+ const selected:any[]=[];
+ let outcome:"confirmed"|"unmatched"|"ambiguous"="confirmed",reason="";
+ if(groups.length!==fills.length || parsed.rn1_as_maker>parsed.order_events.length){
+  outcome="unmatched";reason="Maker receipt/source count mismatch";
+ }else{
+  const used=new Set<number>();
+  for(const fill of fills){
+   const p=Number(fill.price),q=Number(fill.shares);
+   const choices=groups.map((e:any,i:number)=>({e,i})).filter(({e,i})=>
+    !used.has(i) && e.token_id===fill.token_id &&
+    Number.isFinite(e.price) && Number.isFinite(e.shares) &&
+    Math.abs(e.price-p)<=0.000002 &&
+    Math.abs(e.shares-q)<=Math.max(0.000002,q*0.00000001));
+   if(choices.length!==1){outcome=choices.length>1?"ambiguous":"unmatched";reason="Non-unique price/quantity/token correspondence";break}
+   const {e,i}=choices[0];used.add(i);
+   if(!/^0x[0-9a-f]{64}$/.test(e.order_hash)){outcome="unmatched";reason="Invalid order hash";break}
+   selected.push({fingerprint:fill.fingerprint,order_hash:e.order_hash,
+    log_index:Number(BigInt(e.log_index))});
+  }
+ }
+ if(outcome==="confirmed"&&selected.length!==fills.length){outcome="unmatched";reason="Incomplete matching"}
+ await db.begin(async tx=>{
+  if(outcome==="confirmed"){
+   const updated=await tx.unsafe(`update pi.rn1_maker_historical_fills f
+     set maker_order_hash=x.order_hash,maker_order_log_index=x.log_index
+     from jsonb_to_recordset(($1::text)::jsonb) as x(fingerprint text,order_hash text,log_index integer)
+     where f.fingerprint=x.fingerprint and f.transaction_hash=$2
+       and (f.maker_order_hash is null or f.maker_order_hash=x.order_hash)
+     returning f.fingerprint`,[JSON.stringify(selected),txhash]);
+   if(updated.length!==fills.length)throw Error("Order ID update did not match all source rows");
+  }
+  await tx.unsafe(`insert into pi.rn1_maker_onchain_tx_audit
+   (transaction_hash,source_fills,maker_logs,matched_fills,status,block_number,rpc_provider,note)
+   values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(transaction_hash) do nothing`,
+   [txhash,fills.length,parsed.rn1_as_maker,outcome==="confirmed"?selected.length:0,
+    outcome,Number(BigInt(parsed.block_number)),got.endpoint,reason||null]);
+ });
+ return {status:outcome,txhash,source_fills:fills.length,maker_logs:parsed.rn1_as_maker,
+  confirmed_orders:outcome==="confirmed"?selected.length:0,price_levels:sample.price_levels};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
+ if(body.action==="rn1_signed_order_match_tick"){
+  const take=Math.max(1,Math.min(4,Number(body.limit)||2));
+  const out:any[]=[];
+  for(let i=0;i<take;i++){
+   try{const one=await matchNextSignedOrder();out.push(one);if(one.status==="complete")break}
+   catch(e){out.push({status:"error",error:String(e).slice(0,160)});break}
+  }
+  return response({results:out});
+ }
  if(body.action!=="rn1_order_receipt_probe")return response({error:"invalid_action"},400);
  try{
   const take=Math.max(1,Math.min(3,Number(body.limit)||2));
