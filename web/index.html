@@ -498,6 +498,12 @@ async function renderRN1Engine(){
     const textRate=x=>x?fmt(x.maker_pct,2)+" %":"—";
     historicalCard.append(node("p","Contrôle paniers NBA (minute précédente, horodatage ESPN rétrospectif) : hors panier, stable "+textRate(scored(false,"quiet"))+" vs volatile "+textRate(scored(false,"volatile"))+" ; après panier, stable "+textRate(scored(true,"quiet"))+" vs volatile "+textRate(scored(true,"volatile"))+". Ces associations ne prouvent ni réaction ni ordre placé.","foot"));
    }
+   const inventory=maker.inventory||{};
+   if(inventory.eligible_maker_buys){
+    historicalCard.append(node("h3","Inventaire observé · hypothèse de rééquilibrage"));
+    historicalCard.append(node("p","Sur "+fmt(inventory.eligible_maker_buys)+" achats Maker avec deux côtés positifs avant la minute du fill : "+fmt(inventory.underweight_buys)+" achètent le côté sous-détenu. À poids égal sur "+fmt(inventory.markets_10plus)+" marchés avec ≥10 observations, taux moyen : "+fmt(100*inventory.mean_market_underweight_rate,2)+" %. Le comportement n’appuie pas une règle simple de rééquilibrage systématique.","foot"));
+    historicalCard.append(node("p","Inventaire de flux seulement : les trades archivés ne couvrent pas forcément les positions initiales, les merges, redemptions ou ajustements hors du flux. Ordre intra-minute inconnu.","foot"));
+   }
    historicalCard.append(banner("Attention : un fill Maker est une EXÉCUTION, jamais la preuve du moment où RN1 a placé, déplacé ou annulé un ordre. Les minutes sans fill ne prouvent pas l’absence d’un ordre. Le gain prédictif est exploratoire, pas une EV ni un ROI."));
   }catch(e){
    historicalCard.append(node("p","Reconstruction Maker indisponible : "+String(e?.message||e),"foot"));
