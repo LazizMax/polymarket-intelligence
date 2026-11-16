@@ -57,7 +57,8 @@ jobs:
             tests/test_rn1_sizing_market_validation.py \
             tests/test_rn1_exposure_forensics.py \
             tests/test_rn1_engine_forensics.py \
-            tests/test_rn1_external_oracle.py
+            tests/test_rn1_external_oracle.py \
+            tests/test_rn1_historical_research.py
 
       - uses: actions/setup-node@v4
         with:
