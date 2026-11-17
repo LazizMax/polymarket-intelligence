@@ -750,6 +750,43 @@ async function renderRN1Engine(){
   calldataCard.append(node("p","Paramètres initiaux indisponibles : "+String(e?.message||e),"foot"));
  }
  target.append(calldataCard);
+ const holdoutCard=node("section",null,"card");
+ holdoutCard.append(node("h2","RN1 · Validation indépendante des grilles"));
+ holdoutCard.append(node("p","Test hors échantillon : toutes les transactions Maker multi-prix encore inédites de la cohorte, vérifiées directement depuis leurs ordres signés Polygon, sans recopier les fills dans la base.","foot"));
+ try{
+  const study=await api("rn1_holdout_ladder_validation"),rows=study.cohorts||[];
+  const all=rows.find(x=>x.cohort==="all")||{};
+  const stats=node("div",null,"metrics");
+  stats.append(
+   metric("Transactions indépendantes vérifiées",fmt(all.verified_transactions||0)+" / "+fmt(all.tested_transactions||0)),
+   metric("Ordres signés supplémentaires",fmt(all.signed_orders||0)),
+   metric("Espacement de 0,01 confirmé",fmt(all.pct_onecent,1)+" %"),
+   metric("Grilles avec tailles identiques",fmt(all.pct_equal_size_grids,1)+" %")
+  );
+  holdoutCard.append(stats);
+  holdoutCard.append(node("h3","Comparaison étude initiale / hors échantillon"));
+  const results=[
+   ["Parts signées entières",100,100*Number(all.integer_share_orders||0)/Math.max(1,Number(all.signed_orders||0))],
+   ["Pas de prix de 0,01",94.87,Number(all.pct_onecent||0)],
+   ["Même taille sur tous les niveaux",84.51,Number(all.pct_equal_size_grids||0)],
+   ["Même taille · timestamp commun",87.64,Number(all.pct_equal_same_ms||0)],
+   ["Même taille · timestamps distincts",28,Number(all.pct_equal_different_ms||0)]
+  ];
+  const tWrap=node("div",null,"tablewrap"),table=node("table"),th=node("thead"),header=node("tr");
+  ["Règle testée","Découverte","Hors échantillon"].forEach(x=>header.append(node("th",x)));
+  th.append(header);table.append(th);
+  const body=node("tbody");
+  for(const r of results){
+   const tr=node("tr");tr.append(node("td",r[0]),node("td",fmt(r[1],1)+" %"),node("td",fmt(r[2],1)+" %"));body.append(tr);
+  }
+  table.append(body);tWrap.append(table);holdoutCard.append(tWrap);
+  const older=rows.find(x=>x.cohort==="older"),recent=rows.find(x=>x.cohort==="recent");
+  if(older&&recent){
+   holdoutCard.append(node("p","Réplication : période ancienne "+fmt(older.verified_transactions)+" transactions, pas de 0,01 dans "+fmt(older.pct_onecent,1)+" % des écarts ; récente "+fmt(recent.verified_transactions)+" transactions, "+fmt(recent.pct_onecent,1)+" %. Tailles identiques par grille : "+fmt(older.pct_equal_size_grids,1)+" % et "+fmt(recent.pct_equal_size_grids,1)+" % respectivement.","foot"));
+  }
+  holdoutCard.append(banner("Le pas de cotation se reproduit nettement. En revanche, la taille identique par niveau est moins systématique dans l'échantillon indépendant. Les transactions sélectionnées avaient toutes plusieurs prix exécutés : ces fréquences ne s'appliquent pas à tous les ordres RN1, et aucune rentabilité n'est démontrée."));
+ }catch(err){holdoutCard.append(node("p","Validation indépendante indisponible : "+String(err?.message||err),"foot"))}
+ target.append(holdoutCard);
  const priceAtSigningCard=node("section",null,"card");
  priceAtSigningCard.append(node("h2","Prix historique avant signature · RN1 Maker"));
  priceAtSigningCard.append(node("p","Comparaison du prix limite réellement signé avec le dernier indicateur historique Polymarket antérieur au timestamp déclaré. Pas un best bid/ask, pas une preuve de mise au carnet.","foot"));
