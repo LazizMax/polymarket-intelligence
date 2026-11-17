@@ -218,6 +218,14 @@ export async function rn1SignedOrderDetail(db:any,body:any){
    round(signed_receive_shares/1000000,3)::float8 signed_shares,
    round(signed_price,6)::float8 signed_price,sampled_cohort
    from pi.rn1_maker_calldata_signed_orders where order_hash=$1`,[orderHash]);
- return {status:"confirmed_onchain",order:orders[0],original_order:original[0]||null,fills,limit:150,
+ const historical=await db.unsafe(`select
+ status,round(price_before,6)::float8 price_before,
+ round(response_age_seconds,1)::float8 quote_age_seconds,
+ round(five_min_momentum,6)::float8 momentum_5m,
+ observed_before_epoch
+ from pi.rn1_maker_signed_creation_quotes
+ where order_hash=$1`,[orderHash]);
+ return {status:"confirmed_onchain",order:orders[0],original_order:original[0]||null,
+   historical_reference:historical[0]||null,fills,limit:150,
    disclaimer:"Execution events only: creation, cancellations, remaining unfilled quantity and order-book queue are unknown."};
 }
