@@ -641,6 +641,11 @@ async function renderRN1Engine(){
        const o=result.original_order;
        details.prepend(node("p","Paramètres signés : "+fmt(o.signed_shares,2)+" parts demandées · prix limite "+fmt(o.signed_price,4)+" · valeur initialement signée "+fmt(o.signed_usdc,2)+" USDC · horodatage déclaré "+String(o.declared_created_at||"").replace("T"," ")+".","foot"));
       }
+      if(result.historical_reference?.status==="confirmed"&&result.original_order){
+       const q=result.historical_reference,p=Number(result.original_order.signed_price);
+       const gap=100*(p-Number(q.price_before));
+       details.prepend(node("p","Référence historique avant signature : "+fmt(q.price_before,4)+" · écart limite - référence "+fmt(gap,2)+" points · référence datée de "+fmt(q.quote_age_seconds,1)+" s avant la signature déclarée"+(q.momentum_5m===null?"":" · momentum précédent 5 min "+fmt(100*Number(q.momentum_5m),2)+" points")+". Indicateur rétrospectif, pas bid/ask.","foot"));
+      }
       inspect.textContent="Actualiser les fills";
      }catch(err){
       details.replaceChildren(node("p","Détail indisponible : "+String(err?.message||err),"foot"));
