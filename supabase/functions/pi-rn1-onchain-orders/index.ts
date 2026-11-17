@@ -692,12 +692,80 @@ async function rn1HoldoutLadderProbe(page:number){
  }));
  return {holdout:true,page,selected:candidates.length,results};
 }
+// Separate disjoint holdout for price positioning. Only transactions with one
+// hash-verified Maker order, selected before looking at its price history.
+async function rn1HoldoutSignedPriceProbe(page:number){
+ if(!Number.isInteger(page)||page<0||page>48)throw Error("page out of range");
+ const candidates=await db.unsafe(`with eligible as(
+ select f.transaction_hash,min(f.event_slug) event_slug,
+ min(f.maker_order_hash) order_hash,min(f.token_id) token_id,
+ min(f.trade_at) earliest_fill,min(f.price)::float8 pmin,max(f.price)::float8 pmax,
+ count(distinct f.maker_order_hash) norders,count(s.order_hash) seen_orders
+ from pi.rn1_maker_historical_fills f
+ left join pi.rn1_maker_calldata_signed_orders s on s.order_hash=f.maker_order_hash
+ where f.role='maker' and f.maker_order_hash is not null
+  and not exists(select 1 from pi.rn1_maker_calldata_sample_txs t where t.transaction_hash=f.transaction_hash)
+ group by f.transaction_hash having count(distinct f.maker_order_hash)=1 and count(s.order_hash)=0
+)
+select transaction_hash,event_slug,order_hash,token_id,earliest_fill,pmin,pmax
+from eligible order by md5(transaction_hash||':rn1-price-holdout-2026-11-v1')
+limit 8 offset $1`,[page*8]);
+ const results=await Promise.all(candidates.map(async(c:any)=>{
+  try{
+   const txHash=String(c.transaction_hash),{transaction:tx}=await fetchPolygonTransaction(txHash);
+   const contract=String(tx.to||"").toLowerCase();
+   if(!exchanges.has(contract))throw Error("unexpected_contract");
+   const parsed=matchAbi.parseTransaction({data:String(tx.input||tx.data||"")});
+   if(!parsed||parsed.name!=="matchOrders")throw Error("not_match_orders");
+   const domain={name:"Polymarket CTF Exchange",version:"2",chainId:137,verifyingContract:contract};
+   const makerOrders=[...(parsed.args.makerOrders||[])].filter((o:any)=>String(o.maker).toLowerCase()===wallet);
+   let found:any=null;
+   for(const o of makerOrders){
+    const h=TypedDataEncoder.hash(domain,eipOrderTypes,{
+     salt:o.salt,maker:o.maker,signer:o.signer,tokenId:o.tokenId,
+     makerAmount:o.makerAmount,takerAmount:o.takerAmount,side:o.side,
+     signatureType:o.signatureType,timestamp:o.timestamp,
+     metadata:o.metadata,builder:o.builder}).toLowerCase();
+    if(h===String(c.order_hash).toLowerCase()){found=o;break}
+   }
+   if(!found||Number(found.side)!==0||String(found.tokenId)!==String(c.token_id))throw Error("order_hash_mismatch");
+   const signedPrice=Number(found.makerAmount)/Number(found.takerAmount);
+   if(!Number.isFinite(signedPrice)||Math.abs(signedPrice-Number(c.pmin))>.002||
+     Math.abs(signedPrice-Number(c.pmax))>.002)throw Error("executed_price_mismatch");
+   const createdMs=Number(found.timestamp);
+   if(!Number.isFinite(createdMs)||createdMs<1600000000000||createdMs>1900000000000)throw Error("bad_timestamp");
+   const at=Math.floor(createdMs/1000);
+   const params=new URLSearchParams({market:String(c.token_id),startTs:String(at-900),endTs:String(at+30),fidelity:"1"});
+   const r=await fetch("https://clob.polymarket.com/prices-history?"+params.toString(),{signal:AbortSignal.timeout(12000)});
+   if(!r.ok)throw Error("price_http_"+r.status);
+   const data=await r.json();
+   const history=(Array.isArray(data.history)?data.history:[]).map((v:any)=>({t:Number(v.t),p:Number(v.p)}))
+    .filter((v:any)=>Number.isFinite(v.t)&&Number.isFinite(v.p)&&v.p>=0&&v.p<=1&&v.t<=at)
+    .sort((a:any,b:any)=>b.t-a.t);
+   const prev=history.find((v:any)=>at-v.t<=90);
+   const base=history.find((v:any)=>v.t<=at-300&&v.t>=at-420);
+   if(!prev)return {status:"missing",period:new Date(c.earliest_fill)<new Date("2026-11-09T20:39:27Z")?"older":"recent",
+    event_slug:c.event_slug};
+   const momentum=base?prev.p-base.p:null;
+   return {status:"confirmed",period:new Date(c.earliest_fill)<new Date("2026-11-09T20:39:27Z")?"older":"recent",
+    event_slug:c.event_slug,signed_price:signedPrice,prior_price:prev.p,
+    gap:signedPrice-prev.p,momentum,prior_age:at-prev.t,
+    signed_integer_qty:BigInt(found.takerAmount)%1000000n===0n,
+    signed_shares:Number(found.takerAmount)/1000000};
+  }catch(e){return {status:"error",error:String(e).slice(0,90)}}
+ }));
+ return {holdout:true,type:"price",page,selected:candidates.length,results};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
  if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_holdout_signed_price_probe"){
+  try{return response(await rn1HoldoutSignedPriceProbe(Number(body.page)))}
+  catch(e){return response({error:String(e).slice(0,160)},500)}
+ }
  if(body.action==="rn1_holdout_ladder_probe"){
   try{return response(await rn1HoldoutLadderProbe(Number(body.page)))}
   catch(e){return response({error:String(e).slice(0,160)},500)}
