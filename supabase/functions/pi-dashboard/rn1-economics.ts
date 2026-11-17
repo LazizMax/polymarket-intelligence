@@ -3,7 +3,7 @@
  // No new raw trade storage or claim of realized arb profit.
 const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 export async function rn1EconomicReconstruction(db:any){
- const [markets,flows,closed,snapshots,availability]=await Promise.all([
+ const [markets,flows,closed,snapshots,availability,mergeOverlap]=await Promise.all([
  db.unsafe(`with m as (
  select market_key,min_trade_at,max_trade_at,fills,buy_fills,sell_fills,
  buy0_shares,buy1_shares,sell0_shares,sell1_shares,
@@ -76,10 +76,31 @@ export async function rn1EconomicReconstruction(db:any){
   count(*) filter(where completeness='complete')::integer complete_days,
   count(*) filter(where completeness='partial')::integer partial_days,
   min(day)::text first_snapshot_day,max(day)::text last_snapshot_day
-  from pi.wallet_pnl_daily where wallet=$1`,[RN1])
+  from pi.wallet_pnl_daily where wallet=$1`,[RN1]),
+ db.unsafe(`with merge_markets as (
+  select market_key,
+   sum(events)::bigint merge_events,
+   sum(reported_usdc_size) reported_merge_amount
+  from pi.rn1_full_activity_metrics
+  where wallet=$1 and kind='MERGE' group by market_key
+ ), known as (
+  select market_key,buy0_shares,buy1_shares,
+   least(buy0_shares,buy1_shares) potential_pairs
+  from pi.rn1_full_market_metrics where wallet=$1
+ )
+ select count(*)::integer merge_market_keys,
+  count(*) filter(where known.market_key is null)::integer without_market_trade_aggregate,
+  count(*) filter(where known.buy0_shares>0 and known.buy1_shares>0)::integer with_both_outcomes_bought,
+  count(*) filter(where known.market_key is not null and
+    (known.buy0_shares=0 or known.buy1_shares=0))::integer with_one_outcome_only,
+  coalesce(sum(merge_events),0)::bigint reported_merge_events,
+  round(coalesce(sum(reported_merge_amount),0),2)::float8 reported_merge_amount,
+  round(coalesce(sum(potential_pairs),0),2)::float8 potential_paired_shares_in_merged_markets
+ from merge_markets left join known using(market_key)`,[RN1])
  ]);
  return {status:"estimated_and_proxy_only",wallet:RN1,
   markets:markets[0]||{},flows,closed_positions:closed[0]||{},
+  merge_overlap:mergeOverlap[0]||{},
   pnl_snapshots:snapshots,pnl_coverage:availability[0]||{},
   evidence_labels:{
    market_counts:"archive_aggregates_observed",
@@ -90,6 +111,7 @@ export async function rn1EconomicReconstruction(db:any){
   },
   warnings:[
    "BUY/SELL counts include all public fills assigned to this RN1 wallet in the full-market aggregate; archive stops at its last collected timestamp.",
+   "A reported MERGE event on the same market as buys on both outcomes is direct archive evidence of complete-set merging, but does NOT attribute actual realized cost basis to a particular merge.",
    "Pairing across a whole market uses lifetime average BUY prices and min(total YES, total NO); no ordering, actual simultaneous inventory, redemptions, fees, open residuals, or carry is reconstructed. The hypothetical margin is NOT realized profit.",
    "Provider PnL daily rows are cumulative snapshots; NEVER sum them. Changes between adjacent snapshots are snapshot differences, not necessarily realized trading daily profits.",
    "All source PnL snapshots are flagged partial. The closed_position_roi sample includes only the indexed generation/window and its ROI is model-estimated with incomplete or unverified fee basis.",
