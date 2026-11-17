@@ -585,7 +585,7 @@ async function renderRN1Engine(){
   const proxy=node("div",null,"metrics");
   proxy.append(
    metric("Parts appariables · proxy",fmt(m.potential_matched_shares,0)),
-   metric("Marge brute théorique · proxy",fmt(m.hypothetical_gross_pair_margin,2)+" USDC"),
+   metric("Marge théorique · non encaissée",fmt(m.hypothetical_gross_pair_margin,2)+" USDC"),
    metric("Coût total de tous les achats archivés",fmt(m.gross_buy_spend,2)+" USDC"),
    metric("Ventes classiques archivées",fmt(m.sell_fills||0)+" fills")
   );
@@ -616,7 +616,25 @@ async function renderRN1Engine(){
     const row=node("tr");row.append(node("td",f.kind),node("td",fmt(f.reported_events||0)),node("td",fmt(f.reported_usdc_size,2)));body.append(row);
    }
    tbl.append(body);wrapper.append(tbl);economicCard.append(wrapper);
-   economicCard.append(node("p","Ces volumes de transactions et de redemptions ne sont PAS additionnables pour obtenir un gain net. Le champ source mesure des montants reportés, pas un livre de caisse réconcilié.","foot"));
+   economicCard.append(node("p","Ces volumes de transactions et de redemptions ne sont PAS additionnables pour obtenir un gain net. Le champ source mesure des montants reportés, pas un livre de caisse réconcilié. Depuis la migration Polymarket V2, le collatéral peut être pUSD : les colonnes historiques nommées USDC doivent être comprises comme des équivalents USD rapportés.","foot"));
+  }
+  const retrospective=econ.closed_pair_cost_buckets||[],closedCoverage=econ.closed_market_coverage||{};
+  if(retrospective.length){
+   economicCard.append(node("h3","Coût des deux issues et ROI des positions clôturées · étude rétrospective"));
+   const labels={"<0.90":"Sous 0,90","0.90-0.95":"0,90 à 0,95","0.95-1.00":"0,95 à 1,00","1.00-1.05":"1,00 à 1,05",">=1.05":"1,05 ou plus"};
+   const wrap=node("div",null,"tablewrap"),tbl=node("table"),head=node("thead"),tr=node("tr");
+   ["Coût moyen YES + NO","Marchés","ROI pondéré estimé"].forEach(x=>tr.append(node("th",x)));
+   head.append(tr);tbl.append(head);
+   const body=node("tbody");
+   for(const b of retrospective){
+    const row=node("tr");
+    row.append(node("td",labels[b.cost_bucket]||String(b.cost_bucket)),
+      node("td",fmt(b.markets||0)),node("td",fmt(b.estimated_weighted_roi_pct,2)+" %"));
+    body.append(row);
+   }
+   tbl.append(body);wrap.append(tbl);economicCard.append(wrap);
+   economicCard.append(node("p","Correspondance : "+fmt(closedCoverage.joined_markets||0)+" marchés du modèle de clôture reliés aux historiques d'achats sur "+fmt(closedCoverage.closed_sample_markets||0)+". Aucune transaction d'achat enregistrée après la dernière clôture dans ce rapprochement ; "+fmt(closedCoverage.joined_markets_with_merge||0)+" marché avec MERGE dans cet échantillon.","foot"));
+   economicCard.append(banner("Analyse COMPTABLE APRÈS COUP et non stratégie prédictive. Les coûts moyens utilisent tous les achats jusqu'à la clôture, y compris ceux réalisés après les premiers ordres. Ces ROI sont estimés sur un échantillon court ; ils n'établissent pas le P&L réel des merges, la rentabilité des makers ni une performance after-fees."));
   }
   economicCard.append(node("h3","Deux sources de performance à ne pas confondre"));
   const perf=node("div",null,"metrics");
