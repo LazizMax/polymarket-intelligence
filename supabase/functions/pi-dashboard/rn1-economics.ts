@@ -3,7 +3,7 @@
  // No new raw trade storage or claim of realized arb profit.
 const RN1="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 export async function rn1EconomicReconstruction(db:any){
- const [markets,flows,closed,snapshots,availability,mergeOverlap]=await Promise.all([
+ const [markets,flows,closed,snapshots,availability,mergeOverlap,closedBuckets,closedMarketCoverage]=await Promise.all([
  db.unsafe(`with m as (
  select market_key,min_trade_at,max_trade_at,fills,buy_fills,sell_fills,
  buy0_shares,buy1_shares,sell0_shares,sell1_shares,
@@ -96,11 +96,49 @@ export async function rn1EconomicReconstruction(db:any){
   coalesce(sum(merge_events),0)::bigint reported_merge_events,
   round(coalesce(sum(reported_merge_amount),0),2)::float8 reported_merge_amount,
   round(coalesce(sum(potential_pairs),0),2)::float8 potential_paired_shares_in_merged_markets
- from merge_markets left join known using(market_key)`,[RN1])
+ from merge_markets left join known using(market_key)`,[RN1]),
+ db.unsafe(`with c as (
+   select condition_id,max(last_event_at) last_closed_at,
+    sum(estimated_entry_cost_usdc) filter(where valid_cost) cost,
+    sum(realized_pnl_usdc) filter(where valid_cost) pnl,
+    count(*) filter(where valid_cost)::integer valid_positions
+   from pi.closed_position_roi where wallet=$1 group by condition_id
+  ), matched as(
+   select c.*,m.max_trade_at,m.buy0_shares,m.buy1_shares,
+    m.buy0_cost/nullif(m.buy0_shares,0)+m.buy1_cost/nullif(m.buy1_shares,0) avg_pair_cost
+   from c join pi.rn1_full_market_metrics m on m.wallet=$1 and m.market_key=c.condition_id
+   where m.buy0_shares>0 and m.buy1_shares>0 and m.max_trade_at<=c.last_closed_at
+  )
+  select case when avg_pair_cost<.90 then '<0.90'
+    when avg_pair_cost<.95 then '0.90-0.95'
+    when avg_pair_cost<1 then '0.95-1.00'
+    when avg_pair_cost<1.05 then '1.00-1.05' else '>=1.05' end cost_bucket,
+   count(*)::integer markets,
+   coalesce(sum(valid_positions),0)::integer valid_positions,
+   round(sum(cost),2)::float8 estimated_entry_cost,
+   round(sum(pnl),2)::float8 estimated_position_pnl,
+   round(100*sum(pnl)/nullif(sum(cost),0),3)::float8 estimated_weighted_roi_pct
+  from matched group by 1 order by
+  case when cost_bucket='<0.90' then 1 when cost_bucket='0.90-0.95' then 2
+  when cost_bucket='0.95-1.00' then 3 when cost_bucket='1.00-1.05' then 4 else 5 end`,[RN1]),
+ db.unsafe(`with c as(
+   select condition_id,max(last_event_at) last_closed_at
+   from pi.closed_position_roi where wallet=$1 group by condition_id
+  ),merged as(
+   select distinct market_key from pi.rn1_full_activity_metrics
+    where wallet=$1 and kind='MERGE'
+  )
+  select count(*)::integer joined_markets,
+   count(*) filter(where m.max_trade_at>c.last_closed_at)::integer markets_trading_after_closed_snapshot,
+   count(*) filter(where merged.market_key is not null)::integer joined_markets_with_merge,
+   (select count(distinct condition_id)::integer from pi.closed_position_roi where wallet=$1) closed_sample_markets
+  from c join pi.rn1_full_market_metrics m on m.wallet=$1 and m.market_key=c.condition_id
+   left join merged on merged.market_key=c.condition_id`,[RN1])
  ]);
  return {status:"estimated_and_proxy_only",wallet:RN1,
   markets:markets[0]||{},flows,closed_positions:closed[0]||{},
-  merge_overlap:mergeOverlap[0]||{},
+  merge_overlap:mergeOverlap[0]||{},closed_pair_cost_buckets:closedBuckets,
+  closed_market_coverage:closedMarketCoverage[0]||{},
   pnl_snapshots:snapshots,pnl_coverage:availability[0]||{},
   evidence_labels:{
    market_counts:"archive_aggregates_observed",
@@ -113,6 +151,8 @@ export async function rn1EconomicReconstruction(db:any){
    "BUY/SELL counts include all public fills assigned to this RN1 wallet in the full-market aggregate; archive stops at its last collected timestamp.",
    "A reported MERGE event on the same market as buys on both outcomes is direct archive evidence of complete-set merging, but does NOT attribute actual realized cost basis to a particular merge.",
    "Pairing across a whole market uses lifetime average BUY prices and min(total YES, total NO); no ordering, actual simultaneous inventory, redemptions, fees, open residuals, or carry is reconstructed. The hypothetical margin is NOT realized profit.",
+   "Closed-market grouping by combined lifetime average BUY prices is retrospective and generally includes trades after the first quotation. Bucket-level ROIs cannot be treated as forward signals. No MERGE was present in the recent closed-position sample.",
+   "The underlying collateral after the 2026 V2 upgrade may be pUSD, not USDC.e; schema labels naming USDC are USD-equivalent reports, not independently verified cash amounts.",
    "Provider PnL daily rows are cumulative snapshots; NEVER sum them. Changes between adjacent snapshots are snapshot differences, not necessarily realized trading daily profits.",
    "All source PnL snapshots are flagged partial. The closed_position_roi sample includes only the indexed generation/window and its ROI is model-estimated with incomplete or unverified fee basis.",
    "Activity MERGE/REDEEM/REWARD/REBATE reported_usdc_size are separately reported activity metrics, not a reconciled signed ledger or independently verified receipt balances.",
