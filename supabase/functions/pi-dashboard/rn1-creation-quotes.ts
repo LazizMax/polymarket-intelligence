@@ -113,3 +113,33 @@ export async function rn1HoldoutLadderValidationReport(db:any){
     "This validation concerns sizing and price-ladder rules, not the signed-price versus prior reference hypothesis."
   ]};
 }
+
+export async function rn1HoldoutSignedPriceValidationReport(db:any){
+ const [metrics,controls]=await Promise.all([
+  db.unsafe(`select period,regime,n,with_momentum,
+    median_signed_gap::float8 median_signed_gap,
+    mean_signed_gap::float8 mean_signed_gap,
+    pct_below_half_point::float8 pct_below_half_point,
+    quote_age_median_seconds::float8 quote_age_median_seconds,
+    recent_30s_n,recent_30s_median_gap::float8 recent_30s_median_gap
+   from pi.rn1_holdout_price_validation
+   where period='all' or regime='all'
+   order by period,regime`),
+  db.unsafe(`select selected_transactions,validated_prices,missing_prices,
+    decoding_errors,valid_momentum,validated_integer_shares,
+    total_events,comparable_events_min1,comparable_events_min2,
+    events_more_discount_after_fall,events_more_discount_after_rise,event_ties,
+    mean_event_gap_difference::float8 mean_event_gap_difference,
+    verified_at::text verified_at from pi.rn1_holdout_price_controls
+   where singleton=true`)
+ ]);
+ return {status:"holdout_price_complete",metrics,controls:controls[0]||{},
+  study_design:"392 previously unsampled single-Maker-order transactions, disjoint from all calldata discovery transactions and order hashes, decoded from Polygon EIP712 and compared to price histories strictly timestamped before signed creation. No new large archive data persisted.",
+  interpretation:"The median limit-price gap of -0.005 replicates. Extra downward price adjustment after prior drops does not replicate convincingly; event-controlled comparisons are split and sparse.",
+  limitations:[
+    "Only previously executed single-order transactions are sampled; not representative of posted-but-unfilled orders or simultaneous multi-level quotes.",
+    "Polymarket retrospective price indicator is not a captured bid/ask or a point-in-time availability proof.",
+    "Only 22 events have even one observation in both fall/rise buckets; only one has two in each. Do not claim a causal momentum adjustment.",
+    "Do not treat this result as a measured profitability, expected value, or copy trading edge."
+  ]};
+}
