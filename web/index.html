@@ -591,6 +591,19 @@ async function renderRN1Engine(){
   );
   economicCard.append(proxy);
   economicCard.append(banner("La marge théorique de paires est calculée sur min(parts YES, parts NO) × [1 − prix moyen YES − prix moyen NO] pour chaque marché, sur toute la période archivée. Elle N'EST PAS le P&L réellement encaissé : les achats peuvent être séparés dans le temps, et il manque l'inventaire, les merges effectifs, les frais et les liquidités."));
+  const merge=econ.merge_overlap||{};
+  if(Number(merge.merge_market_keys)>0){
+   economicCard.append(node("h3","Vérification directe des fusions de parts complémentaires"));
+   const verify=node("div",null,"metrics");
+   verify.append(
+    metric("Marchés avec MERGE enregistré",fmt(merge.merge_market_keys||0)),
+    metric("Parmi eux, achats YES et NO",fmt(merge.with_both_outcomes_bought||0)),
+    metric("MERGE sans marché retrouvé",fmt(merge.without_market_trade_aggregate||0)),
+    metric("Événements MERGE archivés",fmt(merge.reported_merge_events||0))
+   );
+   economicCard.append(verify);
+   economicCard.append(node("p","Le rapprochement marché par marché atteste des fusions de positions complémentaires. Il ne révèle pas les lots exacts d'achats consommés ni la marge réellement encaissée sur chaque fusion.","foot"));
+  }
   const flows=econ.flows||[],wanted=["TRADE","MERGE","REDEEM","MAKER_REBATE","TAKER_REBATE","REWARD"];
   const selected=flows.filter(x=>wanted.includes(x.kind));
   if(selected.length){
