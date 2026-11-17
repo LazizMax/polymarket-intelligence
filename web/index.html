@@ -560,6 +560,79 @@ async function renderRN1Engine(){
   historicalCard.append(node("p","Diagnostic historique indisponible : "+String(e?.message||e),"foot"));
  }
  target.append(historicalCard);
+ const economicCard=node("section",null,"card");
+ economicCard.append(node("h2","RN1 · Exposition économique YES/NO et qualité du P&L"));
+ economicCard.append(node("p","Reconstruction sans nouvelle ingestion : agrégats des achats des deux issues, événements de fusion/règlement, échantillon limité de positions closes et P&L cumulatif rapporté par le fournisseur. Chaque mesure porte un niveau de preuve distinct.","foot"));
+ try{
+  const econ=await api("rn1_economic_reconstruction"),m=econ.markets||{},closed=econ.closed_positions||{},cov=econ.pnl_coverage||{};
+  const summary=node("div",null,"metrics");
+  summary.append(
+   metric("Marchés avec achats YES et NO",fmt(m.both_sides_bought||0)+" / "+fmt(m.markets||0)),
+   metric("Coût moyen combiné médian",fmt(m.median_pair_average_cost,4)+" USDC"),
+   metric("Marchés avec coût combiné sous 1",fmt(m.pair_price_below_one||0)),
+   metric("Marchés avec coût combiné ≥1",fmt(m.pair_price_at_or_above_one||0))
+  );
+  economicCard.append(summary);
+  const both=Number(m.both_sides_bought||0),positive=Number(m.pair_price_below_one||0);
+  if(both>0){
+   const portion=100*positive/both;
+   economicCard.append(node("p","Parmi les marchés où les deux issues ont été achetées, "+fmt(portion,1)+" % affichent un coût moyen de paire inférieur à 1 USDC. Ce test n'établit ni la simultanéité ni le coût réel des paires fusionnées.","foot"));
+   const track=node("div");track.style.cssText="height:12px;border-radius:12px;overflow:hidden;background:var(--line)";
+   const fill=node("div");fill.style.cssText="height:100%;width:"+Math.min(100,portion).toFixed(2)+"%;background:#20a57b";
+   track.append(fill);economicCard.append(track);
+  }
+  economicCard.append(node("h3","Simulation comptable théorique des paires"));
+  const proxy=node("div",null,"metrics");
+  proxy.append(
+   metric("Parts appariables · proxy",fmt(m.potential_matched_shares,0)),
+   metric("Marge brute théorique · proxy",fmt(m.hypothetical_gross_pair_margin,2)+" USDC"),
+   metric("Coût total de tous les achats archivés",fmt(m.gross_buy_spend,2)+" USDC"),
+   metric("Ventes classiques archivées",fmt(m.sell_fills||0)+" fills")
+  );
+  economicCard.append(proxy);
+  economicCard.append(banner("La marge théorique de paires est calculée sur min(parts YES, parts NO) × [1 − prix moyen YES − prix moyen NO] pour chaque marché, sur toute la période archivée. Elle N'EST PAS le P&L réellement encaissé : les achats peuvent être séparés dans le temps, et il manque l'inventaire, les merges effectifs, les frais et les liquidités."));
+  const flows=econ.flows||[],wanted=["TRADE","MERGE","REDEEM","MAKER_REBATE","TAKER_REBATE","REWARD"];
+  const selected=flows.filter(x=>wanted.includes(x.kind));
+  if(selected.length){
+   economicCard.append(node("h3","Événements économiques dans les archives"));
+   const wrapper=node("div",null,"tablewrap"),tbl=node("table"),head=node("thead"),tr=node("tr");
+   ["Type d'événement","Nombre rapporté","Montant rapporté (USDC)"].forEach(x=>tr.append(node("th",x)));
+   head.append(tr);tbl.append(head);
+   const body=node("tbody");
+   for(const f of selected){
+    const row=node("tr");row.append(node("td",f.kind),node("td",fmt(f.reported_events||0)),node("td",fmt(f.reported_usdc_size,2)));body.append(row);
+   }
+   tbl.append(body);wrapper.append(tbl);economicCard.append(wrapper);
+   economicCard.append(node("p","Ces volumes de transactions et de redemptions ne sont PAS additionnables pour obtenir un gain net. Le champ source mesure des montants reportés, pas un livre de caisse réconcilié.","foot"));
+  }
+  economicCard.append(node("h3","Deux sources de performance à ne pas confondre"));
+  const perf=node("div",null,"metrics");
+  perf.append(
+   metric("Positions closes · échantillon",fmt(closed.valid_cost_positions||0)+" / "+fmt(closed.positions||0)),
+   metric("ROI pondéré · modèle coûts valides",fmt(closed.cost_weighted_roi_pct,2)+" %"),
+   metric("P&L estimé · positions de l'échantillon",fmt(closed.estimated_realized_pnl,2)+" USDC"),
+   metric("Périodes de snapshots fournisseur",fmt(cov.pnl_snapshot_days||0)+" jours")
+  );
+  economicCard.append(perf);
+  economicCard.append(node("p","L'échantillon de positions closes commence le "+String(closed.earliest_entry_at||"date inconnue").slice(0,10)+" et finit le "+String(closed.last_event_at||"date inconnue").slice(0,10)+". Le ROI pondéré n'est pas le ROI de toute l'activité RN1 ; il est estimé avec les coûts que le modèle considère exploitables.","foot"));
+  const snapshots=econ.pnl_snapshots||[];
+  if(snapshots.length){
+   const latest=snapshots[0];
+   const last=node("div",null,"metrics");
+   last.append(
+    metric("P&L réalisé cumulatif · source",fmt(latest.realized_snapshot,2)+" USDC"),
+    metric("P&L économique cumulatif · source",fmt(latest.economic_snapshot,2)+" USDC"),
+    metric("Variation du P&L économique depuis le snapshot précédent",fmt(latest.reported_economic_delta,2)+" USDC"),
+    metric("Qualité des snapshots",String(latest.completeness||"inconnue").toUpperCase())
+   );
+   economicCard.append(node("h3","Photographies cumulatives rapportées par Polymarket"));
+   economicCard.append(last);
+   economicCard.append(node("p","Dernière date de snapshot : "+String(latest.day||"")+" ; source "+String(latest.source||"")+". Les  "+fmt(cov.partial_days||0)+" jours sont marqués partiels. Une différence quotidienne est une variation entre deux photographies, pas nécessairement un profit de trades de la journée.","foot"));
+  }
+  economicCard.append(banner("ÉTAT DE PREUVE : achats et événements = agrégats archivés ; gains de paires = scénario théorique ; ROI des positions closes = estimation sur échantillon ; P&L fournisseur = cumulatif partiel. Aucun de ces chiffres, pris seul, ne prouve le profit after-fees attribuable à la stratégie Maker de RN1."));
+  economicCard.append(node("p","Couverture de l'archive de marchés : "+String(m.first_trade_at||"").slice(0,10)+" → "+String(m.last_trade_at||"").slice(0,10)+". Les snapshots fournisseur peuvent couvrir une période différente.","foot"));
+ }catch(e){economicCard.append(node("p","Diagnostic économique indisponible : "+String(e?.message||e),"foot"))}
+ target.append(economicCard);
  const onchainCard=node("section",null,"card");
  onchainCard.append(node("h2","Ordres Maker réellement signés · blockchain Polygon"));
  onchainCard.append(node("p","Ici les identifiants sont récupérés depuis les événements publics OrderFilled du contrat Polymarket V2, puis rapprochés des prix et quantités des fills archivés. Ce ne sont PAS des regroupements statistiques par seconde.","foot"));
