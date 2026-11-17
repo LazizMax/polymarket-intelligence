@@ -595,12 +595,113 @@ async function collectSignedCreationQuoteOne(){
   return {status:"error",error:msg};
  }
 }
+// Validation HOLDOUT: read-only Polygon calldata, strict exclusion of all sampled
+// transactions and signed order hashes. No source rows, full receipts, signatures,
+// or quotes are stored. Each batch has a stable independent transaction selection.
+async function rn1HoldoutLadderProbe(page:number){
+ if(!Number.isInteger(page)||page<0||page>65)throw Error("page out of range");
+ const batch=8;
+ const candidates=await db.unsafe(`with eligible as (
+ select f.transaction_hash,
+  count(distinct round(f.price,3)) levels,
+  count(distinct f.maker_order_hash) hashes,
+  count(s.order_hash) previously_sampled_orders,
+  min(f.trade_at) first_fill_at
+ from pi.rn1_maker_historical_fills f
+ left join pi.rn1_maker_calldata_signed_orders s on s.order_hash=f.maker_order_hash
+ where f.role='maker' and f.maker_order_hash is not null
+  and not exists(select 1 from pi.rn1_maker_calldata_sample_txs t where t.transaction_hash=f.transaction_hash)
+ group by f.transaction_hash
+ having count(distinct round(f.price,3))>=2 and count(distinct f.maker_order_hash)>=2
+ and count(s.order_hash)=0
+ )
+ select transaction_hash,first_fill_at from eligible
+ order by md5(transaction_hash||':rn1-disjoint-holdout-2026-11-v1')
+ limit $1 offset $2`,[batch,page*batch]);
+ const results=await Promise.all(candidates.map(async(c:any)=>{
+  try{
+   const hash=String(c.transaction_hash);
+   const sources=await db.unsafe(`select f.maker_order_hash hash,min(f.token_id) token_id,
+   min(f.price)::float8 lo,max(f.price)::float8 hi,
+   min(f.trade_at) first_fill_at
+   from pi.rn1_maker_historical_fills f
+   where f.transaction_hash=$1 and f.role='maker' and f.maker_order_hash is not null
+   group by f.maker_order_hash`,[hash]);
+   const expected=new Map(sources.map((o:any)=>[String(o.hash).toLowerCase(),o]));
+   const {transaction:tx}=await fetchPolygonTransaction(hash);
+   const to=String(tx.to||"").toLowerCase();
+   if(!exchanges.has(to))throw Error("unexpected_contract");
+   const parsed=matchAbi.parseTransaction({data:String(tx.input||tx.data||"")});
+   if(!parsed||parsed.name!=="matchOrders")throw Error("unknown_selector");
+   const makerOrders=[...(parsed.args.makerOrders||[])].filter((o:any)=>String(o.maker).toLowerCase()===wallet);
+   const domain={name:"Polymarket CTF Exchange",version:"2",chainId:137,verifyingContract:to};
+   const signed:any[]=[],seen=new Set<string>();
+   for(const o of makerOrders){
+    const orderHash=TypedDataEncoder.hash(domain,eipOrderTypes,{
+     salt:o.salt,maker:o.maker,signer:o.signer,tokenId:o.tokenId,
+     makerAmount:o.makerAmount,takerAmount:o.takerAmount,side:o.side,
+     signatureType:o.signatureType,timestamp:o.timestamp,
+     metadata:o.metadata,builder:o.builder
+    }).toLowerCase();
+    if(!expected.has(orderHash))continue;
+    const observed=expected.get(orderHash);
+    const qty=BigInt(o.takerAmount),usd=BigInt(o.makerAmount),created=BigInt(o.timestamp);
+    if(seen.has(orderHash)||Number(o.side)!==0||qty<=0n||usd<=0n
+     ||String(o.tokenId)!==String(observed.token_id)
+     ||created<1600000000000n||created>1900000000000n)throw Error("incorrect_signed_order");
+    const signedPrice=Number(usd)/Number(qty);
+    if(Math.abs(signedPrice-Number(observed.lo))>.002||
+       Math.abs(signedPrice-Number(observed.hi))>.002)throw Error("signed_price_mismatch");
+    seen.add(orderHash);
+    signed.push({token:String(o.tokenId),created:created.toString(),price:signedPrice,
+     quantity:qty.toString(),usd:usd.toString()});
+   }
+   if(seen.size!==expected.size)throw Error("incomplete_crypto_reconciliation");
+   const byBatch=new Map<string,typeof signed>();
+   for(const x of signed){
+    const key=x.token+":"+x.created,entries=byBatch.get(key)||[];
+    entries.push(x);byBatch.set(key,entries);
+   }
+   let sameTimeGrids=0,sameTimeSameSize=0,priceSteps=0,oneCentSteps=0,
+       sameTimePairs=0,sameTimeEqualPairs=0,differentTimePairs=0,differentTimeEqualPairs=0;
+   for(const entries of byBatch.values()){
+    const levels=[...new Set(entries.map(x=>Math.round(x.price*1000)/1000))].sort((a,b)=>a-b);
+    if(levels.length<2)continue;
+    sameTimeGrids++;
+    if(new Set(entries.map(x=>x.quantity)).size===1)sameTimeSameSize++;
+    for(let i=1;i<levels.length;i++){
+     const d=levels[i]-levels[i-1];priceSteps++;
+     if(Math.abs(d-.01)<.0001)oneCentSteps++;
+    }
+   }
+   for(let i=0;i<signed.length;i++)for(let j=i+1;j<signed.length;j++){
+    const a=signed[i],b=signed[j];
+    if(a.token!==b.token||Math.abs(a.price-b.price)<.005)continue;
+    if(a.created===b.created){sameTimePairs++;if(a.quantity===b.quantity)sameTimeEqualPairs++}
+    else{differentTimePairs++;if(a.quantity===b.quantity)differentTimeEqualPairs++}
+   }
+   const integerShares=signed.filter(x=>BigInt(x.quantity)%1000000n===0n).length;
+   const integerUSD=signed.filter(x=>BigInt(x.usd)%1000000n===0n).length;
+   return {status:"confirmed",period:new Date(c.first_fill_at)<new Date("2026-11-09T20:39:27Z")?"older":"recent",
+    signed_orders:signed.length,integer_shares:integerShares,integer_usdc:integerUSD,
+    same_time_grids:sameTimeGrids,same_time_equal_size_grids:sameTimeSameSize,
+    adjacent_price_steps:priceSteps,one_cent_steps:oneCentSteps,
+    same_time_pairs:sameTimePairs,same_time_equal_pairs:sameTimeEqualPairs,
+    different_time_pairs:differentTimePairs,different_time_equal_pairs:differentTimeEqualPairs};
+  }catch(e){return {status:"error",error:String(e).slice(0,100)}}
+ }));
+ return {holdout:true,page,selected:candidates.length,results};
+}
 Deno.serve(async req=>{
  if(req.method!=="POST")return response({error:"method"},405);
  if(!await authorized(req))return response({error:"unauthorized"},403);
  let body:any={};try{body=await req.json()}catch{}
  if(body.action==="rn1_preserve_ambiguous_orders"){try{return response(await preserveAmbiguousOrderEvents())}catch(e){return response({error:String(e).slice(0,200)},500)}}
  if(body.action==="rn1_inspect_ambiguous"){try{return response(await inspectAmbiguousTransactions())}catch(e){return response({error:String(e).slice(0,150)},500)}}
+ if(body.action==="rn1_holdout_ladder_probe"){
+  try{return response(await rn1HoldoutLadderProbe(Number(body.page)))}
+  catch(e){return response({error:String(e).slice(0,160)},500)}
+ }
  if(body.action==="rn1_creation_quote_tick"){
   const count=Math.max(1,Math.min(8,Number(body.count)||4));
   const results=await Promise.all(Array.from({length:count},()=>collectSignedCreationQuoteOne()));
