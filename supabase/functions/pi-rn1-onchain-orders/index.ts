@@ -599,7 +599,7 @@ async function collectSignedCreationQuoteOne(){
 // transactions and signed order hashes. No source rows, full receipts, signatures,
 // or quotes are stored. Each batch has a stable independent transaction selection.
 async function rn1HoldoutLadderProbe(page:number){
- if(!Number.isInteger(page)||page<0||page>65)throw Error("page out of range");
+ if(!Number.isInteger(page)||page<0||page>66)throw Error("page out of range");
  const batch=8;
  const candidates=await db.unsafe(`with eligible as (
  select f.transaction_hash,
