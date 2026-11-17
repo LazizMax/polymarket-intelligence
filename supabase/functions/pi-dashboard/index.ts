@@ -5,7 +5,7 @@ import {replayTemporal,type TemporalSample} from "./arb-temporal.ts";
 import {rn1EngineForensics} from "./rn1-engine.ts";
 import {rn1MakerHistoricalReport} from "./rn1-maker-history.ts";
 import {rn1OnchainOrdersReport,rn1SignedOrderDetail,rn1OriginalOrderCalldataReport} from "./rn1-onchain-orders.ts";
-import {rn1SignedCreationPriceReport} from "./rn1-creation-quotes.ts";
+import {rn1SignedCreationPriceReport,rn1HoldoutLadderValidationReport} from "./rn1-creation-quotes.ts";
 const url = "https://bxfvgywfiifnsbjgudzj.supabase.co"; // legacy identity provider for existing login
 const pub = "sb_publishable_CIPlaX8vTlmMDbLCBbtprA_A0aIUujT"; // public key of legacy identity provider; no service-role access
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
@@ -2563,6 +2563,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_signed_order_detail")return send(await rn1SignedOrderDetail(db,body));
   if(body?.action==="rn1_signed_calldata_research")return send(await rn1OriginalOrderCalldataReport(db));
   if(body?.action==="rn1_signed_creation_price_report")return send(await rn1SignedCreationPriceReport(db));
+  if(body?.action==="rn1_holdout_ladder_validation")return send(await rn1HoldoutLadderValidationReport(db));
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
