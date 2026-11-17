@@ -745,6 +745,46 @@ async function renderRN1Engine(){
   calldataCard.append(node("p","Paramètres initiaux indisponibles : "+String(e?.message||e),"foot"));
  }
  target.append(calldataCard);
+ const priceAtSigningCard=node("section",null,"card");
+ priceAtSigningCard.append(node("h2","Prix historique avant signature · RN1 Maker"));
+ priceAtSigningCard.append(node("p","Comparaison du prix limite réellement signé avec le dernier indicateur historique Polymarket antérieur au timestamp déclaré. Pas un best bid/ask, pas une preuve de mise au carnet.","foot"));
+ try{
+  const r=await api("rn1_signed_creation_price_report");
+  const coverage=r.coverage||[],regimes=r.regimes||[],periods=r.periods||[],ctrl=r.event_controls||{};
+  const total=coverage.reduce((n,x)=>n+Number(x.orders||0),0);
+  const valid=coverage.find(x=>x.status==="confirmed")||{};
+  const bad=coverage.find(x=>x.status==="missing")||{};
+  const cMetrics=node("div",null,"metrics");
+  cMetrics.append(
+   metric("Ordres vérifiés avec prix antérieur",fmt(valid.orders||0)+" / "+fmt(total)),
+   metric("Momentum 5 minutes utilisable",fmt(valid.valid_momentum||0)),
+   metric("Prix antérieur manquant",fmt(bad.orders||0)),
+   metric("Âge moyen du dernier prix",fmt(valid.mean_quote_age_seconds,1)+" s")
+  );
+  priceAtSigningCard.append(cMetrics);
+  priceAtSigningCard.append(node("h3","Écart signé − prix antérieur · transactions ordinaires"));
+  const labels={fall_gt1pt:"Après baisse >1 point",rise_gt1pt:"Après hausse >1 point",stable_1pt:"Après stabilité ±1 point"};
+  for(const key of ["fall_gt1pt","stable_1pt","rise_gt1pt"]){
+   const x=regimes.find(v=>v.regime===key);
+   if(!x)continue;
+   priceAtSigningCard.append(node("h4",labels[key]));
+   const metrics=node("div",null,"metrics");
+   metrics.append(
+    metric("Ordres",fmt(x.orders||0)),
+    metric("Écart médian",fmt(100*Number(x.median_signed_minus_prior||0),2)+" pts"),
+    metric("Prix signé >0,5 pt sous référence",fmt(x.pct_below_prior_halfpt,1)+" %"),
+    metric("Écart médian · référence ≤30 s",fmt(100*Number(x.median_gap_recent_quote||0),2)+" pts")
+   );
+   priceAtSigningCard.append(metrics);
+  }
+  priceAtSigningCard.append(node("p","Contrôle par match : "+fmt(ctrl.comparable_events||0)+" événements ont au moins 2 observations en baisse et 2 en hausse. L'écart signé est plus négatif après baisse sur "+fmt(ctrl.more_discount_after_fall||0)+" événements, après hausse sur "+fmt(ctrl.more_discount_after_rise||0)+", égal sur "+fmt(ctrl.ties||0)+". Il s'agit d'une association observée, pas d'un avantage démontré.","foot"));
+  const older=periods.find(x=>x.period==="older"),recent=periods.find(x=>x.period==="recent");
+  if(older&&recent)priceAtSigningCard.append(node("p","Contrôle par période : écart médian ancien "+fmt(100*Number(older.median_signed_gap),2)+" pts ("+fmt(older.orders||0)+" ordres) ; récent "+fmt(100*Number(recent.median_signed_gap),2)+" pts ("+fmt(recent.orders||0)+" ordres).","foot"));
+  priceAtSigningCard.append(banner("Limites : série prices-history obtenue rétrospectivement, son horodatage antérieur ne garantit pas sa disponibilité publique au même instant ; le prix n'est pas un carnet d'ordres. Les ordres jamais exécutés sont absents ; sélection par transaction, petites comparaisons au sein d'un même match, aucun ROI ni EV après frais prouvé."));
+ }catch(e){
+  priceAtSigningCard.append(node("p","Comparaison aux prix historiques indisponible : "+String(e?.message||e),"foot"));
+ }
+ target.append(priceAtSigningCard);
  const oracleCard=node("section",null,"card");
  oracleCard.append(node("h2","Oracle externe · collecte & preuve temporelle"));
  let oracle=null;
