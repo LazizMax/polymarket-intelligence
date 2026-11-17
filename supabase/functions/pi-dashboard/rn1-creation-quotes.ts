@@ -74,3 +74,42 @@ export async function rn1SignedCreationPriceReport(db:any){
    "Only 13 events have at least two falling and two rising signed-order observations for within-event comparison; no causal impact or copy trading edge is established."
   ]};
 }
+
+export async function rn1HoldoutLadderValidationReport(db:any){
+ const [cohorts,discovery,controls]=await Promise.all([
+  db.unsafe(`select cohort,tested_transactions,verified_transactions,
+    failed_transactions,signed_orders,integer_share_orders,integer_usdc_orders,
+    same_ms_grid_groups,equal_size_grid_groups,adjacent_price_steps,one_cent_steps,
+    same_ms_pairs,same_ms_equal_qty_pairs,different_ms_pairs,different_ms_equal_qty_pairs,
+    round(100.0*one_cent_steps/nullif(adjacent_price_steps,0),2)::float8 pct_onecent,
+    round(100.0*equal_size_grid_groups/nullif(same_ms_grid_groups,0),2)::float8 pct_equal_size_grids,
+    round(100.0*same_ms_equal_qty_pairs/nullif(same_ms_pairs,0),2)::float8 pct_equal_same_ms,
+    round(100.0*different_ms_equal_qty_pairs/nullif(different_ms_pairs,0),2)::float8 pct_equal_different_ms,
+    updated_at::text recorded_at
+   from pi.rn1_holdout_ladder_validation order by cohort`),
+  db.unsafe(`with groups as (
+   select source_transaction_hash,token_id,declared_created_ms,
+    count(distinct round(signed_price,3)) price_levels,
+    min(signed_receive_shares) min_qty,max(signed_receive_shares) max_qty
+   from pi.rn1_maker_calldata_signed_orders where sampled_cohort='multi_level'
+   group by 1,2,3
+  )
+  select count(*) filter(where price_levels>=2)::integer discovered_grids,
+   count(*) filter(where price_levels>=2 and max_qty-min_qty<=10000)::integer equal_qty_grids
+  from groups`),
+  db.unsafe(`select count(*)::integer previously_decoded_orders,
+    count(*) filter(where cryptographic_match)::integer verified_orders
+    from pi.rn1_maker_calldata_signed_orders`)
+ ]);
+ return {status:"out_of_sample_complete",cohorts,
+  discovery_grid_groups:discovery[0]||{},
+  discovery_orders:controls[0]||{},
+  methodology:"All 531 disjoint multi-price Maker transactions were included, excluding all prior sampled transactions and any transaction containing already decoded signed orderHash. Polygon calldata was decoded read-only and EIP-712 hashes matched to existing archived fills; only tiny summary metrics were persisted.",
+  limitations:[
+    "This is exhaustive only among the 531 previously unseen multi-price, multiply signed Maker transactions in the 80k fill cohort, NOT an unbiased sample of every submitted order.",
+    "A matchOrders transaction can execute signed orders that were created at different times.",
+    "A shared signer-declared millisecond timestamp does not prove simultaneous CLOB posting.",
+    "No orderbook state, unexecuted orders, quote placement times or positive trading expectancy are established.",
+    "This validation concerns sizing and price-ladder rules, not the signed-price versus prior reference hypothesis."
+  ]};
+}
