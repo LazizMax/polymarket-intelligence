@@ -118,9 +118,7 @@ export async function rn1EconomicReconstruction(db:any){
    round(sum(cost),2)::float8 estimated_entry_cost,
    round(sum(pnl),2)::float8 estimated_position_pnl,
    round(100*sum(pnl)/nullif(sum(cost),0),3)::float8 estimated_weighted_roi_pct
-  from matched group by 1 order by
-  case when cost_bucket='<0.90' then 1 when cost_bucket='0.90-0.95' then 2
-  when cost_bucket='0.95-1.00' then 3 when cost_bucket='1.00-1.05' then 4 else 5 end`,[RN1]),
+  from matched group by 1 order by min(avg_pair_cost)`,[RN1]),
  db.unsafe(`with c as(
    select condition_id,max(last_event_at) last_closed_at
    from pi.closed_position_roi where wallet=$1 group by condition_id
