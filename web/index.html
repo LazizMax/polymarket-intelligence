@@ -827,6 +827,43 @@ async function renderRN1Engine(){
   priceAtSigningCard.append(node("p","Comparaison aux prix historiques indisponible : "+String(e?.message||e),"foot"));
  }
  target.append(priceAtSigningCard);
+ const holdoutPriceCard=node("section",null,"card");
+ holdoutPriceCard.append(node("h2","Prix signés · validation sur transactions indépendantes"));
+ holdoutPriceCard.append(node("p","Échantillon de transactions ordinaires inédites, excluant les transactions et les orderHash déjà décodés. Vérification EIP-712 et références de prix strictement antérieures au timestamp déclaré.","foot"));
+ try{
+  const r=await api("rn1_holdout_signed_price_validation");
+  const controls=r.controls||{},data=r.metrics||[];
+  const get=(period,regime)=>data.find(x=>x.period===period&&x.regime===regime)||{};
+  const all=get("all","all"),down=get("all","fall"),up=get("all","rise"),stable=get("all","stable");
+  const cards=node("div",null,"metrics");
+  cards.append(
+   metric("Transactions indépendantes",fmt(controls.selected_transactions||0)),
+   metric("Référence antérieure disponible",fmt(controls.validated_prices||0)),
+   metric("Momentum 5 min disponible",fmt(controls.valid_momentum||0)),
+   metric("Écart médian validé",fmt(100*Number(all.median_signed_gap||0),2)+" pt")
+  );
+  holdoutPriceCard.append(cards);
+  holdoutPriceCard.append(node("h3","Comparaison des mouvements précédant la signature"));
+  const tableWrap=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),trh=node("tr");
+  ["Variation 5 min","Ordres","Découverte","Hors échantillon"].forEach(x=>trh.append(node("th",x)));
+  thead.append(trh);table.append(thead);
+  const body=node("tbody");
+  for(const e of [
+   ["Baisse >1 point",down,-1],
+   ["Stabilité ±1 point",stable,-.4],
+   ["Hausse >1 point",up,-.5]
+  ]){
+   const tr=node("tr");tr.append(node("td",e[0]),node("td",fmt(e[1].n||0)),
+    node("td",fmt(e[2],2)+" pt"),node("td",fmt(100*Number(e[1].median_signed_gap||0),2)+" pt"));
+   body.append(tr);
+  }
+  table.append(body);tableWrap.append(table);holdoutPriceCard.append(tableWrap);
+  holdoutPriceCard.append(node("p","Contrôle au sein du même événement : "+fmt(controls.comparable_events_min1||0)+" matchs disposent d'une comparaison hausse/baisse, dont seulement "+fmt(controls.comparable_events_min2||0)+" avec au moins deux observations dans chaque régime. Résultat : "+fmt(controls.events_more_discount_after_fall||0)+" en faveur d'un écart plus négatif après baisse, "+fmt(controls.events_more_discount_after_rise||0)+" après hausse, "+fmt(controls.event_ties||0)+" égalité.","foot"));
+  const older=get("older","all"),recent=get("recent","all");
+  holdoutPriceCard.append(node("p","Écart médian hors échantillon : période ancienne "+fmt(100*Number(older.median_signed_gap||0),2)+" pt ("+fmt(older.n||0)+" ordres) ; récente "+fmt(100*Number(recent.median_signed_gap||0),2)+" pt ("+fmt(recent.n||0)+" ordres).","foot"));
+  holdoutPriceCard.append(banner("Validation : l'écart global d'environ −0,5 point se reproduit, MAIS l'idée de reculer systématiquement les ordres davantage après une baisse n'est pas confirmée. Les cotes sont des indicateurs historiques, pas un bid/ask exécutable. Aucun profit reproductible démontré."));
+ }catch(e){holdoutPriceCard.append(node("p","Analyse indépendante indisponible : "+String(e?.message||e),"foot"))}
+ target.append(holdoutPriceCard);
  const oracleCard=node("section",null,"card");
  oracleCard.append(node("h2","Oracle externe · collecte & preuve temporelle"));
  let oracle=null;
