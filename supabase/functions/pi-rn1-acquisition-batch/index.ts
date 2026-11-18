@@ -143,7 +143,7 @@ async function audit(row:Queued):Promise<Audit> {
       const from=addr(e.args.from),to=addr(e.args.to);
       if(from!==WALLET&&to!==WALLET)continue;
       const ids:bigint[]=topic===singleTopic?[BigInt(e.args.id)]:[...e.args.ids].map((x:any)=>BigInt(x));
-      const vals:bigint[]=topic===singleTopic?[BigInt(e.args.value)]:[...e.args.values].map((x:any)=>BigInt(x));
+      const vals:bigint[]=topic===singleTopic?[BigInt(e.args.value)]:[...e.args[4]].map((x:any)=>BigInt(x));
       for(let i=0;i<ids.length;i++) walletPositions.push({
         from,to,tokenId:ids[i].toString(),micro:vals[i].toString(),
         logIndex:Number(BigInt(log.logIndex||"0x0"))
