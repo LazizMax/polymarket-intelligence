@@ -37,8 +37,11 @@ const pilotMarkets=new Set([
  "0x48d00a6775eb36ade7d947119c6ce9e2f2fe665b79a95de431dec3917537ca7e",
  "0x67ffbb71f10ab6f28715b36c369d0591669aa8d548c8785530afbc3b4180b0a4"
 ]);
-async function scanPilotMarket(market:string){
- if(!pilotMarkets.has(market))throw Error("Pilot not selected");
+async function scanPilotMarket(market:string,holdout=false){
+ if(holdout){
+  const matches=await db.unsafe("select 1 from pi.rn1_ledger_holdout_selection where market_key=$1 and sample_version='rn1-independent-ledger-20261118-v1'",[market]);
+  if(matches.length!==1)throw Error("Holdout market not selected");
+ }else if(!pilotMarkets.has(market))throw Error("Pilot not selected");
  const marketRows=await db.unsafe(`select market_key,title,fills,buy0_shares,buy1_shares,
  buy0_cost,buy1_cost,sell0_shares,sell1_shares,min_trade_at,max_trade_at
  from pi.rn1_full_market_metrics where wallet=$1 and market_key=$2`,[WALLET,market]);
@@ -93,6 +96,9 @@ Deno.serve(async(req:Request)=>{
  try{
   if(!await authorized(req))return reply({error:"Scheduler authorization required"},401);
   const b=await req.json(),action=String(b.action||"");
+  if(action==="scan_holdout_market"){
+   return reply(await scanPilotMarket(String(b.market||"").toLowerCase(),true));
+  }
   if(action==="scan_pilot_market"){
    return reply(await scanPilotMarket(String(b.market||"").toLowerCase()));
   }
