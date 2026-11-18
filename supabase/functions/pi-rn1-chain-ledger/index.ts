@@ -107,7 +107,7 @@ async function auditMarketSettlement(market:string){
     const from=String(ev.args.from).toLowerCase(),to=String(ev.args.to).toLowerCase();
     if(from===WALLET||to===WALLET){
      const ids=ev.name==="TransferSingle"?[ev.args.id]:[...ev.args.ids];
-     const values=ev.name==="TransferSingle"?[ev.args.value]:[...ev.args.values];
+     const values=ev.name==="TransferSingle"?[ev.args[4]]:[...ev.args[4]];
      walletTransfers.push({kind:ev.name,from,to,log_index:Number(BigInt(log.logIndex)),
       token_count:ids.length,
       values_parts:values.map((x:bigint)=>Number(x)/1e6),
