@@ -808,7 +808,9 @@ async function renderRN1Engine(){
    metric("Sorties de parts des règlements",fmt(c.redeemed_transfers_onchain||0)+" / "+fmt(c.redeemed_outcome_lines||0)),
    metric("Payouts positifs retrouvés",fmt(c.positive_payouts_onchain||0)+" / "+fmt(c.positive_payout_lines||0)),
    metric("Crédits pUSD directs retrouvés",fmt(Number(c.p_usd_merge_receipts||0)+Number(c.p_usd_redeem_receipts||0))+" / "+fmt(Number(c.merges_reported||0)+Number(c.positive_payout_lines||0))),
-   metric("Collatéral pUSD crédité à RN1",fmt(c.verified_total_collateral_credit,2)+" pUSD")
+   metric("Collatéral pUSD crédité à RN1",fmt(c.verified_total_collateral_credit,2)+" pUSD"),
+   metric("Achats avec débit pUSD + réception de parts vérifiés",fmt(c.sample_buys_fully_verified||0)+" / "+fmt(c.sampled_buys_onchain||0)),
+   metric("Montant de ces seuls achats échantillonnés",fmt(c.sampled_buy_pusd_debit,2)+" pUSD")
   );chainAuditCard.append(m);
   const more=node("div",null,"metrics");
   more.append(
@@ -833,7 +835,7 @@ async function renderRN1Engine(){
   }
   table.append(body);wrap.append(table);chainAuditCard.append(wrap);
   chainAuditCard.append(node("p","Crédits vérifiés directement sur Polygon : "+fmt(c.verified_merge_collateral_credit,2)+" pUSD après MERGE et "+fmt(c.verified_redeem_collateral_credit,2)+" pUSD après règlement positif, vers le wallet RN1.","foot"));
-  chainAuditCard.append(banner("ATTENTION : ceci ne prouve pas un P&L net. Les transactions sont groupées avec d'autres comptes. RN1 ne paie pas directement le gas des 12 règlements contrôlés mais pourrait le rembourser indirectement. Il manque les dépenses d'achat vérifiées, frais, rebates, SPLIT et transferts externes."));
+  chainAuditCard.append(banner("ATTENTION : ceci ne prouve pas un P&L net. Les transactions sont groupées avec d'autres comptes. RN1 ne paie pas directement le gas des 12 règlements contrôlés mais pourrait le rembourser indirectement. Les seuls 8 achats vérifiés sont un échantillon : il est INTERDIT de soustraire ces 8 débits des 12 encaissements comme si cela constituait le P&L de RN1. Les autres achats, les frais, rebates, SPLIT et transferts externes restent à examiner."));
  }catch(e){chainAuditCard.append(node("p","Audit Polygon indisponible : "+String(e?.message||e),"foot"))}
  target.append(chainAuditCard);
  const onchainCard=node("section",null,"card");
