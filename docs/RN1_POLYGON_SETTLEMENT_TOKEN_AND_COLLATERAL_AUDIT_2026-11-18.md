@@ -57,6 +57,21 @@ Le grand livre source des **huit marchés soldés** donne **+314,683721 unités*
 3. Contrôle des transferts d'ERC-1155 hors trades, des SPLIT et des soldes d'ouverture/fermeture.
 4. Extension sur un échantillon probabiliste suffisamment important et validation par période/ligue.
 
+## Premier contrôle des débits BUY sur Polygon
+
+**Extension exécutée le 18 novembre 2026.** Nous avons sélectionné **le premier achat de chacun des huit marchés soldés** et décodé séparément sa transaction Polygon (pas une somme de transactions groupées).
+
+- **8/8** événements BUY comportent un transfert ERC-20 **pUSD directement depuis RN1 vers le contrat d'échange**, du même montant que `prix × parts` dans la source, à la précision à 6 décimales du collatéral.
+- **8/8** événements BUY comportent simultanément un transfert ERC-1155 de la même quantité de parts **vers RN1**.
+- Dépenses exactes de ces **seuls huit achats échantillonnés : 5 075,366985 pUSD**. Les gas payers directs sont différents de RN1 pour les huit transactions.
+- Le wallet a donc été identifié à la fois comme **émetteur du collatéral lors de ces achats** et comme **bénéficiaire des parts**, sans devoir déduire ces deux flux des seuls fills Polymarket.
+
+Cette validation concerne **8 achats sur les nombreux fills des marchés** ; surtout **ne jamais soustraire 5 075,37 pUSD aux 37 381,71 pUSD d'encaissements vérifiés**, car cela mélangerait un *échantillon* de dépenses et la *totalité* des encaissements d'un panel de huit marchés.
+
+Audit privé : `pi.rn1_chain_acquisition_sample` (8 lignes), SQL `sql/083_rn1_polygon_first_buy_collateral_audit.sql`, worker `pi-rn1-chain-ledger` v7, dashboard `pi-dashboard` v53.
+
+L'étape restante est de rapprocher **tous les BUY fills de ces huit marchés**, puis l'ensemble des frais et rebates applicables, avant de conclure à une marge nette.
+
 ## Implémentation
 
 - Worker privé `pi-rn1-chain-ledger` v6 : RPC Polygon, décodage CTF, ERC-1155 et transferts pUSD, choix borné aux huit marchés déjà validés, authentification par scheduler token. Ne fait **aucun appel d'écriture à la blockchain**.
@@ -70,4 +85,4 @@ Le grand livre source des **huit marchés soldés** donne **+314,683721 unités*
 - Gnosis Conditional Tokens `PositionsMerge`, `PayoutRedemption`, `TransferBatch` : https://github.com/gnosis/conditional-tokens-contracts/blob/master/contracts/ConditionalTokens.sol
 - Polymarket v2 router, redeem/split/merge et passage USDC.e vers pUSD : https://github.com/Polymarket/polymarket-v2-external/blob/main/docs/router.md
 
-**Prochain test critique : les débits exacts de collatéral lors des transactions BUY.** Tant que les dépenses d'achat, les commissions et les rebates ne sont pas attribuables à RN1 sur une base identique à celle des encaissements, la marge nette des grilles Maker reste inconnue.
+**Prochain test critique : étendre les débits exacts de collatéral aux autres transactions BUY du panel et attribuer les commissions/rebates.** Les huit premières transactions ont été vérifiées ; il serait prématuré de qualifier les coûts de tous les achats ou le P&L net des grilles de « prouvés ».
