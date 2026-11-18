@@ -2,7 +2,7 @@
 // Only uses immutable, prespecified private chronological ledgers; no arbitrary
 // transaction hash injection. Reports fee/gas payer and ERC1155 movement evidence.
 import postgres from "npm:postgres@3.4.3";
-import { id } from "npm:ethers@6.13.5";
+import { id, Interface } from "npm:ethers@6.13.5";
 const db=postgres(Deno.env.get("SUPABASE_DB_URL")||"",{max:1,prepare:false,connect_timeout:10});
 const RPC=["https://polygon-bor-rpc.publicnode.com","https://polygon.drpc.org"];
 const WALLET="0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
@@ -76,11 +76,66 @@ async function probe(market:string,kind:string){
   log_groups:[...grouped.values()].sort((a,b)=>b.n-a.n).slice(0,45),
   caveat:"Transaction gas is paid by tx.from, not necessarily RN1. ERC1155 and ERC20 Transfer require decoding, ownership and token matching; log presence alone does not imply RN1 cash movement."};
 }
+const ctfAbi=new Interface([
+"event PositionsMerge(address indexed stakeholder,address collateralToken,bytes32 indexed parentCollectionId,bytes32 indexed conditionId,uint256[] partition,uint256 amount)",
+"event PositionSplit(address indexed stakeholder,address collateralToken,bytes32 indexed parentCollectionId,bytes32 indexed conditionId,uint256[] partition,uint256 amount)",
+"event PayoutRedemption(address indexed redeemer,address indexed collateralToken,bytes32 indexed parentCollectionId,bytes32 conditionId,uint256[] indexSets,uint256 payout)"
+]);
+async function auditMarketSettlement(market:string){
+ if(!/^0x[0-9a-f]{64}$/.test(market))throw Error("Bad market id");
+ const [audit]=await db.unsafe(`select market_key,title,cohort,timeline,
+ round(merge_in,6)::float8 expected_merge_collateral,
+ round(redeem_in,6)::float8 expected_redeem_collateral
+ from pi.rn1_ledger_holdout_audit where market_key=$1 and evidence_status='gross_cash_balanced_dust'`,[market]);
+ if(!audit)throw Error("Not a preselected balanced holdout");
+ const txids=[...new Set(audit.timeline.filter((v:any)=>["MERGE","REDEEM"].includes(v.kind))
+   .map((v:any)=>String(v.tx||"").toLowerCase()))];
+ if(!txids.length||txids.length>3)throw Error("Unexpected count of settlement tx");
+ const r:any[]=[];
+ for(const txhash of txids){
+  const [receipt,tx]=await Promise.all([rpc("eth_getTransactionReceipt",[txhash]),rpc("eth_getTransactionByHash",[txhash])]);
+  if(String(receipt.transactionHash||"").toLowerCase()!==txhash||Number(BigInt(receipt.status||"0x0"))!==1)throw Error("Bad receipt");
+  const gas=BigInt(receipt.gasUsed||"0x0")*BigInt(receipt.effectiveGasPrice||tx.gasPrice||"0x0");
+  const matches:any[]=[],splitMatches:any[]=[];
+  for(const log of receipt.logs||[]){
+   if(String(log.address||"").toLowerCase()!==CTF)continue;
+   let ev:any=null;try{ev=ctfAbi.parseLog({topics:log.topics,data:log.data})}catch{continue}
+   if(!ev)continue;
+   if(ev.name==="PositionsMerge"||ev.name==="PositionSplit"){
+    if(String(ev.args.conditionId).toLowerCase()!==market)continue;
+    const item={kind:ev.name,stakeholder:String(ev.args.stakeholder).toLowerCase(),
+     collateral_contract:String(ev.args.collateralToken).toLowerCase(),
+     amount_parts:Number(ev.args.amount)/1e6,log_index:Number(BigInt(log.logIndex)),
+     partition:ev.args.partition.map((x:bigint)=>x.toString())};
+    if(ev.name==="PositionsMerge")matches.push(item);else splitMatches.push(item);
+   }else if(ev.name==="PayoutRedemption"){
+    if(String(ev.args.conditionId).toLowerCase()!==market)continue;
+    matches.push({kind:"PayoutRedemption",redeemer:String(ev.args.redeemer).toLowerCase(),
+     collateral_contract:String(ev.args.collateralToken).toLowerCase(),
+     payout_collateral:Number(ev.args.payout)/1e6,log_index:Number(BigInt(log.logIndex)),
+     index_sets:ev.args.indexSets.map((x:bigint)=>x.toString())});
+   }
+  }
+  r.push({txhash,tx_from:String(tx.from||"").toLowerCase(),tx_to:String(tx.to||"").toLowerCase(),
+   wallet_gas_payer:String(tx.from||"").toLowerCase()===WALLET,
+   transaction_gas_matic:Number(gas)/1e18,tx_log_count:receipt.logs?.length||0,
+   matched_contract_events:matches,matched_splits:splitMatches});
+ }
+ const mergeSum=r.flatMap(x=>x.matched_contract_events).filter(x=>x.kind==="PositionsMerge").reduce((n,x)=>n+x.amount_parts,0);
+ const redeemSum=r.flatMap(x=>x.matched_contract_events).filter(x=>x.kind==="PayoutRedemption").reduce((n,x)=>n+x.payout_collateral,0);
+ return {market,title:audit.title,status:"onchain_settlement_filtered_by_condition_id",
+  tx_count:r.length,txs:r,merge_sum:mergeSum,redeem_sum:redeemSum,
+  source_merge:audit.expected_merge_collateral,source_redeem:audit.expected_redeem_collateral,
+  merge_agrees:Math.abs(mergeSum-audit.expected_merge_collateral)<.02,
+  redeem_agrees:Math.abs(redeemSum-audit.expected_redeem_collateral)<.02,
+  evidence_warning:"These settlement transactions are frequently sponsored and batch multiple markets. Transaction gas must never be charged to RN1 without payer/reimbursement evidence. Payout event beneficiary can be a router or proxy, not necessarily RN1."};
+}
 Deno.serve(async(req:Request)=>{
  try{
   if(req.method!=="POST")return resp({error:"Method not allowed"},405);
   if(!await authorized(req))return resp({error:"Not authorized"},401);
   const body=await req.json();
+  if(body?.action==="audit_settlement")return resp(await auditMarketSettlement(String(body.market_key||"").toLowerCase()));
   if(body?.action!=="receipt_probe")return resp({error:"Bad action"},400);
   return resp(await probe(String(body.market_key||"").toLowerCase(),String(body.kind||"")));
  }catch(e){return resp({error:String(e).slice(0,200)},500)}
