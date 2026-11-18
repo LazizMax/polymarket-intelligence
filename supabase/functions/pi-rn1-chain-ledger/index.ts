@@ -192,12 +192,53 @@ async function auditMarketSettlement(market:string){
   source_merge:audit.expected_merge_collateral,source_redeem:audit.expected_redeem_collateral,
   evidence_warning:"Batch receipts can contain payouts for OTHER wallets in the SAME market. Source payouts are matched separately by exact amount and transaction hash; this is not proof of ultimate payout beneficiary where a router batches transfers. Zero-payout redemptions cannot be identified from payout value alone. No transaction gas charged to RN1 without reimbursement evidence."};
 }
+async function auditAcquisitionSample(market:string){
+ if(!/^0x[0-9a-f]{64}$/.test(market))throw Error("Invalid market");
+ const rows=await db.unsafe(`select market_key,title,timeline from pi.rn1_ledger_holdout_audit
+  where market_key=$1 and evidence_status='gross_cash_balanced_dust'`,[market]);
+ if(rows.length!==1)throw Error("Not a balanced holdout");
+ const trades=rows[0].timeline.filter((e:any)=>e.kind==="TRADE"&&e.side==="BUY");
+ if(!trades.length)throw Error("No archived BUY");
+ const src=trades[0],txhash=String(src.tx).toLowerCase();
+ const [receipt,tx]=await Promise.all([rpc("eth_getTransactionReceipt",[txhash]),rpc("eth_getTransactionByHash",[txhash])]);
+ if(String(receipt.transactionHash).toLowerCase()!==txhash||Number(BigInt(receipt.status||"0x0"))!==1)throw Error("Bad chain receipt");
+ const collateralTransfers:any[]=[],tokenTransfers:any[]=[];
+ for(const log of receipt.logs||[]){
+  const a=String(log.address||"").toLowerCase(),topic=String(log.topics?.[0]||"").toLowerCase();
+  if((a==="0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"||
+      a==="0x2791bca1f2de4661ed88a30c99a7a9449aa84174")&&topic===TOPICS.transfer){
+   let ev:any=null;try{ev=ctfAbi.parseLog({topics:log.topics,data:log.data})}catch{}
+   if(!ev)continue;
+   const from=String(ev.args[0]).toLowerCase(),to=String(ev.args[1]).toLowerCase();
+   if(from!==WALLET&&to!==WALLET)continue;
+   collateralTransfers.push({token:a,from,to,amount:Number(ev.args[2])/1e6,
+    log_index:Number(BigInt(log.logIndex))});
+  }
+  if(a===CTF&&(topic===TOPICS.transferSingle||topic===TOPICS.transferBatch)){
+   let ev:any=null;try{ev=ctfAbi.parseLog({topics:log.topics,data:log.data})}catch{}
+   if(!ev)continue;
+   const from=String(ev.args[1]).toLowerCase(),to=String(ev.args[2]).toLowerCase();
+   if(from!==WALLET&&to!==WALLET)continue;
+   const vals=ev.name==="TransferSingle"?[ev.args[4]]:[...ev.args[4]];
+   tokenTransfers.push({from,to,token_count:vals.length,amounts:vals.map((x:bigint)=>Number(x)/1e6)});
+  }
+ }
+ return {market,title:rows[0].title,txhash,tx_from:String(tx.from).toLowerCase(),
+  rn1_pays_gas:String(tx.from).toLowerCase()===WALLET,
+  source_trade_shares:Number(src.shares),source_trade_price:Number(src.price),
+  source_trade_spend:Number(src.shares)*Number(src.price),
+  source_trade_side:src.side,source_trade_outcome:src.outcome,
+  wallet_collateral_erc20_transfers:collateralTransfers,
+  wallet_ctf_erc1155_transfers:tokenTransfers,
+  caveat:"This is ONE sampled BUY transaction per market. Other orders/accounts may appear in the same tx. Fee, gas refund, and exact net paid must be separately reconciled."};
+}
 Deno.serve(async(req:Request)=>{
  try{
   if(req.method!=="POST")return resp({error:"Method not allowed"},405);
   if(!await authorized(req))return resp({error:"Not authorized"},401);
   const body=await req.json();
   if(body?.action==="audit_settlement")return resp(await auditMarketSettlement(String(body.market_key||"").toLowerCase()));
+  if(body?.action==="audit_acquisition_sample")return resp(await auditAcquisitionSample(String(body.market_key||"").toLowerCase()));
   if(body?.action!=="receipt_probe")return resp({error:"Bad action"},400);
   return resp(await probe(String(body.market_key||"").toLowerCase(),String(body.kind||"")));
  }catch(e){return resp({error:String(e).slice(0,200)},500)}
