@@ -79,7 +79,9 @@ async function probe(market:string,kind:string){
 const ctfAbi=new Interface([
 "event PositionsMerge(address indexed stakeholder,address collateralToken,bytes32 indexed parentCollectionId,bytes32 indexed conditionId,uint256[] partition,uint256 amount)",
 "event PositionSplit(address indexed stakeholder,address collateralToken,bytes32 indexed parentCollectionId,bytes32 indexed conditionId,uint256[] partition,uint256 amount)",
-"event PayoutRedemption(address indexed redeemer,address indexed collateralToken,bytes32 indexed parentCollectionId,bytes32 conditionId,uint256[] indexSets,uint256 payout)"
+"event PayoutRedemption(address indexed redeemer,address indexed collateralToken,bytes32 indexed parentCollectionId,bytes32 conditionId,uint256[] indexSets,uint256 payout)",
+"event TransferSingle(address indexed operator,address indexed from,address indexed to,uint256 id,uint256 value)",
+"event TransferBatch(address indexed operator,address indexed from,address indexed to,uint256[] ids,uint256[] values)"
 ]);
 async function auditMarketSettlement(market:string){
  if(!/^0x[0-9a-f]{64}$/.test(market))throw Error("Bad market id");
@@ -96,11 +98,23 @@ async function auditMarketSettlement(market:string){
   const [receipt,tx]=await Promise.all([rpc("eth_getTransactionReceipt",[txhash]),rpc("eth_getTransactionByHash",[txhash])]);
   if(String(receipt.transactionHash||"").toLowerCase()!==txhash||Number(BigInt(receipt.status||"0x0"))!==1)throw Error("Bad receipt");
   const gas=BigInt(receipt.gasUsed||"0x0")*BigInt(receipt.effectiveGasPrice||tx.gasPrice||"0x0");
-  const matches:any[]=[],splitMatches:any[]=[];
+  const matches:any[]=[],splitMatches:any[]=[],walletTransfers:any[]=[];
   for(const log of receipt.logs||[]){
    if(String(log.address||"").toLowerCase()!==CTF)continue;
    let ev:any=null;try{ev=ctfAbi.parseLog({topics:log.topics,data:log.data})}catch{continue}
    if(!ev)continue;
+   if(ev.name==="TransferSingle"||ev.name==="TransferBatch"){
+    const from=String(ev.args.from).toLowerCase(),to=String(ev.args.to).toLowerCase();
+    if(from===WALLET||to===WALLET){
+     const ids=ev.name==="TransferSingle"?[ev.args.id]:[...ev.args.ids];
+     const values=ev.name==="TransferSingle"?[ev.args.value]:[...ev.args.values];
+     walletTransfers.push({kind:ev.name,from,to,log_index:Number(BigInt(log.logIndex)),
+      token_count:ids.length,
+      values_parts:values.map((x:bigint)=>Number(x)/1e6),
+      token_ids:ids.map((x:bigint)=>x.toString()).slice(0,12)});
+    }
+    continue;
+   }
    if(ev.name==="PositionsMerge"||ev.name==="PositionSplit"){
     if(String(ev.args.conditionId).toLowerCase()!==market)continue;
     const item={kind:ev.name,stakeholder:String(ev.args.stakeholder).toLowerCase(),
@@ -119,7 +133,7 @@ async function auditMarketSettlement(market:string){
   r.push({txhash,tx_from:String(tx.from||"").toLowerCase(),tx_to:String(tx.to||"").toLowerCase(),
    wallet_gas_payer:String(tx.from||"").toLowerCase()===WALLET,
    transaction_gas_matic:Number(gas)/1e18,tx_log_count:receipt.logs?.length||0,
-   matched_contract_events:matches,matched_splits:splitMatches});
+   matched_contract_events:matches,matched_splits:splitMatches,wallet_erc1155_transfers:walletTransfers});
  }
  const chainEvents=r.flatMap(x=>x.matched_contract_events.map((ev:any)=>({...ev,txhash:x.txhash})));
  const sourceSettlements=audit.timeline.filter((v:any)=>v.kind==="MERGE"||v.kind==="REDEEM");
@@ -150,7 +164,9 @@ async function auditMarketSettlement(market:string){
     transaction_gas_matic:x.transaction_gas_matic,log_count:x.tx_log_count,
     same_market_merge_events:x.matched_contract_events.filter((e:any)=>e.kind==="PositionsMerge").length,
     same_market_redeem_events:x.matched_contract_events.filter((e:any)=>e.kind==="PayoutRedemption").length,
-    same_market_splits:x.matched_splits.length})),
+    same_market_splits:x.matched_splits.length,
+    wallet_erc1155_transfer_events:x.wallet_erc1155_transfers.length,
+    wallet_erc1155_transfer_values:x.wallet_erc1155_transfers})),
   merge_matches:mergeMatches,positive_redeem_matches:redeemMatches,
   zero_payout_source_lines:sourceSettlements.filter((v:any)=>v.kind==="REDEEM"&&Number(v.cash_delta)===0).length,
   extra_same_market_redeem_logs:unrelatedSameMarketRedemptions,
