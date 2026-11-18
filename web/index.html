@@ -806,7 +806,9 @@ async function renderRN1Engine(){
    metric("Marchés vérifiés sur Polygon",fmt(c.verified_markets||0)+" / "+fmt(c.markets||0)),
    metric("Fusions exactes",fmt(c.merges_onchain||0)+" / "+fmt(c.merges_reported||0)),
    metric("Sorties de parts des règlements",fmt(c.redeemed_transfers_onchain||0)+" / "+fmt(c.redeemed_outcome_lines||0)),
-   metric("Payouts positifs retrouvés",fmt(c.positive_payouts_onchain||0)+" / "+fmt(c.positive_payout_lines||0))
+   metric("Payouts positifs retrouvés",fmt(c.positive_payouts_onchain||0)+" / "+fmt(c.positive_payout_lines||0)),
+   metric("Crédits pUSD directs retrouvés",fmt(Number(c.p_usd_merge_receipts||0)+Number(c.p_usd_redeem_receipts||0))+" / "+fmt(Number(c.merges_reported||0)+Number(c.positive_payout_lines||0))),
+   metric("Collatéral pUSD crédité à RN1",fmt(c.verified_total_collateral_credit,2)+" pUSD")
   );chainAuditCard.append(m);
   const more=node("div",null,"metrics");
   more.append(
@@ -817,7 +819,7 @@ async function renderRN1Engine(){
   );chainAuditCard.append(more);
   chainAuditCard.append(node("h3","Contrôles par marché"));
   const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),tr=node("tr");
-  ["Marché","Fusions","Lignes REDEEM","Payouts positifs","Gas payé directement par RN1"].forEach(x=>tr.append(node("th",x)));
+  ["Marché","Fusions","Lignes REDEEM","Crédits pUSD directs","Gas payé directement par RN1"].forEach(x=>tr.append(node("th",x)));
   head.append(tr);table.append(head);
   const body=node("tbody");
   for(const p of markets){
@@ -825,12 +827,13 @@ async function renderRN1Engine(){
    row.append(node("td",String(p.title||"")),
     node("td",fmt(p.onchain_merge_unique||0)+"/"+fmt(p.source_merge_lines||0)),
     node("td",fmt(p.onchain_redeem_transfer_unique||0)+"/"+fmt(p.source_redeem_lines||0)),
-    node("td",fmt(p.onchain_positive_payout_unique||0)+"/"+fmt(p.source_positive_redeem_lines||0)),
+    node("td",fmt(Number(p.direct_pusd_merge_credit_count||0)+Number(p.direct_pusd_redeem_credit_count||0))+"/"+fmt(Number(p.source_merge_lines||0)+Number(p.source_positive_redeem_lines||0))),
     node("td",fmt(p.directly_paid_gas_txs||0)));
    body.append(row);
   }
   table.append(body);wrap.append(table);chainAuditCard.append(wrap);
-  chainAuditCard.append(banner("ATTENTION : ces rapprochements ne prouvent PAS un P&L net. Les transactions regroupent plusieurs comptes sur les mêmes marchés. Le gas est payé par des tiers dans les 12 transactions contrôlées, mais il peut être remboursé indirectement. Les sorties de tokens et les montants de règlements sont vérifiés ; l'acheminement final du collatéral, les frais, rebates, SPLIT et transferts extérieurs restent à auditer."));
+  chainAuditCard.append(node("p","Crédits vérifiés directement sur Polygon : "+fmt(c.verified_merge_collateral_credit,2)+" pUSD après MERGE et "+fmt(c.verified_redeem_collateral_credit,2)+" pUSD après règlement positif, vers le wallet RN1.","foot"));
+  chainAuditCard.append(banner("ATTENTION : ceci ne prouve pas un P&L net. Les transactions sont groupées avec d'autres comptes. RN1 ne paie pas directement le gas des 12 règlements contrôlés mais pourrait le rembourser indirectement. Il manque les dépenses d'achat vérifiées, frais, rebates, SPLIT et transferts externes."));
  }catch(e){chainAuditCard.append(node("p","Audit Polygon indisponible : "+String(e?.message||e),"foot"))}
  target.append(chainAuditCard);
  const onchainCard=node("section",null,"card");
