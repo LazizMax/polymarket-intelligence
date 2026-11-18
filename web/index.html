@@ -795,6 +795,44 @@ async function renderRN1Engine(){
   }
  }catch(e){ledgerHoldoutCard.append(node("p","Validation indépendante indisponible : "+String(e?.message||e),"foot"))}
  target.append(ledgerHoldoutCard);
+ const chainAuditCard=node("section",null,"card");
+ chainAuditCard.append(node("h2","RN1 · Vérification Polygon des fusions, règlements et frais réseau"));
+ chainAuditCard.append(node("p","Reçus blockchain officiels, événements CTF filtrés par condition de marché, transferts ERC-1155 provenant réellement de RN1 et rapprochement des montants des événements archivés. Étude bornée aux huit marchés soldés du panel indépendant.","foot"));
+ try{
+  const audit=await api("rn1_chain_settlement_report");
+  const c=audit.summary||{},markets=audit.markets||[];
+  const m=node("div",null,"metrics");
+  m.append(
+   metric("Marchés vérifiés sur Polygon",fmt(c.verified_markets||0)+" / "+fmt(c.markets||0)),
+   metric("Fusions exactes",fmt(c.merges_onchain||0)+" / "+fmt(c.merges_reported||0)),
+   metric("Sorties de parts des règlements",fmt(c.redeemed_transfers_onchain||0)+" / "+fmt(c.redeemed_outcome_lines||0)),
+   metric("Payouts positifs retrouvés",fmt(c.positive_payouts_onchain||0)+" / "+fmt(c.positive_payout_lines||0))
+  );chainAuditCard.append(m);
+  const more=node("div",null,"metrics");
+  more.append(
+   metric("Transactions de règlement contrôlées",fmt(c.receipts||0)),
+   metric("Transactions dont RN1 paie directement le gas",fmt(c.rn1_direct_gas_transactions||0)),
+   metric("Autres payouts du marché exclus",fmt(c.other_wallet_payout_logs_excluded||0)),
+   metric("Transferts ERC-1155 impliquant RN1",fmt(c.wallet_erc1155_transfer_events||0))
+  );chainAuditCard.append(more);
+  chainAuditCard.append(node("h3","Contrôles par marché"));
+  const wrap=node("div",null,"tablewrap"),table=node("table"),head=node("thead"),tr=node("tr");
+  ["Marché","Fusions","Lignes REDEEM","Payouts positifs","Gas payé directement par RN1"].forEach(x=>tr.append(node("th",x)));
+  head.append(tr);table.append(head);
+  const body=node("tbody");
+  for(const p of markets){
+   const row=node("tr");
+   row.append(node("td",String(p.title||"")),
+    node("td",fmt(p.onchain_merge_unique||0)+"/"+fmt(p.source_merge_lines||0)),
+    node("td",fmt(p.onchain_redeem_transfer_unique||0)+"/"+fmt(p.source_redeem_lines||0)),
+    node("td",fmt(p.onchain_positive_payout_unique||0)+"/"+fmt(p.source_positive_redeem_lines||0)),
+    node("td",fmt(p.directly_paid_gas_txs||0)));
+   body.append(row);
+  }
+  table.append(body);wrap.append(table);chainAuditCard.append(wrap);
+  chainAuditCard.append(banner("ATTENTION : ces rapprochements ne prouvent PAS un P&L net. Les transactions regroupent plusieurs comptes sur les mêmes marchés. Le gas est payé par des tiers dans les 12 transactions contrôlées, mais il peut être remboursé indirectement. Les sorties de tokens et les montants de règlements sont vérifiés ; l'acheminement final du collatéral, les frais, rebates, SPLIT et transferts extérieurs restent à auditer."));
+ }catch(e){chainAuditCard.append(node("p","Audit Polygon indisponible : "+String(e?.message||e),"foot"))}
+ target.append(chainAuditCard);
  const onchainCard=node("section",null,"card");
  onchainCard.append(node("h2","Ordres Maker réellement signés · blockchain Polygon"));
  onchainCard.append(node("p","Ici les identifiants sont récupérés depuis les événements publics OrderFilled du contrat Polymarket V2, puis rapprochés des prix et quantités des fills archivés. Ce ne sont PAS des regroupements statistiques par seconde.","foot"));
