@@ -121,14 +121,44 @@ async function auditMarketSettlement(market:string){
    transaction_gas_matic:Number(gas)/1e18,tx_log_count:receipt.logs?.length||0,
    matched_contract_events:matches,matched_splits:splitMatches});
  }
- const mergeSum=r.flatMap(x=>x.matched_contract_events).filter(x=>x.kind==="PositionsMerge").reduce((n,x)=>n+x.amount_parts,0);
- const redeemSum=r.flatMap(x=>x.matched_contract_events).filter(x=>x.kind==="PayoutRedemption").reduce((n,x)=>n+x.payout_collateral,0);
- return {market,title:audit.title,status:"onchain_settlement_filtered_by_condition_id",
-  tx_count:r.length,txs:r,merge_sum:mergeSum,redeem_sum:redeemSum,
+ const chainEvents=r.flatMap(x=>x.matched_contract_events.map((ev:any)=>({...ev,txhash:x.txhash})));
+ const sourceSettlements=audit.timeline.filter((v:any)=>v.kind==="MERGE"||v.kind==="REDEEM");
+ const sourcePositiveRedemptions=sourceSettlements.filter((v:any)=>v.kind==="REDEEM"&&Number(v.cash_delta)>0);
+ const redeemMatches:any[]=[];
+ for(const src of sourcePositiveRedemptions){
+  const target=Number(src.cash_delta);
+  const matches=chainEvents.filter((e:any)=>e.kind==="PayoutRedemption"
+     &&e.txhash===String(src.tx).toLowerCase()
+     &&Math.abs(e.payout_collateral-target)<.000002);
+  redeemMatches.push({txhash:String(src.tx).toLowerCase(),source_payout:target,
+    matching_market_log_count:matches.length,
+    matching_logs:matches.slice(0,5),
+    independently_identified_recipient:matches.some((e:any)=>e.redeemer===WALLET)});
+ }
+ const mergeSource=sourceSettlements.filter((v:any)=>v.kind==="MERGE");
+ const mergeMatches=mergeSource.map((v:any)=>{
+  const exact=chainEvents.filter((e:any)=>e.kind==="PositionsMerge" &&
+   e.txhash===String(v.tx).toLowerCase()&&Math.abs(e.amount_parts-Number(v.shares))<.000002);
+  return {txhash:String(v.tx).toLowerCase(),source_parts:Number(v.shares),matching_logs:exact.length,
+   stakeholders:exact.map((e:any)=>e.stakeholder)};
+ });
+ const unrelatedSameMarketRedemptions=chainEvents.filter((e:any)=>e.kind==="PayoutRedemption").length-
+   redeemMatches.reduce((n:number,x:any)=>n+x.matching_market_log_count,0);
+ return {market,title:audit.title,status:"onchain_event_by_event_amount_matching",
+  tx_count:r.length,transactions:r.map((x:any)=>({txhash:x.txhash,tx_from:x.tx_from,
+    tx_to:x.tx_to,wallet_gas_payer:x.wallet_gas_payer,
+    transaction_gas_matic:x.transaction_gas_matic,log_count:x.tx_log_count,
+    same_market_merge_events:x.matched_contract_events.filter((e:any)=>e.kind==="PositionsMerge").length,
+    same_market_redeem_events:x.matched_contract_events.filter((e:any)=>e.kind==="PayoutRedemption").length,
+    same_market_splits:x.matched_splits.length})),
+  merge_matches:mergeMatches,positive_redeem_matches:redeemMatches,
+  zero_payout_source_lines:sourceSettlements.filter((v:any)=>v.kind==="REDEEM"&&Number(v.cash_delta)===0).length,
+  extra_same_market_redeem_logs:unrelatedSameMarketRedemptions,
+  all_merge_events_matched:mergeMatches.every((x:any)=>x.matching_logs===1),
+  all_positive_redemptions_matched:redeemMatches.every((x:any)=>x.matching_market_log_count===1),
+  all_tx_gas_sponsored:r.every((x:any)=>!x.wallet_gas_payer),
   source_merge:audit.expected_merge_collateral,source_redeem:audit.expected_redeem_collateral,
-  merge_agrees:Math.abs(mergeSum-audit.expected_merge_collateral)<.02,
-  redeem_agrees:Math.abs(redeemSum-audit.expected_redeem_collateral)<.02,
-  evidence_warning:"These settlement transactions are frequently sponsored and batch multiple markets. Transaction gas must never be charged to RN1 without payer/reimbursement evidence. Payout event beneficiary can be a router or proxy, not necessarily RN1."};
+  evidence_warning:"Batch receipts can contain payouts for OTHER wallets in the SAME market. Source payouts are matched separately by exact amount and transaction hash; this is not proof of ultimate payout beneficiary where a router batches transfers. Zero-payout redemptions cannot be identified from payout value alone. No transaction gas charged to RN1 without reimbursement evidence."};
 }
 Deno.serve(async(req:Request)=>{
  try{
