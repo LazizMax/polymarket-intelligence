@@ -132,7 +132,17 @@ export async function rn1ChainSettlementReport(db:any){
  (select count(*)::integer from pi.rn1_chain_acquisition_sample) sampled_buys_onchain,
  (select count(*)::integer from pi.rn1_chain_acquisition_sample
   where exact_collateral_debit and exact_share_receipt) sample_buys_fully_verified,
- (select round(sum(observed_direct_pusd_debit),6)::float8 from pi.rn1_chain_acquisition_sample) sampled_buy_pusd_debit
+ (select round(sum(observed_direct_pusd_debit),6)::float8 from pi.rn1_chain_acquisition_sample) sampled_buy_pusd_debit,
+ (select count(*)::integer from pi.rn1_chain_acquisition_queue) acquisition_txs_total,
+ (select coalesce(sum(source_fill_count),0)::integer from pi.rn1_chain_acquisition_queue) acquisition_fills_total,
+ (select count(*)::integer from pi.rn1_chain_acquisition_queue where audit_status='verified') acquisition_txs_verified,
+ (select coalesce(sum(source_fill_count),0)::integer from pi.rn1_chain_acquisition_queue where audit_status='verified') acquisition_fills_verified,
+ (select count(*)::integer from pi.rn1_chain_acquisition_queue where audit_status='pending') acquisition_txs_pending,
+ (select count(*)::integer from pi.rn1_chain_acquisition_queue where audit_status='ambiguous') acquisition_txs_ambiguous,
+ (select count(*)::integer from pi.rn1_chain_acquisition_queue where audit_status='mismatch') acquisition_txs_mismatch,
+ (select count(*)::integer from pi.rn1_chain_acquisition_queue where audit_status='error') acquisition_txs_error,
+ (select coalesce(round(sum(observed_pusd_debit),6),0)::float8 from pi.rn1_chain_acquisition_queue where audit_status='verified') acquisition_pusd_verified,
+ (select coalesce(round(sum(archived_cost),6),0)::float8 from pi.rn1_chain_acquisition_queue) acquisition_pusd_archived
  from pi.rn1_chain_settlement_audit`),
  db.unsafe(`select a.market_key,h.title,h.cohort,a.transaction_receipts,
  a.source_merge_lines,a.onchain_merge_unique,
@@ -160,6 +170,6 @@ export async function rn1ChainSettlementReport(db:any){
   "148 other same-market payout logs from batch transactions were excluded; no total batch payout was attributed to RN1.",
   "12 settlement tx were paid by addresses other than RN1; this does not establish whether gas was reimbursed indirectly.",
   "Zero-payout redemption source records have matching ERC1155 withdrawals, but zero-value payout events cannot alone prove account-level entitlement.",
-  "12 direct pUSD credits to RN1 were verified for the positive MERGE/REDEEM events, and 8 sampled buys show exact direct pUSD debit and ERC1155 credit. The other BUY fills, fee/rebate ledger, third-party transfers, gas reimbursements, and opening wallet balances remain unverified. Never subtract the sample of 8 BUY debits from all 12 settlement receipts as if it were a complete net PnL."
+  "12 direct pUSD credits to RN1 were verified for positive MERGE/REDEEM events, and the BUY acquisition audit has an independently tracked live queue (8 previously verified plus newer per-transaction onchain checks). Pending/ambiguous BUYs, fee/rebate ledger, third-party transfers, gas reimbursements and opening balances remain unverified. Never treat a partial BUY sample as full-panel costs. Never subtract the sample of 8 BUY debits from all 12 settlement receipts as if it were a complete net PnL."
  ]};
 }
