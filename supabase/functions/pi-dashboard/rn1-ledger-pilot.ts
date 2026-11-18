@@ -107,3 +107,45 @@ export async function rn1LedgerHoldoutDetail(db:any,body:any){
   from pi.rn1_ledger_holdout_audit where market_key=$1`,[key]);
  return rows.length?{status:"ok",...rows[0]}:{status:"not_a_holdout_market"};
 }
+
+export async function rn1ChainSettlementReport(db:any){
+ const [summary,markets]=await Promise.all([
+ db.unsafe(`select count(*)::integer markets,
+ sum(transaction_receipts)::integer receipts,
+ sum(source_merge_lines)::integer merges_reported,
+ sum(onchain_merge_unique)::integer merges_onchain,
+ sum(source_redeem_lines)::integer redeemed_outcome_lines,
+ sum(onchain_redeem_transfer_unique)::integer redeemed_transfers_onchain,
+ sum(source_positive_redeem_lines)::integer positive_payout_lines,
+ sum(onchain_positive_payout_unique)::integer positive_payouts_onchain,
+ sum(other_wallet_same_market_payout_logs)::integer other_wallet_payout_logs_excluded,
+ sum(directly_paid_gas_txs)::integer rn1_direct_gas_transactions,
+ sum(involved_wallet_erc1155_events)::integer wallet_erc1155_transfer_events,
+ sum(observed_splits_in_settlement_txs)::integer splits_observed_in_receipts,
+ count(*) filter(where fully_correlated)::integer verified_markets
+ from pi.rn1_chain_settlement_audit`),
+ db.unsafe(`select a.market_key,h.title,h.cohort,a.transaction_receipts,
+ a.source_merge_lines,a.onchain_merge_unique,
+ a.source_redeem_lines,a.onchain_redeem_transfer_unique,
+ a.source_positive_redeem_lines,a.onchain_positive_payout_unique,
+ a.other_wallet_same_market_payout_logs,
+ a.directly_paid_gas_txs,a.involved_wallet_erc1155_events,
+ a.observed_splits_in_settlement_txs,a.fully_correlated,
+ a.audit_at::text audit_at
+ from pi.rn1_chain_settlement_audit a
+ join pi.rn1_ledger_holdout_audit h on h.market_key=a.market_key
+ order by h.cohort,h.cohort_rank`)
+ ]);
+ return {status:"partial_onchain_evidence_confirmed",
+ summary:summary[0]||{},markets,
+ evidence:"polygon_ctf_events_erc1155_transfers_condition_and_exact_amounts",
+ limitations:[
+  "8 balanced September 2026 markets only, not the complete wallet.",
+  "4 MERGE and 16 REDEEM source share movements each match a unique ERC1155 transfer out of RN1 for a source transaction. Same-market CTF event amounts also match but ERC1155 token IDs are not yet independently mapped to the outcome tokens in this study.",
+  "8 positive CTF redemption payouts were found by transaction, market and exact amount; their redemption contract recipient is a routing address rather than necessarily RN1.",
+  "148 other same-market payout logs from batch transactions were excluded; no total batch payout was attributed to RN1.",
+  "12 settlement tx were paid by addresses other than RN1; this does not establish whether gas was reimbursed indirectly.",
+  "Zero-payout redemption source records have matching ERC1155 withdrawals, but zero-value payout events cannot alone prove account-level entitlement.",
+  "No fully reconciled ERC20 collateral flows, fee/rebate ledger, third-party transfers, gas reimbursements, or opening wallet balances yet. No after-fees PnL/ROI is claimed."
+ ]};
+}
