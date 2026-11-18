@@ -122,6 +122,12 @@ export async function rn1ChainSettlementReport(db:any){
  sum(directly_paid_gas_txs)::integer rn1_direct_gas_transactions,
  sum(involved_wallet_erc1155_events)::integer wallet_erc1155_transfer_events,
  sum(observed_splits_in_settlement_txs)::integer splits_observed_in_receipts,
+ sum(direct_pusd_merge_credit_count)::integer p_usd_merge_receipts,
+ sum(direct_pusd_redeem_credit_count)::integer p_usd_redeem_receipts,
+ round(sum(direct_pusd_merge_credit),6)::float8 verified_merge_collateral_credit,
+ round(sum(direct_pusd_redeem_credit),6)::float8 verified_redeem_collateral_credit,
+ round(sum(direct_pusd_merge_credit+direct_pusd_redeem_credit),6)::float8 verified_total_collateral_credit,
+ count(*) filter(where direct_pusd_all_credits_matched)::integer direct_collateral_verified_markets,
  count(*) filter(where fully_correlated)::integer verified_markets
  from pi.rn1_chain_settlement_audit`),
  db.unsafe(`select a.market_key,h.title,h.cohort,a.transaction_receipts,
@@ -131,6 +137,10 @@ export async function rn1ChainSettlementReport(db:any){
  a.other_wallet_same_market_payout_logs,
  a.directly_paid_gas_txs,a.involved_wallet_erc1155_events,
  a.observed_splits_in_settlement_txs,a.fully_correlated,
+ a.direct_pusd_merge_credit_count,a.direct_pusd_redeem_credit_count,
+ round(a.direct_pusd_merge_credit,6)::float8 direct_pusd_merge_credit,
+ round(a.direct_pusd_redeem_credit,6)::float8 direct_pusd_redeem_credit,
+ a.direct_pusd_all_credits_matched,
  a.audit_at::text audit_at
  from pi.rn1_chain_settlement_audit a
  join pi.rn1_ledger_holdout_audit h on h.market_key=a.market_key
@@ -142,10 +152,10 @@ export async function rn1ChainSettlementReport(db:any){
  limitations:[
   "8 balanced September 2026 markets only, not the complete wallet.",
   "4 MERGE and 16 REDEEM source share movements each match a unique ERC1155 transfer out of RN1 for a source transaction. Same-market CTF event amounts also match but ERC1155 token IDs are not yet independently mapped to the outcome tokens in this study.",
-  "8 positive CTF redemption payouts were found by transaction, market and exact amount; their redemption contract recipient is a routing address rather than necessarily RN1.",
+  "8 positive CTF redemption payouts were found by transaction, market and exact amount; these were independently matched to exact pUSD Transfer mint events to RN1. The Gnosis contract redemption intermediate redeemer may be a router.",
   "148 other same-market payout logs from batch transactions were excluded; no total batch payout was attributed to RN1.",
   "12 settlement tx were paid by addresses other than RN1; this does not establish whether gas was reimbursed indirectly.",
   "Zero-payout redemption source records have matching ERC1155 withdrawals, but zero-value payout events cannot alone prove account-level entitlement.",
-  "No fully reconciled ERC20 collateral flows, fee/rebate ledger, third-party transfers, gas reimbursements, or opening wallet balances yet. No after-fees PnL/ROI is claimed."
+  "12 direct pUSD credits to RN1 were verified for the positive merge/redemption source events, but the full ERC20 acquisition cash-outflows, fee/rebate ledger, third-party transfers, gas reimbursements, and opening wallet balances remain unverified. No after-fees PnL/ROI is claimed."
  ]};
 }
