@@ -664,6 +664,68 @@ async function renderRN1Engine(){
   economicCard.append(node("p","Couverture de l'archive de marchés : "+String(m.first_trade_at||"").slice(0,10)+" → "+String(m.last_trade_at||"").slice(0,10)+". Les snapshots fournisseur peuvent couvrir une période différente.","foot"));
  }catch(e){economicCard.append(node("p","Diagnostic économique indisponible : "+String(e?.message||e),"foot"))}
  target.append(economicCard);
+ const ledgerCard=node("section",null,"card");
+ ledgerCard.append(node("h2","RN1 · Grand livre chronologique · pilotes vérifiés"));
+ ledgerCard.append(node("p","Rejeu des archives gzip avec SHA-256 vérifié, rapproché des agrégats d'achat et des flux économiques. Chaque transaction montre son effet sur les soldes des deux issues et le collatéral. Aucun import massif supplémentaire.","foot"));
+ try{
+  const report=await api("rn1_ledger_pilot_report"),stats=report.summary||{},pilots=report.markets||[];
+  const summary=node("div",null,"metrics");
+  summary.append(
+   metric("Marchés pilotes reconstitués",fmt(stats.pilot_markets||0)),
+   metric("Inventaires nuls ou poussières",fmt(stats.balanced_or_dust||0)),
+   metric("Archives relues et vérifiées",fmt(stats.sha_verified_page_reads||0)+" pages"),
+   metric("Solde brut des flux quasi clôturés",fmt(stats.balanced_gross_cash_net,2)+" unités")
+  );
+  ledgerCard.append(summary);
+  ledgerCard.append(banner("Solde brut ≠ profit net vérifié : les frais, rebates, transferts et inventaires externes ne sont pas réconciliés. Les marchés avec parts restantes ne sont pas clôturés, et les trois pilotes ne représentent pas le ROI de RN1."));
+  for(const p of pilots){
+   const cell=node("div",null,"card");
+   cell.style.cssText="padding:14px;background:var(--panel2);border:1px solid var(--line);margin-top:10px";
+   cell.append(node("h3",String(p.title||"Marché")));
+   const closed=p.evidence_status==="gross_cash_balanced_dust",checks=p.trade_aggregate_reconciled&&p.activity_aggregate_reconciled&&p.intermediate_inventory_nonnegative;
+   cell.append(node("p",(closed?"Inventaire nul / poussières":"Inventaire encore non résolu")+" · "+(checks?"Contrôles source : réussis":"Contrôles source : à examiner")+" · "+fmt(p.source_trade_fills||0)+" achats/ventes, "+fmt(p.merge_events||0)+" MERGE, "+fmt(p.redeem_events||0)+" REDEEM","foot"));
+   const cardStats=node("div",null,"metrics");
+   cardStats.append(
+    metric("Achats enregistrés",fmt(p.trade_spend,3)),
+    metric("Collatéral MERGE + REDEEM",fmt(Number(p.merge_cash_in||0)+Number(p.redeem_cash_in||0),3)),
+    metric("Solde de trésorerie brut",fmt(p.gross_cash_net,3)),
+    metric("Parts restantes issue 0 / 1",fmt(p.residual_outcome0,3)+" / "+fmt(p.residual_outcome1,3))
+   );
+   cell.append(cardStats);
+   const details=node("div");details.style.cssText="margin-top:8px";
+   const inspect=button("Voir le grand livre des "+fmt(p.timeline_events||0)+" événements",async()=>{
+    inspect.disabled=true;details.replaceChildren(node("p","Lecture de la chronologie vérifiée…","foot"));
+    try{
+     const d=await api("rn1_ledger_pilot_detail",{market_key:p.market_key});
+     if(d.status!=="ok")throw Error("Audit indisponible");
+     const records=d.timeline||[],wrap=node("div",null,"tablewrap");
+     const table=node("table"),thead=node("thead"),hr=node("tr");
+     ["Horodatage UTC","Action","Issue","Parts","Prix","Flux collatéral","Solde issue 0","Solde issue 1"].forEach(x=>hr.append(node("th",x)));
+     thead.append(hr);table.append(thead);
+     const tb=node("tbody");
+     for(const e of records){
+      const row=node("tr"),date=new Date(Number(e.t)*1000).toISOString().replace("T"," ").slice(0,19);
+      row.append(
+       node("td",date),
+       node("td",e.kind==="TRADE"?(String(e.side||"")+" exécuté"):String(e.kind||"")),
+       node("td",e.outcome===999?"les 2":e.outcome==null?"?":String(e.outcome)),
+       node("td",fmt(e.shares,4)),node("td",e.price==null?"—":fmt(e.price,4)),
+       node("td",fmt(e.cash_delta,4)),
+       node("td",fmt(e.balance0,4)),
+       node("td",fmt(e.balance1,4))
+      );tb.append(row);
+     }
+     table.append(tb);wrap.append(table);
+     details.replaceChildren(node("p","Chaque mouvement est calculé dans l'ordre des secondes reportées. Les MERGE consomment les deux issues ; les REDEEM consomment l'issue indiquée, y compris quand le payout vaut zéro.","foot"),wrap);
+    }catch(err){details.replaceChildren(node("p","Chronologie indisponible : "+String(err?.message||err),"foot"))}
+    finally{inspect.disabled=false}
+   },"secondary");
+   cell.append(inspect,details);
+   ledgerCard.append(cell);
+  }
+  ledgerCard.append(node("p","La chronologie utilise les timestamps de l'API historique, dont les événements à la même seconde peuvent ne pas refléter l'ordre exact du moteur. Tous les trades et montants économiques des trois marchés ont été réconciliés avec les agrégats déjà présents.","foot"));
+ }catch(e){ledgerCard.append(node("p","Grand livre pilote indisponible : "+String(e?.message||e),"foot"))}
+ target.append(ledgerCard);
  const onchainCard=node("section",null,"card");
  onchainCard.append(node("h2","Ordres Maker réellement signés · blockchain Polygon"));
  onchainCard.append(node("p","Ici les identifiants sont récupérés depuis les événements publics OrderFilled du contrat Polymarket V2, puis rapprochés des prix et quantités des fills archivés. Ce ne sont PAS des regroupements statistiques par seconde.","foot"));
