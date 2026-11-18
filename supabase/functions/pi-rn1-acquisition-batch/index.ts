@@ -196,7 +196,7 @@ async function save(row:Queued,r:Audit) {
     observed_wallet_pusd_out=$4::numeric,observed_wallet_pusd_in=$5::numeric,
     observed_shares_received=$6::numeric, observed_gas_payer=$7,
     observed_fee_log_count=$8, audit_note=$9,
-    audit_evidence=$10::jsonb,audit_lease_until=null,last_checked_at=now()
+    audit_evidence=($10::jsonb #>> '{}')::jsonb,audit_lease_until=null,last_checked_at=now()
     where market_key=$1 and source_tx_hash=$2`,[
      row.market_key,row.source_tx_hash,r.status,decimal(r.pusd_out),decimal(r.pusd_in),
      decimal(r.received),r.wallet_gas_payer,r.fee_count,r.note,JSON.stringify(r.evidence)
