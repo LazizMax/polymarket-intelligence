@@ -812,6 +812,25 @@ async function renderRN1Engine(){
    metric("Achats avec débit pUSD + réception de parts vérifiés",fmt(c.sample_buys_fully_verified||0)+" / "+fmt(c.sampled_buys_onchain||0)),
    metric("Montant de ces seuls achats échantillonnés",fmt(c.sampled_buy_pusd_debit,2)+" pUSD")
   );chainAuditCard.append(m);
+  const auditedTx=Number(c.acquisition_txs_verified||0),totalTx=Number(c.acquisition_txs_total||0);
+  const auditPct=totalTx>0?Math.max(0,Math.min(100,100*auditedTx/totalTx)):0;
+  chainAuditCard.append(node("h3","Achats BUY · vérification Polygon en cours"));
+  const buyProgress=node("div",null,"metrics");
+  buyProgress.append(
+   metric("Transactions BUY vérifiées",fmt(auditedTx)+" / "+fmt(totalTx)),
+   metric("Fills BUY correspondants",fmt(c.acquisition_fills_verified||0)+" / "+fmt(c.acquisition_fills_total||0)),
+   metric("Débits pUSD vérifiés",fmt(c.acquisition_pusd_verified||0,2)+" pUSD"),
+   metric("Transactions en attente",fmt(c.acquisition_txs_pending||0)),
+   metric("Ambiguës / écarts / erreurs",fmt(Number(c.acquisition_txs_ambiguous||0)+Number(c.acquisition_txs_mismatch||0)+Number(c.acquisition_txs_error||0)))
+  );
+  chainAuditCard.append(buyProgress);
+  chainAuditCard.append(node("p","Couverture vérifiée : "+fmt(auditPct,1)+" % des transactions BUY du panel. Coût archivé du panel : "+fmt(c.acquisition_pusd_archived||0,2)+" unités (encore partiellement audité).","foot"));
+  const progressBar=node("div");
+  progressBar.style.cssText="height:10px;border-radius:8px;overflow:hidden;background:var(--line);margin:8px 0 20px";
+  const progressFill=node("div");
+  progressFill.style.cssText="height:100%;border-radius:8px;background:var(--brand);transition:width .25s";
+  progressFill.style.width=auditPct+"%";
+  progressBar.append(progressFill);chainAuditCard.append(progressBar);
   const more=node("div",null,"metrics");
   more.append(
    metric("Transactions de règlement contrôlées",fmt(c.receipts||0)),
@@ -835,7 +854,7 @@ async function renderRN1Engine(){
   }
   table.append(body);wrap.append(table);chainAuditCard.append(wrap);
   chainAuditCard.append(node("p","Crédits vérifiés directement sur Polygon : "+fmt(c.verified_merge_collateral_credit,2)+" pUSD après MERGE et "+fmt(c.verified_redeem_collateral_credit,2)+" pUSD après règlement positif, vers le wallet RN1.","foot"));
-  chainAuditCard.append(banner("ATTENTION : ceci ne prouve pas un P&L net. Les transactions sont groupées avec d'autres comptes. RN1 ne paie pas directement le gas des 12 règlements contrôlés mais pourrait le rembourser indirectement. Les seuls 8 achats vérifiés sont un échantillon : il est INTERDIT de soustraire ces 8 débits des 12 encaissements comme si cela constituait le P&L de RN1. Les autres achats, les frais, rebates, SPLIT et transferts externes restent à examiner."));
+  chainAuditCard.append(banner("ATTENTION : ceci ne prouve pas un P&L net. Les transactions sont groupées avec d'autres comptes. RN1 ne paie pas directement le gas des 12 règlements contrôlés mais pourrait le rembourser indirectement. L'audit des achats BUY progresse indépendamment des règlements : il est INTERDIT de soustraire un échantillon partiel de débits à l'ensemble des encaissements comme si cela constituait le P&L de RN1. Les achats encore en attente, les frais, rebates, SPLIT et transferts externes restent à examiner."));
  }catch(e){chainAuditCard.append(node("p","Audit Polygon indisponible : "+String(e?.message||e),"foot"))}
  target.append(chainAuditCard);
  const onchainCard=node("section",null,"card");
