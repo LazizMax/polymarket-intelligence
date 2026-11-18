@@ -726,6 +726,75 @@ async function renderRN1Engine(){
   ledgerCard.append(node("p","La chronologie utilise les timestamps de l'API historique, dont les événements à la même seconde peuvent ne pas refléter l'ordre exact du moteur. Tous les trades et montants économiques des trois marchés ont été réconciliés avec les agrégats déjà présents.","foot"));
  }catch(e){ledgerCard.append(node("p","Grand livre pilote indisponible : "+String(e?.message||e),"foot"))}
  target.append(ledgerCard);
+ const ledgerHoldoutCard=node("section",null,"card");
+ ledgerHoldoutCard.append(node("h2","RN1 · Grand livre · validation indépendante sur 16 marchés"));
+ ledgerHoldoutCard.append(node("p","Quatre marchés choisis à l'avance par une règle déterministe dans chacun des groupes : fusion seule, fusion et règlement, règlement seul, trades seuls. Archives originales vérifiées SHA-256 avant le calcul ; aucun trade réimporté.","foot"));
+ try{
+  const study=await api("rn1_ledger_holdout_report"),summary=study.summary||{},groups=study.groups||[],markets=study.markets||[];
+  const metrics=node("div",null,"metrics");
+  metrics.append(
+   metric("Marchés sans erreur de rapprochement",fmt(summary.verified||0)+" / "+fmt(summary.audited||0)),
+   metric("Inventaires nuls ou poussières",fmt(summary.balanced_or_dust||0)),
+   metric("Archives relues avec SHA-256",fmt(summary.sha_verified_page_reads||0)+" pages"),
+   metric("Flux brut net des marchés quasi clôturés",fmt(summary.balanced_cash_delta,2)+" unités")
+  );
+  ledgerHoldoutCard.append(metrics);
+  ledgerHoldoutCard.append(node("p","Parmi les "+fmt(summary.balanced_or_dust||0)+" marchés à inventaire nul ou poussières, "+fmt(summary.positive_balanced||0)+" ont un flux brut positif et "+fmt(summary.negative_balanced||0)+" un flux brut négatif. Les autres marchés gardent des parts et ne sont pas classés gagnants/perdants.","foot"));
+  const label={"merge_only":"Fusion seule","merge_redeem":"Fusion + règlement","redeem_only":"Règlement seul","trade_only":"Trades seuls"};
+  const wrapper=node("div",null,"tablewrap"),table=node("table"),thead=node("thead"),hr=node("tr");
+  ["Groupe","Marchés","Source validée","Inventaire soldé","Flux brut des soldés"].forEach(x=>hr.append(node("th",x)));
+  thead.append(hr);table.append(thead);
+  const body=node("tbody");
+  for(const g of groups){
+   const tr=node("tr");
+   tr.append(node("td",label[g.cohort]||String(g.cohort)),node("td",fmt(g.markets||0)),
+     node("td",fmt(g.source_verified||0)),node("td",fmt(g.balanced_or_dust||0)),
+     node("td",g.balanced_or_dust?fmt(g.balanced_gross_cash,2):"—"));
+   body.append(tr);
+  }
+  table.append(body);wrapper.append(table);ledgerHoldoutCard.append(wrapper);
+  ledgerHoldoutCard.append(banner("ÉCHANTILLON STRATIFIÉ, PAS ROI RN1 : le solde de collatéral n'inclut pas les frais, le gas, les rebates ni les transferts externes. Les marchés à inventaire restant ne peuvent pas être évalués uniquement par leur trésorerie négative. Les nombres ne sont pas extrapolables à tout RN1."));
+  for(const cohort of ["merge_redeem","redeem_only","merge_only","trade_only"]){
+   const groupMarkets=markets.filter(x=>x.cohort===cohort);
+   if(!groupMarkets.length)continue;
+   ledgerHoldoutCard.append(node("h3",label[cohort]||cohort));
+   for(const p of groupMarkets){
+    const card=node("div",null,"card");
+    card.style.cssText="padding:11px;background:var(--panel2);border:1px solid var(--line);margin-top:7px";
+    card.append(node("h4",String(p.title||"Marché")));
+    const balanced=p.evidence_status==="gross_cash_balanced_dust";
+    card.append(node("p",(balanced?"Inventaire quasi soldé":"Inventaire à résoudre")+
+     " · flux brut "+fmt(p.gross_cash_net,2)+" · parts restantes "+fmt(p.terminal0,3)+" / "+fmt(p.terminal1,3)+
+     " · "+fmt(p.source_trade_fills||0)+" trades, "+fmt(p.source_merge_events||0)+" fusions, "+fmt(p.source_redeem_events||0)+" règlements","foot"));
+    const detail=node("div");
+    const open=button("Examiner les "+fmt(p.timeline_events||0)+" mouvements",async()=>{
+     open.disabled=true;detail.replaceChildren(node("p","Lecture du journal comptable…","foot"));
+     try{
+      const x=await api("rn1_ledger_holdout_detail",{market_key:p.market_key});
+      if(x.status!=="ok")throw Error(x.status||"Indisponible");
+      const wrap=node("div",null,"tablewrap"),tbl=node("table"),th=node("thead"),thRow=node("tr");
+      ["UTC","Action","Issue","Parts","Prix","Flux de collatéral","Solde 0","Solde 1"].forEach(v=>thRow.append(node("th",v)));
+      th.append(thRow);tbl.append(th);
+      const tb=node("tbody");
+      for(const e of (x.timeline||[])){
+       const row=node("tr");
+       const when=new Date(Number(e.t)*1000).toISOString().replace("T"," ").slice(0,19);
+       row.append(node("td",when),node("td",e.kind==="TRADE"?String(e.side)+" exécuté":String(e.kind)),
+        node("td",e.outcome===999?"0 + 1":String(e.outcome??"?")),
+        node("td",fmt(e.shares,4)),node("td",e.price==null?"—":fmt(e.price,4)),
+        node("td",fmt(e.cash_delta,4)),node("td",fmt(e.balance0,4)),node("td",fmt(e.balance1,4)));
+       tb.append(row);
+      }
+      tbl.append(tb);wrap.append(tbl);detail.replaceChildren(wrap);
+     }catch(err){detail.replaceChildren(node("p","Lecture impossible : "+String(err?.message||err),"foot"))}
+     finally{open.disabled=false}
+    },"secondary");
+    card.append(open,detail);
+    ledgerHoldoutCard.append(card);
+   }
+  }
+ }catch(e){ledgerHoldoutCard.append(node("p","Validation indépendante indisponible : "+String(e?.message||e),"foot"))}
+ target.append(ledgerHoldoutCard);
  const onchainCard=node("section",null,"card");
  onchainCard.append(node("h2","Ordres Maker réellement signés · blockchain Polygon"));
  onchainCard.append(node("p","Ici les identifiants sont récupérés depuis les événements publics OrderFilled du contrat Polymarket V2, puis rapprochés des prix et quantités des fills archivés. Ce ne sont PAS des regroupements statistiques par seconde.","foot"));
