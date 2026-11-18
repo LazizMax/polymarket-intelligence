@@ -128,7 +128,11 @@ export async function rn1ChainSettlementReport(db:any){
  round(sum(direct_pusd_redeem_credit),6)::float8 verified_redeem_collateral_credit,
  round(sum(direct_pusd_merge_credit+direct_pusd_redeem_credit),6)::float8 verified_total_collateral_credit,
  count(*) filter(where direct_pusd_all_credits_matched)::integer direct_collateral_verified_markets,
- count(*) filter(where fully_correlated)::integer verified_markets
+ count(*) filter(where fully_correlated)::integer verified_markets,
+ (select count(*)::integer from pi.rn1_chain_acquisition_sample) sampled_buys_onchain,
+ (select count(*)::integer from pi.rn1_chain_acquisition_sample
+  where exact_collateral_debit and exact_share_receipt) sample_buys_fully_verified,
+ (select round(sum(observed_direct_pusd_debit),6)::float8 from pi.rn1_chain_acquisition_sample) sampled_buy_pusd_debit
  from pi.rn1_chain_settlement_audit`),
  db.unsafe(`select a.market_key,h.title,h.cohort,a.transaction_receipts,
  a.source_merge_lines,a.onchain_merge_unique,
@@ -156,6 +160,6 @@ export async function rn1ChainSettlementReport(db:any){
   "148 other same-market payout logs from batch transactions were excluded; no total batch payout was attributed to RN1.",
   "12 settlement tx were paid by addresses other than RN1; this does not establish whether gas was reimbursed indirectly.",
   "Zero-payout redemption source records have matching ERC1155 withdrawals, but zero-value payout events cannot alone prove account-level entitlement.",
-  "12 direct pUSD credits to RN1 were verified for the positive merge/redemption source events, but the full ERC20 acquisition cash-outflows, fee/rebate ledger, third-party transfers, gas reimbursements, and opening wallet balances remain unverified. No after-fees PnL/ROI is claimed."
+  "12 direct pUSD credits to RN1 were verified for the positive MERGE/REDEEM events, and 8 sampled buys show exact direct pUSD debit and ERC1155 credit. The other BUY fills, fee/rebate ledger, third-party transfers, gas reimbursements, and opening wallet balances remain unverified. Never subtract the sample of 8 BUY debits from all 12 settlement receipts as if it were a complete net PnL."
  ]};
 }
