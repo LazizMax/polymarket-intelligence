@@ -52,3 +52,58 @@ export async function rn1LedgerPilotDetail(db:any,body:any){
  if(!rows.length)return {status:"not_a_pilot_market"};
  return {status:"ok",...rows[0]};
 }
+
+export async function rn1LedgerHoldoutReport(db:any){
+ const [groups,markets,overall]=await Promise.all([
+ db.unsafe(`select cohort,count(*)::int markets,
+  count(*) filter(where source_fills_match and source_activity_match and inventory_nonnegative)::int source_verified,
+  count(*) filter(where evidence_status='gross_cash_balanced_dust')::int balanced_or_dust,
+  count(*) filter(where evidence_status='open_or_unexplained_inventory')::int unresolved,
+  count(*) filter(where evidence_status='source_inconsistent' or evidence_status='intermediate_inventory_negative')::int invalid,
+  sum(source_trade_fills)::int trades,sum(source_merge_events)::int merges,sum(source_redeem_events)::int redemptions,
+  sum(verified_pages)::int sha_verified_page_reads,
+  round(sum(gross_cash_net) filter(where evidence_status='gross_cash_balanced_dust'),3)::float8 balanced_gross_cash,
+  round(sum(buy_spend) filter(where evidence_status='gross_cash_balanced_dust'),3)::float8 balanced_buy_spend
+  from pi.rn1_ledger_holdout_audit group by cohort order by cohort`),
+ db.unsafe(`select market_key,cohort,cohort_rank,title,
+  source_trade_fills,source_merge_events,source_redeem_events,verified_pages,
+  round(buy_spend,3)::float8 buy_spend,
+  round(merge_in+redeem_in+sell_proceeds,3)::float8 gross_cash_in,
+  round(gross_cash_net,3)::float8 gross_cash_net,
+  round(terminal0,6)::float8 terminal0,round(terminal1,6)::float8 terminal1,
+  source_fills_match,source_activity_match,inventory_nonnegative,evidence_status,
+  jsonb_array_length(timeline)::int timeline_events
+  from pi.rn1_ledger_holdout_audit order by cohort,cohort_rank`),
+ db.unsafe(`select count(*)::int audited,
+  count(*) filter(where source_fills_match and source_activity_match and inventory_nonnegative)::int verified,
+  count(*) filter(where evidence_status='gross_cash_balanced_dust')::int balanced_or_dust,
+  count(*) filter(where gross_cash_net>0 and evidence_status='gross_cash_balanced_dust')::int positive_balanced,
+  count(*) filter(where gross_cash_net<0 and evidence_status='gross_cash_balanced_dust')::int negative_balanced,
+  sum(verified_pages)::int sha_verified_page_reads,sum(source_trade_fills)::int trades,
+  round(sum(gross_cash_net) filter(where evidence_status='gross_cash_balanced_dust'),3)::float8 balanced_cash_delta,
+  round(sum(buy_spend) filter(where evidence_status='gross_cash_balanced_dust'),3)::float8 balanced_spend,
+  round(100*sum(gross_cash_net) filter(where evidence_status='gross_cash_balanced_dust')/
+   nullif(sum(buy_spend) filter(where evidence_status='gross_cash_balanced_dust'),0),3)::float8 selected_balanced_cash_pct
+  from pi.rn1_ledger_holdout_audit`)
+ ]);
+ return {status:"stratified_holdout_complete",study_version:"rn1-independent-ledger-20261118-v1",
+  groups,markets,summary:overall[0]||{},
+  methodology:"Four deterministic SHA256-ordered markets in each of four economic-action cohorts (MERGE only, MERGE+REDEEM, REDEEM only, trades only). Source selection was frozen before archive replay; all 16 original immutable gzip archives were verified by SHA256.",
+  limitations:[
+    "Selection is random only within constrained September 2026 strata; not unbiased RN1 wallet population and not a return backtest.",
+    "No transfers, opening holdings, splits, gas, fees or rebates independently reconciled.",
+    "An unresolved inventory with a negative cash delta is not a realized loss.",
+    "The combined gross cash flow of the eight terminal-balanced markets is NOT a measured net strategy return and is not generalizable.",
+    "Seconds-level API timestamps do not always establish intra-second execution order."
+  ]};
+}
+export async function rn1LedgerHoldoutDetail(db:any,body:any){
+ const key=String(body?.market_key||"").toLowerCase();
+ if(!/^0x[0-9a-f]{64}$/.test(key))return {status:"invalid_market_key"};
+ const rows=await db.unsafe(`select market_key,cohort,title,evidence_status,
+  round(gross_cash_net,6)::float8 gross_cash_net,
+  round(terminal0,6)::float8 terminal0,round(terminal1,6)::float8 terminal1,
+  source_fills_match,source_activity_match,inventory_nonnegative,timeline
+  from pi.rn1_ledger_holdout_audit where market_key=$1`,[key]);
+ return rows.length?{status:"ok",...rows[0]}:{status:"not_a_holdout_market"};
+}
