@@ -32,11 +32,70 @@ async function loadPage(stream:string,pageNo:number){
  if(!Array.isArray(data)||data.length!==Number(info.row_count))throw Error("Source page size mismatch");
  return {data,info};
 }
+const pilotMarkets=new Set([
+ "0xdd757794febc6cfd6bcf89bbcbac103fb059dec17a5b87c11146ef61d3d38bd2",
+ "0x48d00a6775eb36ade7d947119c6ce9e2f2fe665b79a95de431dec3917537ca7e",
+ "0x67ffbb71f10ab6f28715b36c369d0591669aa8d548c8785530afbc3b4180b0a4"
+]);
+async function scanPilotMarket(market:string){
+ if(!pilotMarkets.has(market))throw Error("Pilot not selected");
+ const marketRows=await db.unsafe(`select market_key,title,fills,buy0_shares,buy1_shares,
+ buy0_cost,buy1_cost,sell0_shares,sell1_shares,min_trade_at,max_trade_at
+ from pi.rn1_full_market_metrics where wallet=$1 and market_key=$2`,[WALLET,market]);
+ if(marketRows.length!==1)throw Error("Market summary unavailable");
+ const activityRows=await db.unsafe(`select kind,events,reported_usdc_size,min_event_at,max_event_at
+ from pi.rn1_full_activity_metrics where wallet=$1 and market_key=$2
+ order by kind`,[WALLET,market]);
+ const m=marketRows[0],important=activityRows.filter((r:any)=>r.kind!=="TRADE");
+ const first=Math.min(new Date(m.min_trade_at).getTime(),...important.map((x:any)=>new Date(x.min_event_at).getTime()));
+ const last=Math.max(new Date(m.max_trade_at).getTime(),...important.map((x:any)=>new Date(x.max_event_at).getTime()));
+ const start=new Date(first-7200000),end=new Date(last+7200000);
+ if(end.getTime()-start.getTime()>259200000)throw Error("Pilot time range exceeds 72h");
+ const pages=await db.unsafe(`select stream,page_no
+ from pi.rn1_full_archive_pages where stream in('trades_all','activity_all')
+ and max_reported_at >= $1 and min_reported_at <= $2
+ order by stream,page_no`,[start.toISOString(),end.toISOString()]);
+ if(pages.length>70||pages.length<1)throw Error("Source page count outside bounded pilot");
+ const results:any[]=[];
+ for(let i=0;i<pages.length;i+=5){
+  const group=await Promise.all(pages.slice(i,i+5).map(async(p:any)=>{
+   const obj=await loadPage(String(p.stream),Number(p.page_no));
+   const matches=obj.data.filter((v:any)=>String(v.condition_id||"").toLowerCase()===market&&String(v.proxy_wallet||"").toLowerCase()===WALLET);
+   return {stream:String(p.stream),page:Number(p.page_no),
+    data:matches.map((v:any)=>({
+     stream:String(p.stream),page:Number(p.page_no),t:Number(v.timestamp),
+     kind:p.stream==="trades_all"?"TRADE":String(v.type||"UNKNOWN"),
+     side:v.side??null,index:v.outcome_index??null,
+     qty:v.size??null,usdc_size:v.usdc_size??null,price:v.price??null,
+     token:v.token_id??null,tx:v.transaction_hash??null,
+     source_keys:p.stream==="activity_all"&&v.type!=="TRADE"?Object.keys(v):undefined
+    }))};
+  }));
+  results.push(...group);
+ }
+ const trades=results.flatMap(x=>x.stream==="trades_all"?x.data:[]);
+ const act=results.flatMap(x=>x.stream==="activity_all"?x.data.filter((v:any)=>v.kind!=="TRADE"):[]);
+ const timeline=[...trades,...act].sort((a:any,b:any)=>a.t-b.t||a.kind.localeCompare(b.kind)||a.page-b.page);
+ const perKind=Object.fromEntries([...new Set(act.map(v=>v.kind))].map(kind=>[kind,
+ {events:act.filter(v=>v.kind===kind).length,
+ size_total:act.filter(v=>v.kind===kind).reduce((n:number,v:any)=>n+Number(v.qty||0),0),
+ usdc_size_total:act.filter(v=>v.kind===kind).reduce((n:number,v:any)=>n+Number(v.usdc_size||0),0)}]));
+ return {market,market_summary:m,activity_summary:activityRows,
+ source_verified_pages:pages.length,trades_pages:pages.filter((x:any)=>x.stream==="trades_all").length,
+ activity_pages:pages.filter((x:any)=>x.stream==="activity_all").length,
+ source_window_start:start.toISOString(),source_window_end:end.toISOString(),
+ trade_rows:trades.length,activity_nontrade_rows:act.length,
+ trade_count_match:trades.length===Number(m.fills),
+ per_kind:perKind,timeline};
+}
 Deno.serve(async(req:Request)=>{
  if(req.method!=="POST")return reply({error:"Method not allowed"},405);
  try{
   if(!await authorized(req))return reply({error:"Scheduler authorization required"},401);
   const b=await req.json(),action=String(b.action||"");
+  if(action==="scan_pilot_market"){
+   return reply(await scanPilotMarket(String(b.market||"").toLowerCase()));
+  }
   if(action==="source_shape"){
    const stream=String(b.stream||""),page=Number(b.page),info=await loadPage(stream,page);
    const keys=info.data.slice(0,5).map((r:any)=>Object.fromEntries(
