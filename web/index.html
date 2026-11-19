@@ -941,7 +941,7 @@ async function renderRN1Engine(){
  flowPolicyCard.append(node("p","H11 : tester si les achats Maker des 5 minutes précédentes expliquent mieux le prix limite signé que le décalage fixe. Données source novembre 2026, ordres EIP-712 ; jamais d'inventaire total supposé.","foot"));
  try{
   const data=await api("rn1_maker_precreation_flow_report");
-  const c=data.coverage||{},models=data.models||[],cohorts=data.cohorts||[];
+  const c=data.coverage||{},models=data.models||[],cohorts=data.cohorts||[],collector=data.collector||{};
   const m=node("div",null,"metrics");
   m.append(
    metric("Ordres originaux analysés",fmt(c.signed_orders||0)),
@@ -970,6 +970,11 @@ async function renderRN1Engine(){
   table.append(tb);wrap.append(table);flowPolicyCard.append(wrap);
   const holdout=cohorts.filter(x=>x.validation_group==="new_event_targeted_holdout");
   flowPolicyCard.append(node("p","Holdout : "+holdout.map(x=>x.sampled_cohort==="multi_level"?"grilles "+fmt(x.orders)+" ordres":"ordres persistants "+fmt(x.orders)).join(" ; ")+". Ces cohortes ont été sélectionnées pour leur structure, et ne représentent pas tous les ordres placés.","foot"));
+  if(collector.status==="paused_quota"){
+   const liveMb=Number(collector.database_bytes||0)/1048576;
+   const capMb=Number(collector.max_db_bytes||0)/1048576;
+   flowPolicyCard.append(node("p","COLLECTE PROSPECTIVE SUSPENDUE (quota) — dernière capture : "+String(collector.last_success_at||"inconnue")+". Base : "+fmt(liveMb,0)+" Mio pour un plafond de sécurité de "+fmt(capMb,0)+" Mio. Les données historiques sont conservées ; aucun relèvement automatique du plafond.","foot"));
+  }
   flowPolicyCard.append(banner("H11 NON VALIDÉE. Le simple sens des achats Maker déjà observés n'améliore pas la prédiction du prix limite. L'archive des fills est partielle et n'inclut ni les ordres non exécutés, ni les ventes, ni le véritable inventaire. Les captures de carnet et de match disponibles sont postérieures aux ordres signés de ce lot."));
  }catch(e){flowPolicyCard.append(node("p","Contrôle des décisions pré-signature indisponible : "+String(e?.message||e),"foot"))}
  target.append(flowPolicyCard);
