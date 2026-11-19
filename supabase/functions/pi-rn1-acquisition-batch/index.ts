@@ -75,20 +75,45 @@ async function ctfCall(name:string,args:unknown[]):Promise<any> {
   const raw=await rpc("eth_call",[{to:CTF,data},"latest"]);
   return ctf.decodeFunctionResult(name,raw)[0];
 }
-async function tokenMap(market:string):Promise<{zero:string,one:string}> {
+// Never assume USDC.e for all markets: NegRisk markets use CTF wrapped collateral.
+ // The proof is a match between an onchain-derived positionId AND the receipt's
+ // direct ERC1155 credit to RN1 for the archived outcome.
+async function tokenMap(market:string,outcome:number,receivedTokenIds:string[]):Promise<{zero:string,one:string}> {
+  if(![0,1].includes(outcome)||receivedTokenIds.length===0)throw Error("missing_ctf_token_evidence");
+  const ids=new Set(receivedTokenIds);
   const existing=await db.unsafe("select position_token0,position_token1 from pi.rn1_chain_token_map where market_key=$1",[market]);
-  if(existing.length)return {zero:String(existing[0].position_token0),one:String(existing[0].position_token1)};
-  const calculate=async(outcome:number):Promise<string>=>{
-    const collection=await ctfCall("getCollectionId",[ZERO32,market,BigInt(1<<outcome)]);
-    const position=await ctfCall("getPositionId",[USDCE,collection]);
-    return BigInt(position).toString();
-  };
-  const [zero,one]=await Promise.all([calculate(0),calculate(1)]);
-  if(zero===one)throw Error("duplicate_position_ids");
-  await db.unsafe(`insert into pi.rn1_chain_token_map (market_key,position_token0,position_token1)
-    values($1,$2,$3) on conflict(market_key) do nothing`,[market,zero,one]);
-  return {zero,one};
+  if(existing.length){
+    const cached={zero:String(existing[0].position_token0),one:String(existing[0].position_token1)};
+    if(ids.has(outcome===0?cached.zero:cached.one))return cached;
+  }
+  const collections=await Promise.all([1,2].map(async(indexSet)=>{
+    return ctfCall("getCollectionId",[ZERO32,market,BigInt(indexSet)]);
+  }));
+  const candidates=[
+    {name:"USDCE",address:USDCE},
+    {name:"NEG_RISK_WCOL",address:"0x3a3bd7bb9528e159577f7c2e685cc81a765002e2"},
+  ];
+  const matches:{zero:string;one:string;name:string;address:string}[]=[];
+  for(const candidate of candidates){
+    const wanted=BigInt(await ctfCall("getPositionId",[candidate.address,collections[outcome]])).toString();
+    if(!ids.has(wanted))continue;
+    const opposite=BigInt(await ctfCall("getPositionId",[candidate.address,collections[1-outcome]])).toString();
+    const zero=outcome===0?wanted:opposite,one=outcome===1?wanted:opposite;
+    if(zero===one)throw Error("invalid_duplicate_ctf_position_ids");
+    matches.push({zero,one,...candidate});
+  }
+  // Fails closed if the receipt cannot uniquely distinguish the collateral.
+  if(matches.length!==1)throw Error(matches.length?"ambiguous_ctf_collateral":"no_matching_ctf_collateral");
+  const m=matches[0];
+  await db.unsafe(`insert into pi.rn1_chain_token_map(market_key,position_token0,position_token1,mapping_method)
+   values($1,$2,$3,$4)
+   on conflict(market_key) do update set position_token0=excluded.position_token0,
+    position_token1=excluded.position_token1,mapping_method=excluded.mapping_method,
+    updated_at=now()`,
+   [market,m.zero,m.one,"Polygon CTF getCollectionId/getPositionId verified against direct RN1 ERC1155 receipt; "+m.name+" "+m.address]);
+  return {zero:m.zero,one:m.one};
 }
+
 type Queued={market_key:string;source_tx_hash:string;archived_cost:string;archived_shares:string;
  source_fill_count:number;source_outcomes:number[];audit_attempts:number};
 async function claim(limit:number):Promise<Queued[]> {
@@ -155,7 +180,7 @@ async function audit(row:Queued):Promise<Audit> {
   const expectedCash=units(row.archived_cost),expectedShares=units(row.archived_shares);
   if(!Array.isArray(row.source_outcomes)||row.source_outcomes.length!==1 ||
      ![0,1].includes(Number(row.source_outcomes[0])))throw Error("unsupported_multitoken_aggregation");
-  const mapping=await tokenMap(row.market_key);
+  const mapping=await tokenMap(row.market_key,Number(row.source_outcomes[0]),walletPositions.filter(v=>v.to===WALLET).map(v=>v.tokenId));
   const tokenId=Number(row.source_outcomes[0])===0?mapping.zero:mapping.one;
   const inbound=walletPositions.filter(v=>v.to===WALLET&&v.tokenId===tokenId)
     .reduce((s,v)=>s+BigInt(v.micro),0n);
