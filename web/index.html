@@ -857,6 +857,85 @@ async function renderRN1Engine(){
   chainAuditCard.append(banner("ATTENTION : ceci ne prouve pas un P&L net. Les transactions sont groupées avec d'autres comptes. RN1 ne paie pas directement le gas des 12 règlements contrôlés mais pourrait le rembourser indirectement. L'audit des achats BUY progresse indépendamment des règlements : il est INTERDIT de soustraire un échantillon partiel de débits à l'ensemble des encaissements comme si cela constituait le P&L de RN1. Les achats encore en attente, les frais, rebates, SPLIT et transferts externes restent à examiner."));
  }catch(e){chainAuditCard.append(node("p","Audit Polygon indisponible : "+String(e?.message||e),"foot"))}
  target.append(chainAuditCard);
+
+ const cashflowCard=node("section",null,"card");
+ cashflowCard.append(node("h2","RN1 · Cashflow Polygon — panel de 8 marchés soldés"));
+ cashflowCard.append(node("p","Septembre 2026. Tous les débits BUY et les encaissements MERGE / REDEEM de ce panel sont rapprochés des reçus blockchain. Les frais, rebates et flux externes restent hors calcul.","foot"));
+ try{
+  const cash=await api("rn1_chain_cashflow_panel_report"),s=cash.summary||{},groups=cash.cohorts||{};
+  const ms=node("div",null,"metrics");
+  ms.append(
+   metric("Marchés réconciliés",fmt(s.verified||0)+" / "+fmt(s.markets||0)),
+   metric("Achats BUY vérifiés",fmt(s.buys||0,2)+" pUSD"),
+   metric("Encaissements directs",fmt(s.credits||0,2)+" pUSD"),
+   metric("Résultat brut (sans frais)",(Number(s.gross||0)>=0?"+":"")+fmt(s.gross||0,2)+" pUSD"),
+   metric("ROI brut sur achats",fmt(s.gross_roi_pct||0,2)+" %")
+  );
+  cashflowCard.append(ms);
+  const groupWrap=node("div",null,"tablewrap"),groupTable=node("table"),
+        th=node("thead"),headRow=node("tr");
+  ["Type de clôture","Marchés","Débits pUSD","Crédits pUSD","Cashflow brut"].forEach(x=>headRow.append(node("th",x)));
+  th.append(headRow);groupTable.append(th);
+  const tb=node("tbody");
+  for(const [name,item] of Object.entries(groups)){
+   const tr=node("tr");
+   const g=item||{};
+   const gross=Number(g.gross||0);
+   tr.append(
+    node("td",name==="merge_redeem"?"MERGE + REDEEM":"REDEEM uniquement"),
+    node("td",fmt(g.verified||0)+" / "+fmt(g.markets||0)),
+    node("td",fmt(g.buy||0,2)),
+    node("td",fmt(g.credits||0,2)),
+    node("td",(gross>=0?"+":"")+fmt(gross,2))
+   );
+   tb.append(tr);
+  }
+  groupTable.append(tb);groupWrap.append(groupTable);cashflowCard.append(groupWrap);
+  cashflowCard.append(banner("ATTENTION — cashflow BRUT d'un petit panel sélectionné, pas rentabilité nette de RN1. Les huit marchés de septembre ne recouvrent pas les ordres Maker signés de novembre ; l'origine Maker/Taker de ces achats n'est pas validée dans ce rapprochement."));
+ }catch(e){cashflowCard.append(node("p","Rapprochement brut indisponible : "+String(e?.message||e),"foot"))}
+ target.append(cashflowCard);
+
+ const policyCard=node("section",null,"card");
+ policyCard.append(node("h2","RN1 · Prix limite Maker — validation croisée hors événement"));
+ policyCard.append(node("p","Novembre 2026. Modèles apprenant uniquement sur d'autres événements, à partir du prix Polymarket historisé avant le timestamp déclaré de signature. Échantillon des ordres exécutés seulement.","foot"));
+ try{
+  const policy=await api("rn1_signed_limit_policy_oof"),s=policy.summary||{},e=policy.event_level||{},folds=policy.folds||[];
+  const m=node("div",null,"metrics");
+  m.append(
+   metric("Ordres Maker signés testés",fmt(s.orders||0)),
+   metric("Événements disjoints",fmt(s.events||0)),
+   metric("Modèle prix historique seul",fmt(Number(s.mae_m0||0)*100,3)+" pp"),
+   metric("Prix historique + écart fixe",fmt(Number(s.mae_m1||0)*100,3)+" pp"),
+   metric("Écart conditionné au momentum",fmt(Number(s.mae_m2||0)*100,3)+" pp")
+  );
+  policyCard.append(m);
+  const gain=Number(e.event_delta_m1_over_m0||0)*100;
+  const margin=Number(e.paired_normal_halfwidth_m1||0)*100;
+  const delta2=Number(e.event_delta_m2_over_m1||0)*100;
+  const margin2=Number(e.paired_normal_halfwidth_m2||0)*100;
+  policyCard.append(node("p",
+   "Gain moyen du modèle à écart fixe, par événement : "+fmt(gain,4)+" point de prix sur l'erreur absolue ; intervalle indicatif (±1,96 SE événement) : ["+fmt(gain-margin,4)+" ; "+fmt(gain+margin,4)+"].","foot"));
+  policyCard.append(node("p",
+   "Gain supplémentaire du momentum : "+fmt(delta2,4)+" point ; intervalle indicatif : ["+fmt(delta2-margin2,4)+" ; "+fmt(delta2+margin2,4)+"]. Ce second gain n'est pas établi.","foot"));
+  const tw=node("div",null,"tablewrap"),tab=node("table"),hd=node("thead"),tr=node("tr");
+  ["Pli événement","Ordres","Matchs","MAE prix seul (pp)","MAE écart fixe (pp)","Écart appris"].forEach(x=>tr.append(node("th",x)));
+  hd.append(tr);tab.append(hd);const b=node("tbody");
+  for(const f of folds){
+    const row=node("tr");
+    row.append(
+      node("td",fmt(f.event_fold)),
+      node("td",fmt(f.orders||0)),
+      node("td",fmt(f.events||0)),
+      node("td",fmt(Number(f.mae_m0||0)*100,3)),
+      node("td",fmt(Number(f.mae_m1||0)*100,3)),
+      node("td",fmt(Number(f.learned_median_gap||0)*100,3)+" pp")
+    );b.append(row);
+  }
+  tab.append(b);tw.append(tab);policyCard.append(tw);
+  policyCard.append(banner("NE PAS CONFONDRE : ce test mesure la prédiction du prix limite SIGNÉ de 781 ordres déjà exécutés, pas l'entrée en position, les ordres non exécutés, la profondeur du carnet, ni la rentabilité de la stratégie. L'écart signé stable d'environ −0,5 point reste une hypothèse de cotation, pas une EV démontrée."));
+ }catch(e){policyCard.append(node("p","Benchmark Maker indisponible : "+String(e?.message||e),"foot"))}
+ target.append(policyCard);
+
  const onchainCard=node("section",null,"card");
  onchainCard.append(node("h2","Ordres Maker réellement signés · blockchain Polygon"));
  onchainCard.append(node("p","Ici les identifiants sont récupérés depuis les événements publics OrderFilled du contrat Polymarket V2, puis rapprochés des prix et quantités des fills archivés. Ce ne sont PAS des regroupements statistiques par seconde.","foot"));
