@@ -216,6 +216,43 @@ Deno.serve(async (req:Request)=>{
     if(req.method!=="POST")return response({error:"method_not_allowed"},405);
     if(!await authorized(req))return response({error:"unauthorized"},401);
     const body=await req.json();
+    if(body?.action==="diagnose_ambiguous_tokens"){
+      const markets=await db.unsafe("select distinct market_key from pi.rn1_chain_acquisition_queue where audit_status='ambiguous' order by market_key limit 8");
+      const reports:any[]=[];
+      for(const m of markets){
+        const market=String(m.market_key);
+        const observed=await db.unsafe(`select source_outcomes,archived_shares::text,archived_cost::text,
+         audit_evidence->'wallet_erc1155_transfers' as received,
+         audit_evidence->>'observed_pusd_debit' as spent
+         from pi.rn1_chain_acquisition_queue where market_key=$1 and audit_status='ambiguous'`,[market]);
+        const candidates:any[]=[];
+        for(const [name,collateral] of [
+          ["USDCE",USDCE],["PUSD",PUSD],
+          ["NEG_RISK_WCOL","0x3a3bd7bb9528e159577f7c2e685cc81a765002e2"]
+        ]){
+          try{
+            const tokens:string[]=[];
+            for(const indexSet of [1,2]){
+              const collection=await ctfCall("getCollectionId",[ZERO32,market,BigInt(indexSet)]);
+              const position=await ctfCall("getPositionId",[collateral,collection]);
+              tokens.push(BigInt(position).toString());
+            }
+            candidates.push({name,collateral,token_ids:tokens,
+              matches:observed.map((o:any)=>({
+                outcome:Number(o.source_outcomes?.[0]),
+                wallet_received_token_id:String(o.received?.[0]?.tokenId||""),
+                match:tokens[Number(o.source_outcomes?.[0])]===String(o.received?.[0]?.tokenId||""),
+                source_shares:o.archived_shares,
+                observed_shares:o.received?.[0]?.micro,
+                source_cost:o.archived_cost,
+                observed_spent:o.spent
+              }))});
+          }catch(e){candidates.push({name,error:String(e).slice(0,130)});}
+        }
+        reports.push({market,ambiguous_transactions:observed.length,candidates});
+      }
+      return response({reports});
+    }
     if(body?.action!=="acquisition_batch")return response({error:"unsupported_action"},400);
     const limit=Math.min(2,Math.max(1,Math.trunc(Number(body.limit||1))));
     const claimed=await claim(limit);
