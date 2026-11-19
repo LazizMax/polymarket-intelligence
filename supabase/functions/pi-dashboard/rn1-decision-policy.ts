@@ -28,7 +28,7 @@ export async function rn1SignedLimitOofReport(db:any){
      round(avg(abs_error_m1)::numeric,6)::float8 mae_m1,
      round(avg(abs_error_m2)::numeric,6)::float8 mae_m2,
      round(avg(abs_error_m3)::numeric,6)::float8 mae_m3,
-     round(percentile_cont(.5) within group(order by train_global_gap)::numeric,5)::float8 learned_median_gap
+     round(avg(train_global_gap)::numeric,5)::float8 learned_median_gap
      from pi.rn1_maker_signed_limit_oof_v1 group by event_fold order by event_fold`)
  ]);
  return {
