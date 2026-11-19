@@ -8,7 +8,7 @@ import {rn1OnchainOrdersReport,rn1SignedOrderDetail,rn1OriginalOrderCalldataRepo
 import {rn1SignedCreationPriceReport,rn1HoldoutLadderValidationReport,rn1HoldoutSignedPriceValidationReport} from "./rn1-creation-quotes.ts";
 import {rn1EconomicReconstruction} from "./rn1-economics.ts";
 import {rn1LedgerPilotReport,rn1LedgerPilotDetail,rn1LedgerHoldoutReport,rn1LedgerHoldoutDetail,rn1ChainSettlementReport} from "./rn1-ledger-pilot.ts";
-import {rn1SignedLimitOofReport,rn1ChainCashflowPanelReport} from "./rn1-decision-policy.ts";
+import {rn1SignedLimitOofReport,rn1ChainCashflowPanelReport,rn1MakerPrecreationFlowReport} from "./rn1-decision-policy.ts";
 const url = "https://bxfvgywfiifnsbjgudzj.supabase.co"; // legacy identity provider for existing login
 const pub = "sb_publishable_CIPlaX8vTlmMDbLCBbtprA_A0aIUujT"; // public key of legacy identity provider; no service-role access
 const dbUrl = Deno.env.get("SUPABASE_DB_URL") || "";
@@ -2576,6 +2576,7 @@ Deno.serve(async(req:Request)=>{
   if(body?.action==="rn1_chain_settlement_report")return send(await rn1ChainSettlementReport(db));
   if(body?.action==="rn1_signed_limit_policy_oof")return send(await rn1SignedLimitOofReport(db));
   if(body?.action==="rn1_chain_cashflow_panel_report")return send(await rn1ChainCashflowPanelReport(db));
+  if(body?.action==="rn1_maker_precreation_flow_report")return send(await rn1MakerPrecreationFlowReport(db));
   if(body?.action==="rn1_quote_forensics")return send(await rn1QuoteForensics());
   if(body?.action==="rn1_strategy_evidence")return send(await rn1StrategyEvidence());
   if(body?.action==="rn1_activity_research")return send(await rn1ActivityResearch());
