@@ -101,7 +101,7 @@ export async function rn1ChainCashflowPanelReport(db:any){
 
 
 export async function rn1MakerPrecreationFlowReport(db:any){
- const [coverage,models,cohorts,regimes,integrity]=await Promise.all([
+ const [coverage,models,cohorts,regimes,integrity,collector]=await Promise.all([
   db.unsafe(`select
     count(*)::integer signed_orders,
     count(distinct event_slug)::integer events,
@@ -159,12 +159,16 @@ export async function rn1MakerPrecreationFlowReport(db:any){
      (select count(*)::integer from pi.rn1_maker_flow_policy_validation_v1
        where validation_group='reference_oof' and
          (event_fold<>mod(abs(hashtext(event_slug)::bigint),5))
-     ) as fold_errors`)
+     ) as fold_errors`),
+  db.unsafe(`select status,completed_runs,last_success_at::text last_success_at,
+    max_db_bytes,pg_database_size(current_database())::bigint database_bytes,
+    last_error
+    from pi.rn1_quote_probe_state limit 1`)
  ]);
  const strictOk=integrity[0]?.holdout_event_leaks===0&&integrity[0]?.temporal_leaks===0&&integrity[0]?.fold_errors===0;
  return {
   status:strictOk?"precreation_flow_h11_test_completed":"audit_failed",
-  coverage:coverage[0]||{},models,cohorts,regimes,integrity:integrity[0]||{},
+  coverage:coverage[0]||{},models,cohorts,regimes,integrity:integrity[0]||{},collector:collector[0]||{},
   verdict:"No observed improvement from a simple 5-minute prior Maker BUY-flow class over the existing fixed signed-limit offset.",
   limitations:[
    "Observed prior fills are a partial BUY-only archive, never full inventory; absence of a fill is not absence of holdings or an unfilled order.",
