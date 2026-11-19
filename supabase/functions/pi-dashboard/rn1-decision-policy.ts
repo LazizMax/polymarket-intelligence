@@ -98,3 +98,79 @@ export async function rn1ChainCashflowPanelReport(db:any){
    limitation:"Gross direct wallet cash movement only. No fees/rebates, indirect gas, outside-position transfers, or proof that these particular September buys were Maker; do not infer RN1's full wallet net ROI."
  };
 }
+
+
+export async function rn1MakerPrecreationFlowReport(db:any){
+ const [coverage,models,cohorts,regimes,integrity]=await Promise.all([
+  db.unsafe(`select
+    count(*)::integer signed_orders,
+    count(distinct event_slug)::integer events,
+    count(*) filter(where valid_signed_limit_reference)::integer valid_historical_price,
+    count(*) filter(where maker_count_5m>0)::integer recent_maker_5m,
+    count(*) filter(where maker_count_30m>0)::integer recent_maker_30m,
+    count(*) filter(where same_maker_shares_5m>0)::integer recent_same_side_5m,
+    count(*) filter(where opposite_maker_shares_5m>0)::integer recent_opposite_side_5m,
+    count(*) filter(where last_any_maker_at>=declared_created_at or last_same_maker_at>=declared_created_at)::integer future_fill_leakage
+   from pi.rn1_maker_signed_precreation_flow_v1`),
+  db.unsafe(`with by_event as (
+    select validation_group,event_slug,count(*)::integer orders,
+      avg(abs_error_constant) constant_mae,avg(abs_error_flow) flow_mae
+    from pi.rn1_maker_flow_policy_validation_v1
+    group by validation_group,event_slug
+   ),event_summary as (
+    select validation_group,count(*)::integer events,
+     round(avg(constant_mae)::numeric,6)::float8 event_mae_constant,
+     round(avg(flow_mae)::numeric,6)::float8 event_mae_flow,
+     round(avg(constant_mae-flow_mae)::numeric,6)::float8 event_gain,
+     round((1.96*stddev_samp(constant_mae-flow_mae)/sqrt(count(*)))::numeric,6)::float8 normal_95_halfwidth,
+     count(*) filter(where flow_mae<constant_mae)::integer improved_events
+    from by_event group by validation_group
+   )
+   select m.validation_group,count(*)::integer orders,count(distinct m.event_slug)::integer events,
+     round(avg(m.abs_error_constant)::numeric,6)::float8 mae_constant,
+     round(avg(m.abs_error_flow)::numeric,6)::float8 mae_flow,
+     round(avg(m.abs_error_constant-m.abs_error_flow)::numeric,6)::float8 order_gain,
+     e.event_mae_constant,e.event_mae_flow,e.event_gain,e.normal_95_halfwidth,e.improved_events
+   from pi.rn1_maker_flow_policy_validation_v1 m
+   join event_summary e using(validation_group)
+   group by m.validation_group,e.event_mae_constant,e.event_mae_flow,e.event_gain,e.normal_95_halfwidth,e.improved_events
+   order by m.validation_group`),
+  db.unsafe(`select validation_group,sampled_cohort,
+    count(*)::integer orders,count(distinct event_slug)::integer events,
+    round(avg(abs_error_constant)::numeric,6)::float8 mae_constant,
+    round(avg(abs_error_flow)::numeric,6)::float8 mae_flow
+   from pi.rn1_maker_flow_policy_validation_v1
+   group by validation_group,sampled_cohort order by validation_group,sampled_cohort`),
+  db.unsafe(`select validation_group,flow_regime_5m,
+    count(*)::integer orders,
+    round(avg(train_gap)::numeric,5)::float8 learned_constant_gap,
+    round(avg(flow_gap)::numeric,5)::float8 learned_flow_gap
+   from pi.rn1_maker_flow_policy_validation_v1
+   group by validation_group,flow_regime_5m order by validation_group,flow_regime_5m`),
+  db.unsafe(`select
+     (select count(*)::integer from pi.rn1_maker_flow_policy_validation_v1 h
+       where h.validation_group='new_event_targeted_holdout' and exists(
+         select 1 from pi.rn1_maker_flow_policy_validation_v1 r
+         where r.validation_group='reference_oof' and r.event_slug=h.event_slug
+       )) as holdout_event_leaks,
+     (select count(*)::integer from pi.rn1_maker_signed_precreation_flow_v1
+       where last_any_maker_at>=declared_created_at or last_same_maker_at>=declared_created_at
+     ) as temporal_leaks,
+     (select count(*)::integer from pi.rn1_maker_flow_policy_validation_v1
+       where validation_group='reference_oof' and
+         (event_fold<>mod(abs(hashtext(event_slug)::bigint),5))
+     ) as fold_errors`)
+ ]);
+ const strictOk=integrity[0]?.holdout_event_leaks===0&&integrity[0]?.temporal_leaks===0&&integrity[0]?.fold_errors===0;
+ return {
+  status:strictOk?"precreation_flow_h11_test_completed":"audit_failed",
+  coverage:coverage[0]||{},models,cohorts,regimes,integrity:integrity[0]||{},
+  verdict:"No observed improvement from a simple 5-minute prior Maker BUY-flow class over the existing fixed signed-limit offset.",
+  limitations:[
+   "Observed prior fills are a partial BUY-only archive, never full inventory; absence of a fill is not absence of holdings or an unfilled order.",
+   "Strictly prior to the DECLARED signature timestamp, which is not an independently proven public book placement timestamp.",
+   "242 orders held out by event come from specifically sampled multi-level and persistent-order cohorts, unlike the random_tx reference cohort.",
+   "The experiment predicts signed limit prices on already-executed orders, not order submission, non-submission, queue placement, copyable fills, or net ROI."
+  ]
+ };
+}
